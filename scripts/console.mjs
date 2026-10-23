@@ -1,0 +1,61 @@
+#!/usr/bin/env node
+// Serves the owner console at http://localhost:8787 so the organiser can deploy and run
+// owner actions by clicking buttons and confirming in MetaMask. Keys never leave MetaMask.
+//
+//   npm run console            (live: config.json, out/)
+//   npm run console:rehearsal  (throwaway contract on Arbitrum One: config.rehearsal.json, out-rehearsal/)
+//   npm run console:testnet    (test network: config.testnet.json, out-testnet/)
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { exec } from "node:child_process";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const PORT = Number(process.env.PORT || 8787);
+const arg = (k) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : undefined; };
+const CONFIG = arg("--config") || "config.json";
+const OUT = arg("--out") || "out";
+const ALLOWED = [
+  "console/index.html",
+  "node_modules/ethers/dist/ethers.umd.min.js",
+  "build/GroundTruthKickback.json",
+  "config.json",
+  "out/new-stakers.json",
+  "out/attendees.json",
+  "out/refunds.json",
+  "out/payout-plan.json",
+  "out/payout-summary.md",
+];
+const TYPES = { ".html": "text/html", ".js": "text/javascript", ".json": "application/json", ".md": "text/plain" };
+
+if (!fs.existsSync(path.join(root, "build/GroundTruthKickback.json"))) {
+  console.error("Run `npm run compile` first.");
+  process.exit(1);
+}
+
+http
+  .createServer((req, res) => {
+    // only this computer's own pages may talk to the console (blocks DNS-rebinding sites)
+    const host = String(req.headers.host ?? "");
+    if (host !== `localhost:${PORT}` && host !== `127.0.0.1:${PORT}`) return res.writeHead(403).end("forbidden");
+    let p;
+    try {
+      p = decodeURIComponent(new URL(req.url, "http://x").pathname).replace(/^\/+/, "");
+    } catch {
+      return res.writeHead(400).end("bad request");
+    }
+    if (p === "") p = "console/index.html";
+    if (!ALLOWED.includes(p)) return res.writeHead(404).end("not found");
+    // The page always asks for config.json and out/…; serve the chosen config and output folder.
+    const file = path.join(root, p === "config.json" ? CONFIG : p.replace(/^out\//, OUT + "/"));
+    if (!fs.existsSync(file)) return res.writeHead(404).end("missing: " + p);
+    res.writeHead(200, { "content-type": TYPES[path.extname(p)] || "application/octet-stream", "cache-control": "no-store" });
+    fs.createReadStream(file).on("error", () => res.end()).pipe(res);
+  })
+  .listen(PORT, "127.0.0.1", () => {
+    const url = `http://localhost:${PORT}`;
+    console.log(`Owner console: ${url}  (${CONFIG}, ${OUT}/)  (Ctrl+C to stop)`);
+    const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+    exec(`${opener} ${url}`, () => {});
+  });

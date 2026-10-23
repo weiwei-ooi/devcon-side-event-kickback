@@ -1,0 +1,27 @@
+{
+  "name": "ground-truth-kickback",
+  "version": "2.0.0",
+  "description": "Kickback-style refundable USDC deposits for Luma events",
+  "scripts": {
+    "compile": "node scripts/compile.mjs",
+    "test": "node --test --test-concurrency=1 --test-timeout=600000 test/contract.test.mjs test/kickback.test.mjs",
+    "verify": "node scripts/verify-deposits.mjs",
+    "payout": "node scripts/build-payout.mjs",
+    "deploy": "node scripts/deploy.mjs",
+    "owner": "node scripts/owner.mjs",
+    "console": "node scripts/console.mjs",
+    "console:testnet": "node scripts/console.mjs --config config.testnet.json --out out-testnet",
+    "console:rehearsal": "node scripts/console.mjs --config config.rehearsal.json --out out-rehearsal"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "csv-parse": "^5.5.6",
+    "ethers": "^6.13.4",
+    "solc": "0.8.24"
+  },
+  "devDependencies": {
+    "ganache": "^7.9.2"
+  },
+  "type": "module",
+  "private": true
+}

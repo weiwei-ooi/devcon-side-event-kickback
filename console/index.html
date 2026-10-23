@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ground Truth · Owner Console</title>
+<style>
+  :root { --bg:#1B003F; --card:#26085a; --line:#3d1b7a; --text:#f3ecff; --muted:#b9a6dd; --accent:#9747FF; --blue:#27CDFE; --ok:#3ddc97; --err:#ff6b8b; --warn:#ffc46b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:32px 16px 64px; }
+  h1 { font-size:26px; margin:0 0 4px; } h1 span { color:var(--blue); }
+  .sub { color:var(--muted); margin-bottom:16px; }
+  .banner { border-radius:12px; padding:12px 16px; margin:0 0 14px; font-weight:600; }
+  .banner.live { background:#5a0b2a; border:1px solid var(--err); }
+  .banner.rehearsal { background:#4a3300; border:1px solid var(--warn); }
+  .banner.testnet { background:#063a2c; border:1px solid var(--ok); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px 20px; margin:14px 0; }
+  .card h2 { font-size:16px; margin:0 0 6px; }
+  .card p { margin:4px 0 12px; color:var(--muted); }
+  details.card summary { cursor:pointer; font-weight:600; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:10px; padding:10px 16px; font-weight:600; cursor:pointer; font-size:14px; }
+  button.secondary { background:transparent; border:1px solid var(--line); color:var(--text); }
+  button.danger { background:#a3204a; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  code, .mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; word-break:break-all; }
+  .kv { display:grid; grid-template-columns:170px 1fr; gap:4px 12px; }
+  .kv div:nth-child(odd) { color:var(--muted); }
+  #log { white-space:pre-wrap; background:#12002b; border-radius:10px; padding:12px; min-height:60px; font-family:ui-monospace,Menlo,monospace; font-size:12.5px; }
+  .ok { color:var(--ok); } .err { color:var(--err); } .warn { color:var(--warn); }
+  a { color:var(--blue); }
+  input { background:#12002b; border:1px solid var(--line); color:var(--text); border-radius:8px; padding:8px 10px; width:100%; font-family:ui-monospace,Menlo,monospace; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .row input { flex:1 1 220px; width:auto; }
+  @media (max-width:520px) { .kv { grid-template-columns:1fr; } .kv div:nth-child(odd) { margin-top:6px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Ground Truth · <span>Owner Console</span></h1>
+  <div class="sub">Every action opens your wallet for you to confirm. Keys never leave your wallet.</div>
+  <div id="banner" class="banner" hidden></div>
+
+  <div class="card">
+    <h2>1. Connect wallet</h2>
+    <p>Use the dedicated event wallet (the owner), not your personal one. The console switches the wallet to the right network.</p>
+    <div class="row"><button id="connect">Connect wallet</button><span id="who" class="mono"></span></div>
+  </div>
+
+  <div class="card">
+    <h2>2. Deploy the deposit contract <small style="color:var(--muted)">(once)</small></h2>
+    <p>Creates the contract that holds guest deposits. Your connected wallet becomes the owner. Costs a few cents of ETH.</p>
+    <div id="deployInfo" class="kv"></div>
+    <div class="row" style="margin-top:12px"><button id="deploy" disabled>Deploy contract</button></div>
+  </div>
+
+  <div class="card">
+    <h2>Contract status</h2>
+    <div class="row" style="margin-bottom:10px"><input id="addr" placeholder="Contract address (filled from config.json)"><button class="secondary" id="refresh" disabled>Refresh</button></div>
+    <div id="status" class="kv"></div>
+  </div>
+
+  <div class="card">
+    <h2>3. Register approved guests</h2>
+    <p>Loads <code>out/new-stakers.json</code>: guests whose deposit Claude verified on-chain <b>and</b> whom you approved on Luma.</p>
+    <div class="row"><button id="register" disabled>Register stakers</button><span id="regInfo" class="mono"></span></div>
+  </div>
+
+  <div class="card">
+    <h2>4. Refund declined guests</h2>
+    <p>Loads <code>out/refunds.json</code>: paying guests you declined on Luma. Each gets exactly their deposit back to their own wallet, in one confirmation.</p>
+    <div class="row"><button id="refundDeclined" disabled>Refund declined guests</button><span id="rdInfo" class="mono"></span></div>
+  </div>
+
+  <div class="card">
+    <h2>5. Pay out after the event</h2>
+    <p>Loads <code>out/payout-plan.json</code> (stakers who checked in). Splits the whole pool equally between them. The button stays locked until the event starts, and you must type PAY to confirm. Only possible once.</p>
+    <div class="row"><button id="finalize" disabled>Pay attendees</button><span id="finInfo" class="mono"></span></div>
+  </div>
+
+  <details class="card">
+    <summary>Other actions (only if needed)</summary>
+    <h2 style="margin-top:14px">Remove one guest and refund them</h2>
+    <p>For a single paying guest you want to decline or drop before the event. Sends exactly the deposit back to that wallet.</p>
+    <div class="row"><input id="rmAddr" placeholder="Guest wallet 0x…"><button class="secondary" id="removeOne" disabled>Remove and refund</button></div>
+
+    <h2 style="margin-top:18px">Return a stray transfer or overpayment</h2>
+    <p>Only money that is not part of the staked pool can be returned this way (shown as “Spare” in the status).</p>
+    <div class="row"><input id="rfTo" placeholder="Send to 0x…"><input id="rfAmt" placeholder="Amount in USDC, e.g. 5" style="flex:0 1 180px"><button class="secondary" id="refundOne" disabled>Return</button></div>
+
+    <h2 style="margin-top:18px">Collect leftover rounding dust</h2>
+    <p>After the payout, a few millionths of a USDC of rounding may remain; this sends spare money to your wallet. Refund declined, waitlisted and late payers first: their deposits also count as spare. Unclaimed payouts always stay for their owners.</p>
+    <div class="row"><button class="secondary" id="sweep" disabled>Collect leftovers</button></div>
+
+    <h2 style="margin-top:18px">Cancel the event</h2>
+    <p>Refunds every registered staker their deposit. Cannot be undone, and no payout is possible afterwards.</p>
+    <div class="row"><button class="danger" id="cancel" disabled>Cancel event and refund everyone</button></div>
+  </details>
+
+  <div class="card">
+    <h2>Log</h2>
+    <div id="log"></div>
+  </div>
+</main>
+
+<script src="/node_modules/ethers/dist/ethers.umd.min.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const log = (msg, cls) => { const d = document.createElement("div"); if (cls) d.className = cls; d.textContent = msg; $("log").prepend(d); };
+const CHAINS = {
+  arbitrum: { chainId: 42161, name: "Arbitrum One", rpc: "https://arb1.arbitrum.io/rpc", explorer: "https://arbiscan.io", usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" },
+  base: { chainId: 8453, name: "Base", rpc: "https://mainnet.base.org", explorer: "https://basescan.org", usdc: "0x833589fCD6eDb6E08f4c7C32D09f71B4cE5DdA02" },
+  optimism: { chainId: 10, name: "OP Mainnet", rpc: "https://mainnet.optimism.io", explorer: "https://optimistic.etherscan.io", usdc: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85" },
+  "arbitrum-sepolia": { chainId: 421614, name: "Arbitrum Sepolia (test network)", rpc: "https://sepolia-rollup.arbitrum.io/rpc", explorer: "https://sepolia.arbiscan.io", usdc: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d", testnet: true },
+};
+const MIN_WINDOW = 7 * 24 * 3600; // must match the contract
+const OWNER_BUTTONS = ["register", "refundDeclined", "finalize", "removeOne", "refundOne", "sweep", "cancel"];
+let cfg, cfgText, chain, artifact, iface, rp, wallet, signer, account, dec, state, busy = false;
+
+const short = (a) => (a ? a.slice(0, 6) + "…" + a.slice(-4) : "");
+const usdc = (x) => ethers.formatUnits(x, dec) + " USDC";
+const when = (ts) => new Date(Number(ts) * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+const tsOf = (iso) => Math.floor(Date.parse(iso) / 1000);
+function kv(el, pairs) {
+  el.replaceChildren();
+  for (const [k, v, cls] of pairs) {
+    const a = document.createElement("div"); a.textContent = k;
+    const b = document.createElement("div"); if (cls) b.className = cls;
+    if (v instanceof Node) b.append(v); else b.textContent = v;
+    el.append(a, b);
+  }
+}
+function link(href, text) { const a = document.createElement("a"); a.href = href; a.target = "_blank"; a.rel = "noopener"; a.textContent = text; return a; }
+
+// ------------------------------------------------------------ plain-language errors
+function explain(e) {
+  const code = e?.code ?? e?.info?.error?.code;
+  const raw = [e?.shortMessage, e?.reason, e?.message, e?.info?.error?.message].filter(Boolean).join(" ");
+  // short texts only: e.message embeds calldata, whose hex digits can look like "429"
+  const brief = [e?.shortMessage, e?.info?.error?.message, e?.error?.message].filter(Boolean).join(" ");
+  if (code === 4001 || code === "ACTION_REJECTED" || /user (rejected|denied)/i.test(brief)) return "You cancelled in the wallet. Nothing was sent.";
+  let err = e?.revert;
+  if (!err && iface) {
+    for (const d of [e?.data, e?.info?.error?.data, e?.error?.data]) {
+      if (typeof d === "string" && d.startsWith("0x") && d.length >= 10) { try { err = iface.parseError(d); } catch {} if (err) break; }
+    }
+  }
+  if (err) {
+    const [x, y] = err.args ?? [];
+    switch (err.name) {
+      case "NotOwner": return "Only the owner wallet can do this. Switch to the owner account in your wallet.";
+      case "NotPendingOwner": return "This wallet was not proposed as the new owner.";
+      case "NotOpen": return "The event is already paid out or cancelled, so this is no longer possible.";
+      case "NotSettled": return "Leftovers can only be collected after the payout or a cancellation.";
+      case "ZeroAddress": return "One of the addresses is empty or zero.";
+      case "BadTimes": return "The settlement deadline must be at least 7 days after the event start. Ask Claude to fix the dates in the config.";
+      case "TooLate": return "The settlement deadline has passed. You can no longer pay out or cancel; each guest can now withdraw their own deposit.";
+      case "TooEarly": return "Too early: the payout opens at the event start time shown in the status.";
+      case "AlreadyRegistered": return `${x} is already registered. Ask Claude to rebuild the list.`;
+      case "NotAStaker": return `${x} is not a registered staker. Ask Claude to rebuild the list.`;
+      case "CannotReject": return `${x} cannot be refunded: they were already refunded or paid out.`;
+      case "DuplicateAttendee": return `${x} appears twice in the attendee list. Ask Claude to rebuild it.`;
+      case "NoAttendees": return "The attendee list is empty.";
+      case "ShareMismatch": return `The payout per person changed (you confirmed ${usdc(x)}, it is now ${usdc(y)}). Ask Claude to rebuild the payout.`;
+      case "InsufficientBalance": return `Not enough USDC in the contract for this (needs ${usdc(x)}, has ${usdc(y)}). A deposit may be missing; ask Claude to re-check.`;
+      case "NothingToClaim": return "There is nothing to claim for this wallet.";
+      case "TransferFailed": return `USDC refused the transfer to ${x} (the address may be blocked by USDC). Try another address.`;
+    }
+    return "The contract refused: " + err.name;
+  }
+  const httpCode = e?.info?.responseStatus ?? e?.error?.status;
+  if (code === 429 || code === -32005 || /\b429\b/.test(String(httpCode ?? "")) || /rate.?limit|could not coalesce|too many requests/i.test(brief))
+    return "The network connection is busy (rate limited). Wait a minute and try again. Nothing was sent.";
+  if (/insufficient funds/i.test(brief)) return "This wallet does not have enough ETH for the network fee.";
+  if (e?.code === "TIMEOUT") return "No answer from the network in time. Check the last “Sent:” link in the log before trying again.";
+  return raw || String(e);
+}
+
+// ------------------------------------------------------------ setup
+async function getJson(p) { const r = await fetch(p, { cache: "no-store" }); if (!r.ok) throw new Error(`${p}: ${r.status}`); return r.json(); }
+
+async function init() {
+  try { cfgText = await (await fetch("/config.json", { cache: "no-store" })).text(); cfg = JSON.parse(cfgText); }
+  catch { log("config.json not found. Ask Claude to create it.", "err"); return; }
+  chain = CHAINS[cfg.chain];
+  // any other network (e.g. a local test chain) needs chainId, rpcUrl and token in the config
+  if (!chain && cfg.chainId && cfg.rpcUrl && cfg.token)
+    chain = { chainId: Number(cfg.chainId), name: cfg.chain || "custom network", rpc: cfg.rpcUrl, explorer: cfg.explorer || "", usdc: cfg.token, testnet: true };
+  if (!chain) { log(`Unknown chain "${cfg.chain}" in config.json`, "err"); return; }
+  dec = cfg.tokenDecimals ?? 6;
+  artifact = await getJson("/build/GroundTruthKickback.json");
+  iface = new ethers.Interface(artifact.abi);
+  // Reads, gas and fee estimates go through the public RPC, so the wallet only has to sign.
+  rp = new ethers.JsonRpcProvider(chain.rpc, chain.chainId, { staticNetwork: true });
+
+  const mode = cfg.mode === "rehearsal" ? "rehearsal" : chain.testnet ? "testnet" : "live";
+  const b = $("banner"); b.hidden = false; b.className = "banner " + mode;
+  b.textContent = mode === "testnet" ? "TEST NETWORK: practice run with free test USDC. Nothing here uses real money."
+    : mode === "rehearsal" ? `REHEARSAL on ${chain.name} mainnet: real network and real USDC, throwaway contract. Never put this address on Luma.`
+    : `LIVE event contract on ${chain.name} mainnet. Real guest deposits.`;
+  if (cfg.poolCap) b.textContent += ` Safety cap: ${cfg.poolCap} USDC.`;
+
+  const start = tsOf(cfg.eventStart), end = tsOf(cfg.claimDeadline);
+  kv($("deployInfo"), [
+    ["Network", chain.name],
+    ["Token", "USDC · " + (cfg.token || chain.usdc)],
+    ["Deposit", cfg.deposit + " USDC"],
+    ["Event name", cfg.eventName || "Ground Truth"],
+    ["Payout opens", start ? when(start) : "missing in config", start ? "" : "err"],
+    ["Settle by", end ? when(end) + " (after this, guests can withdraw their own deposit)" : "missing in config", end ? "" : "err"],
+    ["Owner", "the wallet you connect"],
+  ]);
+  if (cfg.contract) $("addr").value = cfg.contract;
+  if (!window.ethereum) log("No browser wallet detected. Open this page in the browser that has your wallet extension.", "err");
+}
+
+async function ensureNetwork() {
+  const hex = "0x" + chain.chainId.toString(16);
+  const current = await window.ethereum.request({ method: "eth_chainId" });
+  if (current?.toLowerCase() === hex) return;
+  try {
+    await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: hex }] });
+  } catch (e) {
+    if (e.code !== 4902) throw e;
+    await window.ethereum.request({ method: "wallet_addEthereumChain", params: [{ chainId: hex, chainName: chain.name, rpcUrls: [chain.rpc], nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 }, blockExplorerUrls: [chain.explorer] }] });
+  }
+  const now = await window.ethereum.request({ method: "eth_chainId" });
+  if (now?.toLowerCase() !== hex) throw new Error(`Your wallet is not on ${chain.name}. Switch it manually and try again.`);
+}
+
+async function connect() {
+  wallet = new ethers.BrowserProvider(window.ethereum);
+  await wallet.send("eth_requestAccounts", []);
+  await ensureNetwork();
+  wallet = new ethers.BrowserProvider(window.ethereum);
+  signer = await wallet.getSigner();
+  account = await signer.getAddress();
+  const bal = await rp.getBalance(account);
+  $("who").textContent = `${account} · ${Number(ethers.formatEther(bal)).toFixed(5)} ETH on ${chain.name}`;
+  if (bal === 0n) log("This wallet has no ETH on " + chain.name + " for fees.", "err");
+  if (cfg.owner && cfg.owner.toLowerCase() !== account.toLowerCase()) log(`Heads-up: this is not the owner wallet in the config (${short(cfg.owner)}).`, "warn");
+  window.ethereum.on?.("accountsChanged", () => location.reload());
+  window.ethereum.on?.("chainChanged", () => location.reload());
+  $("deploy").disabled = false; $("refresh").disabled = false;
+  if ($("addr").value) await refresh();
+}
+
+function contractAddr() {
+  const a = $("addr").value.trim();
+  if (!ethers.isAddress(a)) throw new Error("Enter the contract address first");
+  return ethers.getAddress(a);
+}
+
+const where = () => `on ${chain.name}, contract ${short(contractAddr())}`;
+
+// Before any action: the config must be the one this page was opened with, and the address box
+// should be the configured contract.
+async function preflight() {
+  const now = await (await fetch("/config.json", { cache: "no-store" })).text();
+  if (now !== cfgText) throw new Error("The console's settings changed since this page was opened. Reload the page (and check the banner) before continuing.");
+  const a = contractAddr();
+  if (cfg.contract && a.toLowerCase() !== cfg.contract.toLowerCase() &&
+      !confirm(`The address box (${a}) is NOT the contract in the config (${cfg.contract}). Continue with ${short(a)} anyway?`))
+    throw new Error("Stopped: contract address differs from the config.");
+}
+
+// Lists made by Claude's scripts are stamped with the contract, the network and each wallet's
+// on-chain status at the time. Refuse them if anything no longer matches.
+async function loadList(file) {
+  let d;
+  try { d = await getJson(file); } catch { throw new Error(`${file.slice(1)} not found. Ask Claude to re-check the Luma list.`); }
+  if (Array.isArray(d) || !d.contract || !Array.isArray(d.items)) throw new Error(`${file.slice(1)} is in an old format. Ask Claude to re-check the Luma list.`);
+  if (d.contract.toLowerCase() !== contractAddr().toLowerCase() || Number(d.chainId) !== chain.chainId)
+    throw new Error(`${file.slice(1)} was made for another contract or network. Ask Claude to rebuild it.`);
+  const c = new ethers.Contract(contractAddr(), artifact.abi, rp);
+  const now = await Promise.all(d.items.map((i) => c.status(i.wallet)));
+  const changed = d.items.filter((i, k) => Number(now[k]) !== Number(i.status));
+  if (changed.length) throw new Error(`${file.slice(1)} is out of date (${changed.length} guest(s) changed since it was made, e.g. ${changed[0].name || short(changed[0].wallet)}). Ask Claude to re-check the Luma list.`);
+  return d.items;
+}
+
+// Simulate first (plain-language error before any wallet popup), estimate with the public RPC,
+// then ask the wallet only to sign and send. Waits for the receipt via the public RPC.
+async function sendTx(label, txReq) {
+  await ensureNetwork();
+  const from = account;
+  try { await rp.call({ ...txReq, from }); } catch (e) { throw new Error(explain(e)); }
+  const gas = await rp.estimateGas({ ...txReq, from });
+  const fee = await rp.getFeeData();
+  const req = { ...txReq, gasLimit: (gas * 13n) / 10n };
+  if (fee.maxFeePerGas) { req.maxFeePerGas = fee.maxFeePerGas * 2n; req.maxPriorityFeePerGas = fee.maxPriorityFeePerGas ?? 0n; }
+  else if (fee.gasPrice) req.gasPrice = (fee.gasPrice * 12n) / 10n;
+  log(`Confirm in your wallet: ${label}…`);
+  const tx = await signer.sendTransaction(req);
+  log("Sent: " + chain.explorer + "/tx/" + tx.hash);
+  let r;
+  try { r = await rp.waitForTransaction(tx.hash, 1, 300_000); } catch (e) { if (e?.code !== "TIMEOUT") throw e; }
+  if (!r) throw new Error(`Not confirmed after 5 minutes; it may still go through. Check ${chain.explorer}/tx/${tx.hash} before trying again.`);
+  if (r.status !== 1) throw new Error("The transaction failed on-chain. Check the link above.");
+  return r;
+}
+const call = (fn, args) => ({ to: contractAddr(), data: iface.encodeFunctionData(fn, args) });
+
+// ------------------------------------------------------------ actions
+async function deploy() {
+  if (cfg.contract && !confirm(`config.json already has a contract (${cfg.contract}). Deploy a NEW one anyway?`)) return;
+  const start = tsOf(cfg.eventStart), end = tsOf(cfg.claimDeadline);
+  if (!start || !end) throw new Error("eventStart and claimDeadline are missing in the config. Ask Claude to add them.");
+  if (end < start + MIN_WINDOW) throw new Error("The settlement deadline must be at least 7 days after the event start. Ask Claude to fix the config.");
+  if (cfg.owner && cfg.owner.toLowerCase() !== account.toLowerCase())
+    throw new Error(`The connected wallet (${short(account)}) is not the owner wallet in the config (${short(cfg.owner)}). Switch accounts in your wallet first.`);
+  if (!confirm(`Deploy a new deposit contract on ${chain.name}?\nOwner: ${account}\nDeposit: ${cfg.deposit} USDC\nPayout opens: ${when(start)}\nSettle by: ${when(end)}`)) return;
+  const units = ethers.parseUnits(String(cfg.deposit), dec);
+  const f = new ethers.ContractFactory(artifact.abi, artifact.bytecode);
+  const dtx = await f.getDeployTransaction(cfg.token || chain.usdc, units, cfg.eventName || "Ground Truth", account, start, end);
+  const r = await sendTx("deploy the contract", { data: dtx.data });
+  const addr = ethers.getAddress(r.contractAddress);
+  $("addr").value = addr;
+  log(`✅ Deployed at ${addr} (block ${r.blockNumber})\n${chain.explorer}/address/${addr}\nTell Claude this address so it can update the config and the Luma page.`, "ok");
+  await refresh();
+}
+
+async function refresh() {
+  const c = new ethers.Contract(contractAddr(), artifact.abi, rp);
+  const tokenC = new ethers.Contract(await c.token(), ["function balanceOf(address) view returns (uint256)"], rp);
+  const [owner, pending, phase, count, dep, bal, owedTotal, spare, start, end] = await Promise.all([
+    c.owner(), c.pendingOwner(), c.phase(), c.stakerCount(), c.deposit(), tokenC.balanceOf(c.target), c.owedTotal(), c.spare(), c.eventStart(), c.claimDeadline(),
+  ]);
+  state = { owner, phase: Number(phase), count, dep, bal, owedTotal, spare, start: Number(start), end: Number(end) };
+  const isOwner = account && owner.toLowerCase() === account.toLowerCase();
+  const pairs = [
+    ["Owner", owner + (isOwner ? " (you)" : ""), isOwner ? "mono ok" : "mono"],
+    ["Phase", ["Open", "Paid out", "Cancelled"][state.phase]],
+    ["Registered stakers", String(count)],
+    ["Staked pool", usdc(dep * count)],
+    ["USDC in contract", usdc(bal)],
+    ["Unclaimed payouts", usdc(owedTotal), owedTotal > 0n ? "warn" : ""],
+    ["Spare (not staked)", usdc(spare)],
+    ["Payout opens", when(start)],
+    ["Settle by", when(end)],
+    ["Explorer", link(`${chain.explorer}/address/${c.target}`, "view on explorer ↗")],
+  ];
+  if (pending !== ethers.ZeroAddress) pairs.splice(1, 0, ["Proposed new owner", pending, "mono warn"]);
+  kv($("status"), pairs);
+  if (cfg.poolCap && bal > ethers.parseUnits(String(cfg.poolCap), dec)) log(`⚠ The contract holds more than the ${cfg.poolCap} USDC safety cap.`, "err");
+  if (account && !isOwner) log("The connected wallet is not the owner of this contract, so owner actions are disabled.", "warn");
+  state.isOwner = isOwner;
+  if (!busy) applyButtons();
+}
+
+async function register() {
+  await preflight();
+  const items = await loadList("/out/new-stakers.json");
+  const list = items.map((i) => i.wallet);
+  if (!list.length) { log("No new approved guests to register."); return; }
+  await refresh();
+  if (cfg.poolCap) {
+    const cap = ethers.parseUnits(String(cfg.poolCap), dec);
+    if (state.dep * (state.count + BigInt(list.length)) > cap) throw new Error(`Registering ${list.length} more would take the pool over the ${cfg.poolCap} USDC safety cap.`);
+  }
+  $("regInfo").textContent = `${list.length} wallets`;
+  if (!confirm(`Register ${list.length} approved guests whose deposits were verified, ${where()}?`)) return;
+  for (let i = 0; i < list.length; i += 100) {
+    const chunk = list.slice(i, i + 100);
+    await sendTx(`register ${chunk.length} stakers`, call("registerStakers", [chunk]));
+  }
+  log(`✅ Registered ${list.length} stakers`, "ok");
+  await refresh();
+}
+
+async function rejectAndRefund(wallets, label) {
+  for (let i = 0; i < wallets.length; i += 100) {
+    const chunk = wallets.slice(i, i + 100);
+    const r = await sendTx(`${label} (${chunk.length})`, call("rejectAndRefund", [chunk]));
+    const failed = r.logs.map((l) => { try { return iface.parseLog(l); } catch { return null; } }).filter((x) => x?.name === "PayoutFailed");
+    for (const f of failed) log(`USDC refused the refund to ${f.args[0]}; it is kept for them to claim to another address.`, "warn");
+  }
+}
+
+async function refundDeclined() {
+  await preflight();
+  const list = await loadList("/out/refunds.json");
+  if (!list.length) { log("Nobody to refund."); return; }
+  const names = list.map((r) => `• ${r.name || "(no name)"} ${short(r.wallet)}${r.status === 1 ? "  (registered staker)" : ""}`).join("\n");
+  $("rdInfo").textContent = `${list.length} guests`;
+  if (!confirm(`Refund ${cfg.deposit} USDC to each of these ${list.length} declined guests, ${where()}?\n\n${names}`)) return;
+  const reg = list.filter((r) => r.status === 1);
+  if (reg.length && !confirm(`${reg.length} of them are already registered stakers and will be removed from the event:\n${reg.map((r) => "• " + (r.name || short(r.wallet))).join("\n")}\n\nRemove and refund them?`)) return;
+  await rejectAndRefund(list.map((r) => r.wallet), "refund declined guests");
+  log(`✅ Refunded ${list.length} declined guests`, "ok");
+  await refresh();
+}
+
+async function removeOne() {
+  const a = $("rmAddr").value.trim();
+  if (!ethers.isAddress(a)) throw new Error("Enter the guest's wallet address (0x…)");
+  const w = ethers.getAddress(a);
+  await preflight();
+  if (!confirm(`Remove ${w} and send ${cfg.deposit} USDC back to that wallet, ${where()}?`)) return;
+  await rejectAndRefund([w], "remove and refund one guest");
+  log(`✅ Refunded ${w}`, "ok");
+  $("rmAddr").value = "";
+  await refresh();
+}
+
+async function refundOne() {
+  const a = $("rfTo").value.trim(), amt = $("rfAmt").value.trim();
+  if (!ethers.isAddress(a)) throw new Error("Enter the address to send to (0x…)");
+  if (!/^\d+(\.\d{1,6})?$/.test(amt) || Number(amt) <= 0) throw new Error("Enter an amount like 5 or 2.5");
+  const units = ethers.parseUnits(amt, dec);
+  await preflight();
+  await refresh();
+  if (units > state.spare) throw new Error(`Only ${usdc(state.spare)} is spare. The staked pool cannot be used for this.`);
+  const to = ethers.getAddress(a);
+  if (!confirm(`Send ${amt} USDC from the spare balance to ${to}, ${where()}?`)) return;
+  await sendTx("return a transfer", call("refund", [to, units]));
+  log(`✅ Sent ${amt} USDC to ${to}`, "ok");
+  $("rfTo").value = ""; $("rfAmt").value = "";
+  await refresh();
+}
+
+async function finalize() {
+  await preflight();
+  let plan;
+  try { plan = await getJson("/out/payout-plan.json"); } catch { log("out/payout-plan.json not found. Ask Claude to build the payout first.", "err"); return; }
+  await refresh();
+  const now = Math.floor(Date.now() / 1000);
+  if (now < state.start) throw new Error(`Too early: the payout opens ${when(state.start)}.`);
+  if (now > state.end) throw new Error("The settlement deadline has passed; guests can now withdraw their own deposits.");
+  if (!plan.contract || plan.contract.toLowerCase() !== contractAddr().toLowerCase() || Number(plan.chainId) !== chain.chainId)
+    throw new Error("This payout plan was built for a different contract or network. Ask Claude to rebuild it.");
+  if (BigInt(plan.stakers) !== state.count) throw new Error(`The plan counts ${plan.stakers} stakers but the contract has ${state.count}. Ask Claude to rebuild the payout.`);
+  const c = new ethers.Contract(contractAddr(), artifact.abi, rp);
+  const share = await c.previewShare(plan.attendees.length);
+  if (share.toString() !== String(plan.share)) throw new Error(`The share changed (plan ${plan.shareUsdc}, now ${usdc(share)}). Ask Claude to rebuild the payout.`);
+  const msg = `Pay ${plan.attendees.length} of ${state.count} stakers ${usdc(share)} each, ${where()}?\nPool: ${usdc(state.dep * state.count)}. This can only be done once.`;
+  $("finInfo").textContent = `${plan.attendees.length} attendees × ${usdc(share)}`;
+  const typed = prompt(`${msg}\n\nType PAY to continue.`);
+  if (typed !== "PAY") { log("Payout not sent."); return; }
+  const r = await sendTx("pay out", call("finalize", [plan.attendees, share]));
+  const failed = r.logs.map((l) => { try { return iface.parseLog(l); } catch { return null; } }).filter((x) => x?.name === "PayoutFailed");
+  for (const f of failed) log(`USDC refused the payout to ${f.args[0]}; it is kept for them to claim to another address.`, "warn");
+  log("✅ Paid out", "ok");
+  await refresh();
+}
+
+async function sweep() {
+  await preflight();
+  await refresh();
+  if (state.phase === 0) throw new Error("Leftovers can only be collected after the payout or a cancellation.");
+  if (state.spare === 0n) { log("Nothing left over."); return; }
+  if (state.spare >= state.dep) {
+    // that much is not rounding dust: most likely a guest's deposit that was never refunded
+    const typed = prompt(`${usdc(state.spare)} is spare. That is more than rounding dust and probably includes guests' deposits that were never refunded (declined, waitlisted or late payers). Ask Claude to check and refund them first.\n\nType SWEEP only if you are sure it all belongs to the organisers.`);
+    if (typed !== "SWEEP") { log("Collect leftovers stopped."); return; }
+  } else if (!confirm(`Send the ${usdc(state.spare)} left over to your wallet ${short(account)}, ${where()}?`)) return;
+  await sendTx("collect leftovers", call("sweep", [account]));
+  log("✅ Leftovers collected", "ok");
+  await refresh();
+}
+
+async function cancel() {
+  await preflight();
+  await refresh();
+  const typed = prompt(`This refunds all ${state.count} registered stakers and ends the event ${where()}. It cannot be undone.\nType CANCEL to continue.`);
+  if (typed !== "CANCEL") { log("Cancel aborted."); return; }
+  await sendTx("cancel the event", call("cancel", []));
+  log("✅ Event cancelled, stakers refunded", "ok");
+  await refresh();
+}
+
+// Owner buttons follow ownership. "Pay attendees" stays locked (greyed out) until the event has
+// started, and after the payout or settlement deadline, so it cannot be pressed by accident.
+function applyButtons() {
+  if (!state) return;
+  OWNER_BUTTONS.forEach((id) => ($(id).disabled = !state.isOwner));
+  const now = Math.floor(Date.now() / 1000);
+  const b = $("finalize");
+  if (state.phase !== 0) { b.disabled = true; b.textContent = "Pay attendees (done)"; }
+  else if (now < state.start) { b.disabled = true; b.textContent = `Pay attendees (locked until ${when(state.start)})`; }
+  else if (now > state.end) { b.disabled = true; b.textContent = "Pay attendees (deadline passed)"; }
+  else b.textContent = "Pay attendees";
+}
+setInterval(() => { if (!busy) applyButtons(); }, 30_000); // unlocks by itself when the event starts
+
+// One action at a time: every button stays disabled until the current action has finished.
+const ALL_BUTTONS = ["connect", "deploy", "refresh", ...OWNER_BUTTONS];
+const wrap = (fn) => async () => {
+  if (busy) return;
+  busy = true;
+  const was = Object.fromEntries(ALL_BUTTONS.map((id) => [id, $(id).disabled]));
+  ALL_BUTTONS.forEach((id) => ($(id).disabled = true));
+  try { await fn(); } catch (e) { log("✗ " + explain(e), "err"); }
+  finally {
+    busy = false;
+    ALL_BUTTONS.forEach((id) => ($(id).disabled = was[id]));
+    if (state && account) applyButtons();
+    if (account) { $("deploy").disabled = false; $("refresh").disabled = false; }
+  }
+};
+for (const [id, fn] of Object.entries({ connect, deploy, refresh, register, refundDeclined, removeOne, refundOne, finalize, sweep, cancel })) $(id).onclick = wrap(fn);
+init().catch((e) => log(explain(e), "err"));
+</script>
+</body>
+</html>

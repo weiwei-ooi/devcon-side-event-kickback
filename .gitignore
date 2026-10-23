@@ -1,0 +1,6 @@
+node_modules/
+.env
+# Guest data (names, emails, wallets) never goes in the repo
+out/
+out-*/
+*.csv

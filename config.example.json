@@ -1,0 +1,18 @@
+{
+  "eventName": "Ground Truth: Devcon Mumbai 2026",
+  "chain": "arbitrum",
+  "rpcUrl": "https://arb1.arbitrum.io/rpc",
+  "deposit": "25",
+  "receiver": "0xDEPLOYED_CONTRACT_ADDRESS",
+  "contract": "0xDEPLOYED_CONTRACT_ADDRESS",
+  "owner": "0xOWNER_WALLET (the organiser's dedicated wallet)",
+  "depositOpensAt": "2026-10-22T00:00:00+05:30",
+  "depositDeadline": "2026-11-04T18:00:00+05:30",
+  "depositTicketPattern": "deposit|commit|stake",
+  "columns": {},
+  "eventStart": "2026-11-04T18:00:00+05:30",
+  "claimDeadline": "2026-11-18T18:00:00+05:30",
+  "poolCap": "",
+  "mode": "live",
+  "deployBlock": ""
+}
