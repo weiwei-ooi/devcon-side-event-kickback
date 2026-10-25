@@ -30,7 +30,7 @@
 - [x] Contract v2 (after two code reviews), scripts and tests: `npm test` passes on a local chain (contract tests + end-to-end with the scripts). The console was also driven end to end in a browser against a local chain.
 - [x] Owner wallet set up (Zerion, funded on Arbitrum One). Rehearsal of v1 passed on Arbitrum One with a throwaway contract (`0x1F044c041D873CC906E614c558B7b877E88F620f`, never put on Luma).
 - [x] v3 (25 Oct): Kleros challenges + require style. Contract tests, script e2e, guest page and console browser tests pass. Needs dev re-review and a short rehearsal including one challenge.
-- [ ] Pin `docs/attendance-policy.md` on IPFS, set `kleros.policyURI` in config.json.
+- [x] Juror policy approved by her (25 Oct) and pinned on IPFS via Kleros's upload service: `/ipfs/Qmed2kuk17XbTeWG56UpWY8jThATEWzfWxgLAKqy5iLKsv` (byte-identical to docs/attendance-policy.md, checked via cdn.kleros.link). Set as `kleros.policyURI` in config.json and config.rehearsal.json. If the file changes, re-upload and update the path.
 - [ ] Short v3 rehearsal on Arbitrum One (`npm run console:rehearsal`, 500 USDC safety cap): deploy, deposit 25, register, refund-declined, deposit again, pay out.
 - [ ] Her developers review the code. Zero open issues before going public.
 - [ ] Deploy the live contract with `npm run console` (config.json), set `receiver`, `contract`, `deployBlock` and `depositOpensAt` (deploy time), verify the source on Arbiscan (0.8.28, optimizer 200, EVM paris), and put the address on Luma (event stays **Private**).

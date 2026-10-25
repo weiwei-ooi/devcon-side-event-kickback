@@ -31,7 +31,7 @@ Guests who want a guaranteed spot send a **$25 USDC refundable deposit**. Guests
 | `scripts/deploy.mjs` | Deploys the contract. |
 | `console/` + `scripts/console.mjs` | The owner console: a local page where the organiser clicks buttons and confirms in her wallet. |
 | `site/index.html` + `scripts/build-site.mjs` | The public guest deposit page: switches the wallet to Arbitrum One, checks the contract, sends exactly 25 USDC and gives the tx link for Luma. See "Guest deposit page". |
-| `docs/attendance-policy.md` | The policy Kleros jurors apply in an attendance dispute. Pinned on IPFS; its path goes in `config.kleros.policyURI` before the live deploy. |
+| `docs/attendance-policy.md` | The policy Kleros jurors apply in an attendance dispute. Pinned on IPFS at `/ipfs/Qmed2kuk17XbTeWG56UpWY8jThATEWzfWxgLAKqy5iLKsv` (set as `kleros.policyURI` in config.json; check it at https://cdn.kleros.link/ipfs/Qmed2kuk17XbTeWG56UpWY8jThATEWzfWxgLAKqy5iLKsv). If the file changes, it must be uploaded again and the new path set before the deploy. |
 | `test/` | Contract tests (guards, blocklisted wallets, odd tokens, 150 guests, every challenge path with a mock Kleros), an end-to-end test of the scripts on a local chain, and browser tests of the guest page and the owner console. |
 
 All the owner transactions are also written out as **Safe Transaction Builder** files (`out/safe-*.json`), so a Kleros or Arkiv Safe can own the contract and sign the payouts.

@@ -21,7 +21,7 @@ Requested by the organiser on 25 Oct:
 
 Points we would like reviewers to look at in particular: the ETH accounting in `resolveChallenge` (2 × deposit − fee, rounding on the split), the `cost ≤ 2 × deposit` guard if the Kleros fee rises between challenge and match, the unbounded loop over `_challengers` in `releasePayouts` (bounded by the number of stakers, at most 150), and the template JSON (no user-controlled strings except the owner-set event name and policy path).
 
-**Tradeoffs the organiser accepted:** a fee of about 0.015 ETH per side; a matched challenge holds every payout for about 3 weeks (one Kleros round, longer with appeals); the juror policy (`docs/attendance-policy.md`) must be pinned on IPFS and set in `config.kleros.policyURI` before the live deploy (the deploy refuses otherwise).
+**Tradeoffs the organiser accepted:** a fee of about 0.015 ETH per side; a matched challenge holds every payout for about 3 weeks (one Kleros round, longer with appeals); the juror policy (`docs/attendance-policy.md`, approved by the organiser) is pinned on IPFS at `/ipfs/Qmed2kuk17XbTeWG56UpWY8jThATEWzfWxgLAKqy5iLKsv` and set in `config.kleros.policyURI` (the live deploy refuses without one).
 
 Tests: 19 contract tests (including every challenge path against a mock DisputeResolver and an ETH-refusing wallet), the end-to-end script test (posts the list, an unmatched challenge, release), 43 browser checks on the guest page and 19 on the owner console (deploy with Kleros settings → register → post → challenge → dispute → ruling → settle → release).
 
@@ -66,5 +66,5 @@ Deploy, 25 USDC deposit, verify, decline + refund (`rejectAndRefund`, tx 0x4c738
 
 1. Short v3 rehearsal on Arbitrum One (`npm run console:rehearsal`, 500 USDC cap, throwaway contract), including one challenge left unmatched.
 2. Developer review of `contracts/GroundTruthKickback.sol` and `console/index.html`.
-3. Pin `docs/attendance-policy.md` on IPFS and set `kleros.policyURI`. Deploy the live contract from `npm run console`, verify the source on Arbiscan (`build/GroundTruthKickback.standard-input.json`, compiler 0.8.28), record `contract`, `receiver`, `deployBlock` and `depositOpensAt` in `config.json`, and put the address on Luma while the event stays Private.
+3. Juror policy already pinned (`/ipfs/Qmed2kuk17XbTeWG56UpWY8jThATEWzfWxgLAKqy5iLKsv`, set in config.json); re-pin only if the file changes. Deploy the live contract from `npm run console`, verify the source on Arbiscan (`build/GroundTruthKickback.standard-input.json`, compiler 0.8.28), record `contract`, `receiver`, `deployBlock` and `depositOpensAt` in `config.json`, and put the address on Luma while the event stays Private.
 4. Go Public only when the organiser says so.
