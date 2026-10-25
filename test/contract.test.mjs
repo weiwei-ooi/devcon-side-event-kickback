@@ -479,22 +479,22 @@ test("appeals: payouts wait through every appeal round and only the final ruling
   await warp(DAY + 1);
 
   // round 1: jurors say "did not attend"; the guest's side appeals (cost + 2x), the matcher's side defends (cost + 1x)
-  await send(arbitrator.startAppealPeriod(id, 2, 3 * DAY));
+  await send(arbitrator.startAppealPeriod(id, 2, 3 * DAY, { gasLimit: 500000 }));
   await reverts(kick, "resolveChallenge", [await addr(g)], "NotRuled"); // a round-1 vote is not final
   const cost = await arbitrator.appealCost(id);
-  await send(kit.connect(guests[157]).fundAppeal(id, 1, { value: cost })); // crowdfunding: anyone can chip in
-  await send(kit.connect(g).fundAppeal(id, 1, { value: 3n * cost })); // the rest (any excess comes back)
+  await send(kit.connect(guests[157]).fundAppeal(id, 1, { value: cost, gasLimit: 500000 })); // crowdfunding: anyone can chip in
+  await send(kit.connect(g).fundAppeal(id, 1, { value: 3n * cost, gasLimit: 500000 })); // the rest (any excess comes back)
   assert.equal(await kit.paidFees(id, 0, 1), 3n * cost);
-  await send(kit.connect(m).fundAppeal(id, 2, { value: 2n * cost }));
+  await send(kit.connect(m).fundAppeal(id, 2, { value: 2n * cost, gasLimit: 500000 }));
   assert.equal(await arbitrator.getNumberOfRounds(id), 2n); // both sides funded: a new, bigger jury
   await reverts(kick, "resolveChallenge", [await addr(g)], "NotRuled");
 
   // round 2: jurors say "attended"; nobody appeals; the ruling becomes final
-  await send(arbitrator.startAppealPeriod(id, 1, 3 * DAY));
+  await send(arbitrator.startAppealPeriod(id, 1, 3 * DAY, { gasLimit: 500000 }));
   await warp(3 * DAY + 1);
   await reverts(kick, "resolveChallenge", [await addr(g)], "NotRuled");
-  await send(arbitrator.passPeriod(id));
-  await send(arbitrator.executeRuling(id));
+  await send(arbitrator.passPeriod(id, { gasLimit: 500000 }));
+  await send(arbitrator.executeRuling(id, { gasLimit: 500000 }));
   const e0 = await ethBal(g);
   await send(kick.connect(owner).resolveChallenge(await addr(g)));
   assert.equal(await ethBal(g), e0 + FEE); // the final winner gets what is left of both deposits
@@ -513,7 +513,7 @@ async function appealedThroughContract(slice, crowd, m, { newStyle = false } = {
   await send(kick.connect(m).matchChallenge(await addr(g), { value: FEE }));
   const id = (await kick.challenges(await addr(g))).arbitratorDisputeID;
   const kit = new ethers.Contract(await arbitrator.kit(), load("MockDisputeKit").abi, owner);
-  await send(kit.setNewStyle(newStyle));
+  await send(kit.setNewStyle(newStyle, { gasLimit: 500000 }));
   await send(arbitrator.startAppealPeriod(id, 2, 3 * DAY, { gasLimit: 500000 }));
   return { kick, gs, g, id, kit };
 }
@@ -534,14 +534,14 @@ test("appeals through the contract: status, crowdfunding, refunds of surplus, re
   assert.equal(st.loserEnd, st.start + (st.end - st.start) / 2n);
 
   const part = ethers.parseEther("0.05");
-  await send(kick.connect(crowd).fundAppeal(await addr(g), 1, { value: part }));
+  await send(kick.connect(crowd).fundAppeal(await addr(g), 1, { value: part, gasLimit: 500000 }));
   const e0 = await ethBal(g);
-  const r = await send(kick.connect(g).fundAppeal(await addr(g), 1, { value: 3n * cost }));
+  const r = await send(kick.connect(g).fundAppeal(await addr(g), 1, { value: 3n * cost, gasLimit: 500000 }));
   const rest = 3n * cost - part;
   assert.equal(await ethBal(g), e0 - rest - r.fee); // the surplus came back
   assert.equal(await kick.appealPaid(await addr(g), 0, 1), 3n * cost);
   assert.equal(await kick.appealContribution(await addr(g), 0, 1, await addr(crowd)), part);
-  await send(kick.connect(m).fundAppeal(await addr(g), 2, { value: 2n * cost }));
+  await send(kick.connect(m).fundAppeal(await addr(g), 2, { value: 2n * cost, gasLimit: 500000 }));
   assert.equal(await arbitrator.getNumberOfRounds(id), 2n); // both sides funded: round 2
   assert.equal(await prov.getBalance(kick.target), FEE); // only what is left of the challenge deposits
   assert.equal((await kick.appealStatus(await addr(g))).end, 0n); // round 2 is not in its appeal period yet
@@ -549,8 +549,8 @@ test("appeals through the contract: status, crowdfunding, refunds of surplus, re
   // round 2: attended, final
   await send(arbitrator.startAppealPeriod(id, 1, DAY, { gasLimit: 500000 }));
   await warp(DAY + 1);
-  await send(arbitrator.passPeriod(id));
-  await send(arbitrator.executeRuling(id));
+  await send(arbitrator.passPeriod(id, { gasLimit: 500000 }));
+  await send(arbitrator.executeRuling(id, { gasLimit: 500000 }));
   await reverts(kick, "collectAppealFunds", [await addr(g)], "WrongChallengeState"); // settle first
   await send(kick.resolveChallenge(await addr(g)));
   // round-1 fee rewards: both sides' funding minus the appeal cost, all to the "attended" funders
@@ -578,19 +578,19 @@ test("appeals through the contract: the losing side's deadline, a side never fun
   const { kick, g, id, kit } = await appealedThroughContract([29, 33], crowd, m, { newStyle: true });
   const cost = await arbitrator.appealCost(id);
   // the guest's side raises only part of its appeal; nobody completes it
-  await send(kick.connect(crowd).fundAppeal(await addr(g), 1, { value: cost }));
+  await send(kick.connect(crowd).fundAppeal(await addr(g), 1, { value: cost, gasLimit: 500000 }));
   await warp(Math.floor(1.5 * DAY) + 10);
   await assert.rejects(kick.connect(crowd).fundAppeal.staticCall(await addr(g), 1, { value: cost }), /NotAppealPeriodForLoser/);
   await warp(2 * DAY);
-  await send(arbitrator.passPeriod(id));
-  await send(arbitrator.executeRuling(id)); // round-1 vote stands: absent
+  await send(arbitrator.passPeriod(id, { gasLimit: 500000 }));
+  await send(arbitrator.executeRuling(id, { gasLimit: 500000 })); // round-1 vote stands: absent
   await send(kick.resolveChallenge(await addr(g)));
   assert.equal(await kick.attended(await addr(g)), false);
   const to = await addr(guests[154]);
   const t0 = await prov.getBalance(to);
   await send(kick.connect(crowd).claimAppealRewards(await addr(g), to)); // 3-argument withdrawal used
   assert.equal(await prov.getBalance(to), t0 + cost); // reimbursed in full
-  await send(kit.setNewStyle(false));
+  await send(kit.setNewStyle(false, { gasLimit: 500000 }));
 });
 
 test("a lost case's set-aside share is split among the attendees; a challenge waiting for a match still holds the payout", async () => {
