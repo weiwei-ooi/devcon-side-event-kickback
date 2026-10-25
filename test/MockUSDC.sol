@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 /// @dev Test-only 6-decimal token that emits standard Transfer events.
 /// Like real USDC it can blocklist addresses (transfers to them fail).

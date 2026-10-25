@@ -20,6 +20,8 @@
 - We verify each deposit on-chain. **Wei Wei curates every guest herself, paid or free** (bots get declined). Only guests who are verified **and** approved on Luma are registered in the contract. Paying guests she declines get exactly their 25 USDC back (`rejectAndRefund`, the "Refund declined guests" button); we never keep their money.
 - Claude exports the Luma guest CSV (Chrome, manage page) and prepares the lists; she does not export it herself.
 - After the event, every staker who **checked in** gets an equal share of the **whole** pool: their 25 back plus a share of the no-shows' deposits. No-shows lose their deposit.
+- **Kleros challenges (her request, 25 Oct; mechanism in her words):** the organiser publishes the attendance list; any staker left off has **1 day** to put a challenge deposit (ETH = Kleros fee, ~0.015 ETH); anyone has **1 day** to match it, otherwise the staker counts as attended; a matched challenge creates a Kleros dispute; payouts only when no dispute is pending. Integrated directly via Kleros v2 DisputeResolver on Arbitrum One (KlerosCore itself is whitelist-only). Juror policy: `docs/attendance-policy.md`, must be pinned on IPFS and set as `kleros.policyURI` before the live deploy. Mention the feature on Luma.
+- Code style (her request, 25 Oct): `require(condition, CustomError())`, not `if (!x) revert`. Compiler 0.8.28.
 - Free "Request to Join" guests are curated by hand and pay nothing.
 - Deposit: **25 USDC** (raised from 15 on 23 Oct 2026, her decision). Network: **Arbitrum One mainnet**, native USDC `0xaf88d065e77c8cC2239327C5EDb3A432268e5831`.
 - Owner: a **dedicated wallet with its own recovery phrase** (her Zerion wallet `0x259a…a5d6`), kept separate from her personal wallet, funded with a little ETH on Arbitrum One. No Safe (her decision).
@@ -27,9 +29,11 @@
 ## Status (as of 23 Oct 2026)
 - [x] Contract v2 (after two code reviews), scripts and tests: `npm test` passes on a local chain (contract tests + end-to-end with the scripts). The console was also driven end to end in a browser against a local chain.
 - [x] Owner wallet set up (Zerion, funded on Arbitrum One). Rehearsal of v1 passed on Arbitrum One with a throwaway contract (`0x1F044c041D873CC906E614c558B7b877E88F620f`, never put on Luma).
-- [ ] Short v2 rehearsal on Arbitrum One (`npm run console:rehearsal`, 500 USDC safety cap): deploy, deposit 25, register, refund-declined, deposit again, pay out.
+- [x] v3 (25 Oct): Kleros challenges + require style. Contract tests, script e2e, guest page and console browser tests pass. Needs dev re-review and a short rehearsal including one challenge.
+- [ ] Pin `docs/attendance-policy.md` on IPFS, set `kleros.policyURI` in config.json.
+- [ ] Short v3 rehearsal on Arbitrum One (`npm run console:rehearsal`, 500 USDC safety cap): deploy, deposit 25, register, refund-declined, deposit again, pay out.
 - [ ] Her developers review the code. Zero open issues before going public.
-- [ ] Deploy the live contract with `npm run console` (config.json), set `receiver`, `contract`, `deployBlock` and `depositOpensAt` (deploy time), verify the source on Arbiscan (0.8.24, optimizer 200, EVM paris), and put the address on Luma (event stays **Private**).
+- [ ] Deploy the live contract with `npm run console` (config.json), set `receiver`, `contract`, `deployBlock` and `depositOpensAt` (deploy time), verify the source on Arbiscan (0.8.28, optimizer 200, EVM paris), and put the address on Luma (event stays **Private**).
 - [ ] Switch Luma from Private to Public only when she says so.
 
 ## How to run things
@@ -49,15 +53,15 @@ It sorts verified payers by her Luma decision: `out/to-review.csv` (waiting for 
 ```bash
 node scripts/build-payout.mjs --checkins <file>.csv [--extra-checkins door-list.csv]
 ```
-Before that, make sure every payer still pending, waitlisted or late has been declined on Luma and refunded (**Refund declined guests**). Show her `out/payout-summary.md`. She clicks **Pay attendees**, which reads `out/payout-plan.json` and refuses if the numbers on-chain changed.
+Before that, make sure every payer still pending, waitlisted or late has been declined on Luma and refunded (**Refund declined guests**). Show her `out/payout-summary.md`. She clicks **Post attendance list**, which reads `out/payout-plan.json` and refuses if the numbers on-chain changed. That opens the 1-day challenge window: watch the challenge list with her (she can **Add to the list**, **Dispute**, or let it run). After the window, with no Kleros case pending, she clicks **Release payouts**.
 
 Full details, issue codes and the trust model are in `README.md`.
 
 ## Notes
 - **Wrong-network risk (her request, 23 Oct):** most wallets default to Ethereum mainnet. Luma shows a ⚠️ "Arbitrum One ONLY, not Ethereum mainnet" line (added 23 Oct); keep it prominent and say the tx link should start with arbiscan.io (see README "Guest instructions"). Keep the owner wallet off Ethereum mainnet (see README "Wrong network").
-- **Pay attendees** is greyed out in the console until the event starts (her request, 23 Oct) and needs PAY typed to confirm; the contract also refuses any payout before `eventStart`.
-- **Timing (on-chain):** payout is possible from `eventStart` until `claimDeadline` (at least 7 days later; config uses 14). After the deadline the organiser can no longer pay out or cancel, and each staker can withdraw their own deposit (`emergencyWithdraw`) in case the owner wallet is lost.
-- **Payouts:** `finalize(attendees, share)` runs once; the share must match what she confirmed. If USDC refuses a transfer (blocklisted wallet), that amount is kept for the guest to `claim` to another address, and everyone else is still paid.
+- **Post attendance list** is greyed out in the console until the event starts (her request, 23 Oct) and needs POST typed; **Release payouts** stays locked until the challenge window ends with no Kleros case pending and needs PAY typed. The contract enforces the same.
+- **Timing (on-chain):** the list can be posted from `eventStart` until `claimDeadline` (at least 7 days later; config uses 14). If no list is posted by then, each staker can withdraw their own deposit (`emergencyWithdraw`) in case the owner wallet is lost. After posting, anyone can call `releasePayouts`.
+- **Payouts:** `postAttendance(attendees, share)` runs once; the share must match what she confirmed; challenges can add people, so the final share is pool ÷ final attendees. If USDC refuses a transfer (blocklisted wallet), that amount is kept for the guest to `claim` to another address, and everyone else is still paid.
 - **Money nobody staked** (overpayments, stray transfers) can be returned with `refund`, which can never touch the staked pool or unclaimed payouts. `sweep` collects rounding dust after settlement.
 - **The contract counts money in total, not per wallet.** Only register wallets the verify script lists; registering an unverified wallet could use someone else's unregistered deposit.
 - **Ownership** moves in two steps (`transferOwnership`, then `acceptOwnership` from the new wallet).

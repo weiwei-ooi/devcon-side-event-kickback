@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.24;
+pragma solidity 0.8.28;
 
 /// @notice Minimal ERC-20 interface (USDC-compatible).
 interface IERC20 {
@@ -7,8 +7,32 @@ interface IERC20 {
     function transfer(address to, uint256 amount) external returns (bool);
 }
 
-/// @title GroundTruthKickback (v2)
-/// @notice Kickback-style refundable deposits for an IRL event.
+/// @notice Kleros v2 arbitrator (KlerosCore), only the view we need.
+interface IArbitratorV2 {
+    function arbitrationCost(bytes calldata extraData) external view returns (uint256 cost);
+}
+
+/// @notice Kleros v2 DisputeResolver: a general-purpose arbitrable that anyone can use to open a
+/// Kleros dispute from a dispute template. Kleros Court only accepts disputes from whitelisted
+/// contracts; the DisputeResolver is one of them, so going through it keeps this contract
+/// permissionless. The ruling is read back from it with `disputes(localID)`.
+interface IDisputeResolver {
+    function arbitrator() external view returns (IArbitratorV2);
+    function createDisputeForTemplate(
+        bytes calldata arbitratorExtraData,
+        string calldata disputeTemplate,
+        string calldata disputeTemplateDataMappings,
+        uint256 numberOfRulingOptions
+    ) external payable returns (uint256 arbitratorDisputeID);
+    function arbitratorDisputeIDToLocalID(uint256 arbitratorDisputeID) external view returns (uint256);
+    function disputes(uint256 localID)
+        external
+        view
+        returns (bytes memory arbitratorExtraData, bool isRuled, uint256 ruling, uint256 numberOfRulingOptions);
+}
+
+/// @title GroundTruthKickback (v3)
+/// @notice Kickback-style refundable deposits for an IRL event, with Kleros-arbitrated attendance.
 ///
 /// Flow
 ///  1. Guests send exactly `deposit` of `token` to this contract (plain ERC-20 transfer)
@@ -17,30 +41,38 @@ interface IERC20 {
 ///     Luma. Approved guests are added with `registerStakers`. Declined guests (bots, wrong
 ///     audience) get their deposit straight back with `rejectAndRefund`, in one transaction
 ///     for the whole batch. A registered staker who drops out can be rejected the same way.
-///  3. After the event starts, the organiser calls `finalize` with the stakers who checked in.
-///     The whole staked pool (deposit x stakers) is split equally among them. A transfer that
-///     fails (e.g. a USDC-blocklisted wallet) does not block the others: that share is kept
-///     for the attendee to `claim` later, to any address they choose.
-///  4. Anything not owed to anyone (rounding dust, stray or excess transfers) can be refunded
+///  3. After the event starts, the organiser publishes who checked in with `postAttendance`.
+///  4. Challenge window (1 day): a registered staker left off the list who says they attended
+///     calls `challenge`, paying a challenge deposit equal to the Kleros arbitration cost (ETH).
+///  5. Match window (1 day from each challenge): anyone (usually the organiser) who disagrees
+///     calls `matchChallenge` with the same deposit, which opens a Kleros dispute. If nobody
+///     matches, the challenger counts as having attended and gets their deposit back.
+///  6. When no challenge is waiting and no Kleros dispute is pending, anyone can call
+///     `releasePayouts`: the whole staked pool (deposit x stakers) is split equally among the
+///     attendees. A transfer that fails (e.g. a USDC-blocklisted wallet) does not block the
+///     others: that share is kept for the attendee to `claim` later, to any address they choose.
+///  7. Anything not owed to anyone (rounding dust, stray or excess transfers) can be refunded
 ///     or swept by the owner, but never the staked pool or unclaimed payouts.
 ///
 /// Safety nets
-///  - `cancel` refunds every registered staker if the event is called off.
-///  - If the organiser never settles (lost key), every registered staker can take their own
-///    deposit back with `emergencyWithdraw` once `claimDeadline` has passed. Settlement is
-///    only possible up to `claimDeadline`, so the two can never race. Payers who were never
-///    registered depend on the owner (`rejectAndRefund` / `refund`) to get their money back.
+///  - `cancel` refunds every registered staker if the event is called off (before the list is posted).
+///  - If the organiser never posts the list (lost key), every registered staker can take their
+///    own deposit back with `emergencyWithdraw` once `claimDeadline` has passed. Posting is only
+///    possible up to `claimDeadline`, so the two can never race. Once the list is posted the
+///    payout is permissionless, so the organiser cannot hold it back.
 ///  - Ownership changes need the new owner to accept, so a typo cannot lock the contract.
 contract GroundTruthKickback {
     // ------------------------------------------------------------------ errors
     error NotOwner();
     error NotPendingOwner();
     error NotOpen();
+    error NotListed();
     error NotSettled();
     error ZeroAddress();
     error BadTimes();
     error TooLate();
     error TooEarly();
+    error Reentrancy();
     error AlreadyRegistered(address staker);
     error NotAStaker(address account);
     error CannotReject(address account);
@@ -50,10 +82,24 @@ contract GroundTruthKickback {
     error InsufficientBalance(uint256 required, uint256 available);
     error NothingToClaim();
     error TransferFailed(address to, uint256 amount);
+    error AlreadyAttending(address account);
+    error AlreadyChallenged(address account);
+    error NoChallenge(address account);
+    error WrongChallengeState(address account);
+    error WrongDeposit(uint256 required, uint256 sent);
+    error ArbitrationCostTooHigh(uint256 cost, uint256 available);
+    error NotRuled(address account);
+    error ChallengesPending(uint256 count);
+    error OnlyNumberedRulings();
 
     // ------------------------------------------------------------------ events
     event StakerRegistered(address indexed staker);
     event Rejected(address indexed wallet, uint256 refunded);
+    event AttendancePosted(uint256 attendees, uint256 challengeEndsAt);
+    event AttendeeAdded(address indexed attendee);
+    event Challenged(address indexed staker, uint256 deposit, uint256 matchEndsAt);
+    event ChallengeMatched(address indexed staker, address indexed matcher, uint256 arbitratorDisputeID);
+    event ChallengeResolved(address indexed staker, bool attended, uint256 ruling);
     event Payout(address indexed attendee, uint256 amount);
     event PayoutFailed(address indexed attendee, uint256 amount);
     event Claimed(address indexed attendee, address indexed to, uint256 amount);
@@ -62,14 +108,16 @@ contract GroundTruthKickback {
     event EmergencyWithdrawn(address indexed staker, uint256 amount);
     event Refunded(address indexed to, uint256 amount);
     event Swept(address indexed to, uint256 amount);
+    event EthOwed(address indexed to, uint256 amount);
     event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     // ------------------------------------------------------------------ state
     enum Phase {
-        Open,
-        Finalized,
-        Cancelled
+        Open, // deposits and curation
+        Listed, // attendance posted: challenge window, then waiting for disputes
+        Finalized, // pool paid out
+        Cancelled // event called off, deposits refunded
     }
 
     enum Status {
@@ -79,14 +127,47 @@ contract GroundTruthKickback {
         Rejected
     }
 
+    enum ChallengeState {
+        None,
+        Waiting, // challenger paid, waiting for someone to match
+        Disputed, // matched: a Kleros dispute is open
+        Resolved
+    }
+
+    struct Challenge {
+        ChallengeState state;
+        address matcher;
+        uint64 matchEndsAt;
+        uint256 deposit; // ETH paid by each side
+        uint256 arbitratorDisputeID;
+        uint256 localDisputeID; // id inside the DisputeResolver
+        uint256 arbitrationPaid; // ETH spent on the Kleros fee
+    }
+
+    /// @notice Kleros settings, passed to the constructor as one struct.
+    struct Arbitration {
+        IDisputeResolver disputeResolver;
+        bytes extraData; // abi.encode(courtID, minJurors, disputeKitID)
+        string policyURI; // IPFS path of the attendance policy jurors apply, e.g. /ipfs/Qm...
+    }
+
+    /// @notice Ruling options for a Kleros attendance dispute (0 = refused to arbitrate).
+    uint256 public constant RULING_ATTENDED = 1;
+    uint256 public constant RULING_ABSENT = 2;
+    uint256 public constant CHALLENGE_PERIOD = 1 days;
+    uint256 public constant MATCH_PERIOD = 1 days;
+    /// @notice Minimum time between the event start and the deadline, so a late list is still possible.
+    uint256 public constant MIN_SETTLEMENT_WINDOW = 7 days;
+
     IERC20 public immutable token;
     uint256 public immutable deposit;
-    /// @notice `finalize` is only possible from this time (unix seconds): no accidental early payout.
+    /// @notice `postAttendance` is only possible from this time (unix seconds): no accidental early payout.
     uint256 public immutable eventStart;
-    /// @notice Settlement deadline. After it, if still unsettled, stakers can withdraw their own deposit.
+    /// @notice Deadline to post the attendance list. After it, if still open, stakers can withdraw their own deposit.
     uint256 public immutable claimDeadline;
-    /// @notice Minimum time between the event start and the deadline, so a late payout is still possible.
-    uint256 public constant MIN_SETTLEMENT_WINDOW = 7 days;
+    IDisputeResolver public immutable disputeResolver;
+    bytes public arbitratorExtraData;
+    string public policyURI;
     string public eventName;
 
     address public owner;
@@ -97,9 +178,22 @@ contract GroundTruthKickback {
     address[] private _stakers;
     uint256 public stakerCount; // active stakers
 
-    /// @notice Payouts that could not be delivered and are waiting for `claim`.
+    mapping(address => bool) public attended;
+    address[] private _attendees;
+    uint256 public attendeeCount;
+    uint256 public challengeEndsAt;
+
+    mapping(address => Challenge) public challenges;
+    address[] private _challengers;
+    uint256 public pendingChallenges; // waiting for a match, or in a Kleros dispute
+
+    /// @notice USDC payouts that could not be delivered and are waiting for `claim`.
     mapping(address => uint256) public owed;
     uint256 public owedTotal;
+    /// @notice ETH (challenge deposits) that could not be sent and is waiting for `withdrawEth`.
+    mapping(address => uint256) public ethOwed;
+
+    uint256 private _locked = 1;
 
     // ------------------------------------------------------------------ setup
     constructor(
@@ -108,40 +202,59 @@ contract GroundTruthKickback {
         string memory eventName_,
         address owner_,
         uint256 eventStart_,
-        uint256 claimDeadline_
+        uint256 claimDeadline_,
+        Arbitration memory arbitration_
     ) {
-        if (address(token_) == address(0) || owner_ == address(0)) revert ZeroAddress();
-        if (claimDeadline_ < eventStart_ + MIN_SETTLEMENT_WINDOW) revert BadTimes();
+        require(address(token_) != address(0), ZeroAddress());
+        require(owner_ != address(0), ZeroAddress());
+        require(address(arbitration_.disputeResolver) != address(0), ZeroAddress());
+        require(claimDeadline_ >= eventStart_ + MIN_SETTLEMENT_WINDOW, BadTimes());
         token = token_;
         deposit = deposit_;
         eventName = eventName_;
         owner = owner_;
         eventStart = eventStart_;
         claimDeadline = claimDeadline_;
+        disputeResolver = arbitration_.disputeResolver;
+        arbitratorExtraData = arbitration_.extraData;
+        policyURI = arbitration_.policyURI;
         emit OwnershipTransferred(address(0), owner_);
     }
 
     modifier onlyOwner() {
-        if (msg.sender != owner) revert NotOwner();
+        require(msg.sender == owner, NotOwner());
         _;
     }
 
     modifier whenOpen() {
-        if (phase != Phase.Open) revert NotOpen();
+        require(phase == Phase.Open, NotOpen());
         _;
     }
 
-    /// @dev Settlement (finalize/cancel) is only possible up to the deadline; after it, stakers exit themselves.
-    modifier beforeDeadline() {
-        if (block.timestamp > claimDeadline) revert TooLate();
+    modifier whenListed() {
+        require(phase == Phase.Listed, NotListed());
         _;
+    }
+
+    /// @dev Posting the list and cancelling are only possible up to the deadline; after it, stakers exit themselves.
+    modifier beforeDeadline() {
+        require(block.timestamp <= claimDeadline, TooLate());
+        _;
+    }
+
+    modifier nonReentrant() {
+        require(_locked == 1, Reentrancy());
+        _locked = 2;
+        _;
+        _locked = 1;
     }
 
     // ------------------------------------------------------------------ views
 
-    /// @notice USDC that must stay in the contract: the staked pool while open, plus unclaimed payouts.
+    /// @notice USDC that must stay in the contract: the staked pool until paid out, plus unclaimed payouts.
     function reserved() public view returns (uint256) {
-        return (phase == Phase.Open ? deposit * stakerCount : 0) + owedTotal;
+        bool poolHeld = phase == Phase.Open || phase == Phase.Listed;
+        return (poolHeld ? deposit * stakerCount : 0) + owedTotal;
     }
 
     /// @notice USDC in the contract that nobody is owed (stray/excess/declined-not-yet-refunded).
@@ -156,10 +269,25 @@ contract GroundTruthKickback {
         return _stakers;
     }
 
+    /// @notice Everyone on the attendance list so far (posted, added, or confirmed by a challenge).
+    function attendees() external view returns (address[] memory) {
+        return _attendees;
+    }
+
+    /// @notice Every staker who opened a challenge.
+    function challengers() external view returns (address[] memory) {
+        return _challengers;
+    }
+
     /// @notice Preview the payout per attendee for a given attendee count.
-    function previewShare(uint256 attendeeCount) external view returns (uint256) {
-        if (attendeeCount == 0) return 0;
-        return (deposit * stakerCount) / attendeeCount;
+    function previewShare(uint256 attendeeCount_) external view returns (uint256) {
+        if (attendeeCount_ == 0) return 0;
+        return (deposit * stakerCount) / attendeeCount_;
+    }
+
+    /// @notice ETH needed to open (and to match) a challenge right now: the Kleros arbitration cost.
+    function challengeDeposit() public view returns (uint256) {
+        return disputeResolver.arbitrator().arbitrationCost(arbitratorExtraData);
     }
 
     // ------------------------------------------------------------------ curation (organiser)
@@ -168,37 +296,36 @@ contract GroundTruthKickback {
     function registerStakers(address[] calldata wallets) external onlyOwner whenOpen {
         for (uint256 i; i < wallets.length; ++i) {
             address s = wallets[i];
-            if (s == address(0)) revert ZeroAddress();
+            require(s != address(0), ZeroAddress());
             Status st = status[s];
             // a rejected (refunded) wallet may come back if the organiser approves it after a new deposit
-            if (st != Status.None && st != Status.Rejected) revert AlreadyRegistered(s);
+            require(st == Status.None || st == Status.Rejected, AlreadyRegistered(s));
             status[s] = Status.Staker;
             _stakers.push(s);
             emit StakerRegistered(s);
         }
         stakerCount += wallets.length;
         uint256 bal = token.balanceOf(address(this));
-        if (bal < reserved()) revert InsufficientBalance(reserved(), bal);
+        require(bal >= reserved(), InsufficientBalance(reserved(), bal));
     }
 
     /// @notice Decline guests and send each one exactly `deposit` back, to their own wallet.
     /// Works for verified-but-declined payers (never registered) and, while open, for registered
-    /// stakers who drop out. Unregistered payers can also be refunded after settlement (late
-    /// payers). The refund always goes to the rejected wallet itself; if that transfer fails
-    /// (e.g. a blocklisted wallet) the amount is kept for them to `claim` to another address,
-    /// so one bad wallet never blocks the batch.
+    /// stakers who drop out. Unregistered payers can also be refunded later (late payers). The
+    /// refund always goes to the rejected wallet itself; if that transfer fails (e.g. a
+    /// blocklisted wallet) the amount is kept for them to `claim` to another address, so one bad
+    /// wallet never blocks the batch.
     function rejectAndRefund(address[] calldata wallets) external onlyOwner {
         for (uint256 i; i < wallets.length; ++i) {
             address w = wallets[i];
-            if (w == address(0)) revert ZeroAddress();
+            require(w != address(0), ZeroAddress());
             Status st = status[w];
             if (st == Status.Staker && phase == Phase.Open) {
                 stakerCount -= 1; // their deposit leaves the pool and goes back to them
-            } else if (st == Status.None) {
-                // an unregistered payer can only be refunded from money nobody else is owed
-                if (spare() < deposit) revert InsufficientBalance(reserved() + deposit, token.balanceOf(address(this)));
             } else {
-                revert CannotReject(w);
+                require(st == Status.None, CannotReject(w));
+                // an unregistered payer can only be refunded from money nobody else is owed
+                require(spare() >= deposit, InsufficientBalance(reserved() + deposit, token.balanceOf(address(this))));
             }
             status[w] = Status.Rejected;
             emit Rejected(w, deposit);
@@ -209,48 +336,160 @@ contract GroundTruthKickback {
     /// @notice Return an overpayment or a stray transfer. Only spare money can be refunded:
     /// never the staked pool or unclaimed payouts. Allowed before and after settlement.
     function refund(address to, uint256 amount) external onlyOwner {
-        uint256 s = spare();
-        if (amount > s) revert InsufficientBalance(reserved() + amount, token.balanceOf(address(this)));
+        require(amount <= spare(), InsufficientBalance(reserved() + amount, token.balanceOf(address(this))));
         _sendOrRevert(to, amount);
         emit Refunded(to, amount);
     }
 
-    // ------------------------------------------------------------------ settlement
+    // ------------------------------------------------------------------ attendance
 
-    /// @notice Split the staked pool equally between registered stakers who attended.
-    /// @param attendees Registered stakers who checked in at the venue (no duplicates).
+    /// @notice Publish the registered stakers who checked in. Opens the 1-day challenge window.
+    /// @param list Registered stakers who checked in at the venue (no duplicates).
     /// @param expectedShare The per-attendee amount the organiser saw and confirmed in the console.
-    function finalize(address[] calldata attendees, uint256 expectedShare) external onlyOwner whenOpen beforeDeadline {
-        if (block.timestamp < eventStart) revert TooEarly();
-        uint256 n = attendees.length;
-        if (n == 0) revert NoAttendees();
-
+    function postAttendance(address[] calldata list, uint256 expectedShare) external onlyOwner whenOpen beforeDeadline {
+        require(block.timestamp >= eventStart, TooEarly());
+        require(list.length > 0, NoAttendees());
         uint256 pool = deposit * stakerCount;
         uint256 bal = token.balanceOf(address(this));
-        if (bal < pool + owedTotal) revert InsufficientBalance(pool + owedTotal, bal);
+        require(bal >= pool + owedTotal, InsufficientBalance(pool + owedTotal, bal));
+        uint256 share = pool / list.length;
+        require(share == expectedShare, ShareMismatch(expectedShare, share));
 
+        for (uint256 i; i < list.length; ++i) {
+            _addAttendee(list[i]);
+        }
+        phase = Phase.Listed;
+        challengeEndsAt = block.timestamp + CHALLENGE_PERIOD;
+        emit AttendancePosted(list.length, challengeEndsAt);
+    }
+
+    /// @notice The organiser adds stakers they left off the list by mistake (during the challenge window).
+    /// If such a staker already challenged and nobody matched yet, their challenge deposit goes back to them.
+    function addAttendees(address[] calldata list) external onlyOwner whenListed nonReentrant {
+        require(block.timestamp <= challengeEndsAt, TooLate());
+        for (uint256 i; i < list.length; ++i) {
+            address a = list[i];
+            _addAttendee(a);
+            Challenge storage c = challenges[a];
+            if (c.state == ChallengeState.Waiting) {
+                c.state = ChallengeState.Resolved;
+                pendingChallenges -= 1;
+                emit ChallengeResolved(a, true, RULING_ATTENDED);
+                _sendEth(a, c.deposit);
+            }
+            // a challenge already in a Kleros dispute keeps running; its ruling no longer changes the list
+        }
+    }
+
+    // ------------------------------------------------------------------ challenges (Kleros)
+
+    /// @notice A registered staker left off the list says they attended. Pay `challengeDeposit()` in ETH.
+    function challenge() external payable whenListed nonReentrant {
+        require(block.timestamp <= challengeEndsAt, TooLate());
+        require(status[msg.sender] == Status.Staker, NotAStaker(msg.sender));
+        require(!attended[msg.sender], AlreadyAttending(msg.sender));
+        Challenge storage c = challenges[msg.sender];
+        require(c.state == ChallengeState.None, AlreadyChallenged(msg.sender));
+        uint256 cost = challengeDeposit();
+        require(msg.value >= cost, WrongDeposit(cost, msg.value));
+
+        c.state = ChallengeState.Waiting;
+        c.deposit = cost;
+        c.matchEndsAt = uint64(block.timestamp + MATCH_PERIOD);
+        _challengers.push(msg.sender);
+        pendingChallenges += 1;
+        emit Challenged(msg.sender, cost, c.matchEndsAt);
+        if (msg.value > cost) _sendEth(msg.sender, msg.value - cost);
+    }
+
+    /// @notice Disagree with a challenge: match its deposit within 1 day. This opens a Kleros dispute.
+    function matchChallenge(address staker) external payable whenListed nonReentrant {
+        Challenge storage c = challenges[staker];
+        require(c.state != ChallengeState.None, NoChallenge(staker));
+        require(c.state == ChallengeState.Waiting, WrongChallengeState(staker));
+        require(block.timestamp <= c.matchEndsAt, TooLate());
+        require(msg.value >= c.deposit, WrongDeposit(c.deposit, msg.value));
+
+        // the fee is paid from the two deposits; the rest goes to whoever wins
+        uint256 cost = challengeDeposit();
+        require(cost <= 2 * c.deposit, ArbitrationCostTooHigh(cost, 2 * c.deposit));
+        c.state = ChallengeState.Disputed;
+        c.matcher = msg.sender;
+        c.arbitrationPaid = cost;
+        uint256 id = disputeResolver.createDisputeForTemplate{value: cost}(
+            arbitratorExtraData, _disputeTemplate(staker), "", RULING_ABSENT
+        );
+        c.arbitratorDisputeID = id;
+        c.localDisputeID = disputeResolver.arbitratorDisputeIDToLocalID(id);
+        emit ChallengeMatched(staker, msg.sender, id);
+        if (msg.value > c.deposit) _sendEth(msg.sender, msg.value - c.deposit);
+    }
+
+    /// @notice Settle a challenge once it can be: unmatched after its match window (counts as
+    /// attended), or ruled by Kleros. Anyone can call it.
+    function resolveChallenge(address staker) external nonReentrant {
+        Challenge storage c = challenges[staker];
+        require(c.state != ChallengeState.None, NoChallenge(staker));
+        if (c.state == ChallengeState.Waiting) {
+            require(block.timestamp > c.matchEndsAt, TooEarly());
+            _acceptUnmatched(staker, c);
+        } else {
+            require(c.state == ChallengeState.Disputed, WrongChallengeState(staker));
+            (, bool isRuled, uint256 ruling,) = disputeResolver.disputes(c.localDisputeID);
+            require(isRuled, NotRuled(staker));
+            require(ruling <= RULING_ABSENT, OnlyNumberedRulings());
+            c.state = ChallengeState.Resolved;
+            pendingChallenges -= 1;
+
+            bool won = ruling == RULING_ATTENDED;
+            if (won && !attended[staker] && phase == Phase.Listed) _addAttendee(staker);
+            emit ChallengeResolved(staker, won, ruling);
+
+            uint256 remaining = 2 * c.deposit - c.arbitrationPaid;
+            if (won) {
+                _sendEth(staker, remaining);
+            } else if (ruling == RULING_ABSENT) {
+                _sendEth(c.matcher, remaining);
+            } else {
+                // refused to arbitrate: both sides get half back
+                _sendEth(staker, remaining / 2);
+                _sendEth(c.matcher, remaining - remaining / 2);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ settlement
+
+    /// @notice Split the staked pool equally between the attendees. Anyone can call it once the
+    /// challenge window is over and no challenge is pending. Challenges whose match window ran
+    /// out without a match are accepted here automatically.
+    function releasePayouts() external whenListed nonReentrant {
+        require(block.timestamp > challengeEndsAt, TooEarly());
+        uint256 len = _challengers.length;
+        for (uint256 i; i < len; ++i) {
+            address s = _challengers[i];
+            Challenge storage c = challenges[s];
+            if (c.state == ChallengeState.Waiting && block.timestamp > c.matchEndsAt) _acceptUnmatched(s, c);
+        }
+        require(pendingChallenges == 0, ChallengesPending(pendingChallenges));
+
+        uint256 pool = deposit * stakerCount;
+        uint256 n = attendeeCount;
         uint256 share = pool / n;
-        if (share != expectedShare) revert ShareMismatch(expectedShare, share);
-        uint256 count = stakerCount;
         phase = Phase.Finalized;
-
-        for (uint256 i; i < n; ++i) {
-            address a = attendees[i];
-            Status st = status[a];
-            if (st == Status.Paid) revert DuplicateAttendee(a);
-            if (st != Status.Staker) revert NotAStaker(a);
+        for (uint256 i; i < _attendees.length; ++i) {
+            address a = _attendees[i];
             status[a] = Status.Paid;
             _payOrOwe(a, share);
         }
-
-        emit Finalized(count, n, pool, share);
+        emit Finalized(stakerCount, n, pool, share);
     }
 
     /// @notice Event cancelled: refund every registered staker their deposit.
     function cancel() external onlyOwner whenOpen beforeDeadline {
         uint256 pool = deposit * stakerCount;
         uint256 bal = token.balanceOf(address(this));
-        if (bal < pool + owedTotal) revert InsufficientBalance(pool + owedTotal, bal);
+        require(bal >= pool + owedTotal, InsufficientBalance(pool + owedTotal, bal));
 
         uint256 count = stakerCount;
         phase = Phase.Cancelled;
@@ -264,23 +503,33 @@ contract GroundTruthKickback {
         emit Cancelled(count, deposit);
     }
 
-    /// @notice Collect a payout that could not be delivered, to any address you choose.
+    /// @notice Collect a USDC payout that could not be delivered, to any address you choose.
     function claim(address to) external {
-        if (to == address(0)) revert ZeroAddress();
+        require(to != address(0), ZeroAddress());
         uint256 amount = owed[msg.sender];
-        if (amount == 0) revert NothingToClaim();
+        require(amount > 0, NothingToClaim());
         owed[msg.sender] = 0;
         owedTotal -= amount;
         _sendOrRevert(to, amount);
         emit Claimed(msg.sender, to, amount);
     }
 
-    /// @notice Safety net if the organiser never settles: after `claimDeadline`, a registered
+    /// @notice Collect ETH (a challenge deposit or winnings) that could not be sent to you.
+    function withdrawEth(address payable to) external nonReentrant {
+        require(to != address(0), ZeroAddress());
+        uint256 amount = ethOwed[msg.sender];
+        require(amount > 0, NothingToClaim());
+        ethOwed[msg.sender] = 0;
+        (bool ok,) = to.call{value: amount}("");
+        require(ok, TransferFailed(to, amount));
+    }
+
+    /// @notice Safety net if the organiser never posts the list: after `claimDeadline`, a registered
     /// staker can take their own deposit back, to any address they choose.
     function emergencyWithdraw(address to) external whenOpen {
-        if (to == address(0)) revert ZeroAddress();
-        if (block.timestamp <= claimDeadline) revert TooEarly();
-        if (status[msg.sender] != Status.Staker) revert NotAStaker(msg.sender);
+        require(to != address(0), ZeroAddress());
+        require(block.timestamp > claimDeadline, TooEarly());
+        require(status[msg.sender] == Status.Staker, NotAStaker(msg.sender));
         status[msg.sender] = Status.Paid;
         stakerCount -= 1;
         _sendOrRevert(to, deposit);
@@ -289,7 +538,7 @@ contract GroundTruthKickback {
 
     /// @notice After settlement, recover rounding dust and stray transfers. Unclaimed payouts stay.
     function sweep(address to) external onlyOwner {
-        if (phase == Phase.Open) revert NotSettled();
+        require(phase == Phase.Finalized || phase == Phase.Cancelled, NotSettled());
         uint256 amount = spare();
         _sendOrRevert(to, amount);
         emit Swept(to, amount);
@@ -299,20 +548,86 @@ contract GroundTruthKickback {
 
     /// @notice Step 1 of 2: propose a new owner. Nothing changes until they call `acceptOwnership`.
     function transferOwnership(address newOwner) external onlyOwner {
-        if (newOwner == address(0)) revert ZeroAddress();
+        require(newOwner != address(0), ZeroAddress());
         pendingOwner = newOwner;
         emit OwnershipTransferStarted(owner, newOwner);
     }
 
     /// @notice Step 2 of 2: the proposed owner accepts.
     function acceptOwnership() external {
-        if (msg.sender != pendingOwner) revert NotPendingOwner();
+        require(msg.sender == pendingOwner, NotPendingOwner());
         emit OwnershipTransferred(owner, msg.sender);
         owner = msg.sender;
         pendingOwner = address(0);
     }
 
     // ------------------------------------------------------------------ internal
+
+    function _addAttendee(address a) private {
+        require(!attended[a], DuplicateAttendee(a));
+        require(status[a] == Status.Staker, NotAStaker(a));
+        attended[a] = true;
+        _attendees.push(a);
+        attendeeCount += 1;
+        emit AttendeeAdded(a);
+    }
+
+    /// @dev Nobody matched in time: the challenger counts as attended and gets their deposit back.
+    function _acceptUnmatched(address staker, Challenge storage c) private {
+        c.state = ChallengeState.Resolved;
+        pendingChallenges -= 1;
+        if (!attended[staker]) _addAttendee(staker);
+        emit ChallengeResolved(staker, true, RULING_ATTENDED);
+        _sendEth(staker, c.deposit);
+    }
+
+    /// @dev The Kleros dispute template (JSON). Only `eventName` and `policyURI` come from the
+    /// deployer; the guest supplies nothing, so the JSON cannot be broken from outside.
+    function _disputeTemplate(address staker) private view returns (string memory) {
+        string memory who = _toHex(staker);
+        string memory head = string.concat(
+            '{"title":"', eventName, ': did this guest attend?",',
+            '"description":"Guests of ', eventName, ' staked a refundable deposit. Everyone the organiser lists as attending splits the pool; guests left off the list lose their deposit. Wallet ', who,
+            ' was left off the list and says they attended. The organiser (or someone else) disagrees.",'
+        );
+        string memory question = string.concat(
+            '"question":"Did the holder of wallet ', who, ' attend ', eventName, '?",',
+            '"answers":[{"id":"0x1","title":"Yes, attended","description":"Add this wallet to the attendees: it is paid like everyone who attended."},',
+            '{"id":"0x2","title":"No, did not attend","description":"Keep the attendance list as posted: this wallet forfeits its deposit."}],'
+        );
+        string memory tail = string.concat(
+            '"policyURI":"', policyURI, '",',
+            '"arbitratorChainID":"', _toDecimal(block.chainid), '",',
+            '"arbitratorAddress":"', _toHex(address(disputeResolver.arbitrator())), '",'
+        );
+        return string.concat(
+            head, question, tail,
+            '"aliases":{"Guest":"', who, '"},',
+            '"category":"Event attendance","lang":"en_US","specification":"KIP00","version":"1.0"}'
+        );
+    }
+
+    function _toHex(address a) private pure returns (string memory) {
+        bytes memory digits = "0123456789abcdef";
+        bytes memory out = new bytes(42);
+        out[0] = "0";
+        out[1] = "x";
+        uint160 v = uint160(a);
+        for (uint256 i = 41; i > 1; --i) {
+            out[i] = digits[v & 0xf];
+            v >>= 4;
+        }
+        return string(out);
+    }
+
+    function _toDecimal(uint256 v) private pure returns (string memory) {
+        if (v == 0) return "0";
+        uint256 len;
+        for (uint256 t = v; t != 0; t /= 10) ++len;
+        bytes memory out = new bytes(len);
+        for (; v != 0; v /= 10) out[--len] = bytes1(uint8(48 + (v % 10)));
+        return string(out);
+    }
 
     function _transfer(address to, uint256 amount) private returns (bool) {
         (bool ok, bytes memory data) =
@@ -325,9 +640,9 @@ contract GroundTruthKickback {
 
     /// @dev Used where the caller can fix the problem and retry (refunds, claims, sweep).
     function _sendOrRevert(address to, uint256 amount) private {
-        if (to == address(0)) revert ZeroAddress();
+        require(to != address(0), ZeroAddress());
         if (amount == 0) return;
-        if (!_transfer(to, amount)) revert TransferFailed(to, amount);
+        require(_transfer(to, amount), TransferFailed(to, amount));
     }
 
     /// @dev Used in batch payouts: one failing recipient must not block everyone else.
@@ -339,6 +654,16 @@ contract GroundTruthKickback {
             owed[to] += amount;
             owedTotal += amount;
             emit PayoutFailed(to, amount);
+        }
+    }
+
+    /// @dev ETH to a guest or matcher; a wallet that refuses it can collect it later with `withdrawEth`.
+    function _sendEth(address to, uint256 amount) private {
+        if (amount == 0) return;
+        (bool ok,) = payable(to).call{value: amount, gas: 30_000}("");
+        if (!ok) {
+            ethOwed[to] += amount;
+            emit EthOwed(to, amount);
         }
     }
 }

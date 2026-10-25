@@ -58,6 +58,7 @@ main { max-width: 600px; margin: 0 auto; display: grid; gap: 18px; }
 h1, h2 { font-family: var(--font-display); text-wrap: balance; margin: 0; }
 h1 { font-size: clamp(1.7rem, 5vw, 2.3rem); line-height: 1.1; font-weight: 700; letter-spacing: -0.01em; }
 h2 { font-size: 1.12rem; font-weight: 700; }
+h3 { font-size: 1rem; font-weight: 700; margin: 0 0 4px; }
 p { margin: 0; }
 a { color: var(--accent); }
 .mono { font-family: var(--font-mono); font-size: 0.92em; overflow-wrap: anywhere; }
@@ -202,15 +203,28 @@ footer { color: var(--muted); font-size: 0.86rem; display: grid; gap: 6px; }
     <p class="muted">See where a wallet stands: deposit received, spot confirmed, refunded or paid out.</p>
     <div class="row"><input type="text" id="lookup-addr" placeholder="0x… wallet address" autocomplete="off" spellcheck="false"><button id="lookup" type="button" class="ghost">Check</button></div>
     <div id="lookup-out" class="note" hidden></div>
+    <div id="ch-box" hidden class="row">
+      <button id="ch-action" type="button">Challenge</button>
+    </div>
     <div id="claim-box" hidden class="body">
       <label for="claim-to" class="muted">Send it to this address instead:</label>
-      <input type="text" id="claim-to" placeholder="0x… address that can receive USDC" autocomplete="off" spellcheck="false">
+      <input type="text" id="claim-to" placeholder="0x… address that can receive it" autocomplete="off" spellcheck="false">
       <div class="row"><button id="claim" type="button">Claim</button></div>
+    </div>
+    <div id="open-ch" hidden>
+      <h3>Open challenges</h3>
+      <p class="muted">Guests left off the attendance list who say they were there. Check one above to see its details, or to dispute it if you know they did not attend.</p>
+      <ul class="checks" id="open-ch-list"></ul>
     </div>
   </section>
 
+  <section class="panel" aria-labelledby="fair-h">
+    <h2 id="fair-h">Missed at check-in? Challenge it on Kleros</h2>
+    <p class="muted">After the event the hosts publish the attendance list on-chain. If you were there but are not on it, you have <b>1 day</b> to challenge from this page with a small ETH deposit (the Kleros arbitration fee, about 0.015 ETH). Anyone who disagrees has 1 day to match it. If nobody does, you count as attended and get your ETH back. If someone does, independent <a href="https://kleros.io" target="_blank" rel="noopener">Kleros</a> jurors decide from the evidence (photos, messages, anything that shows you were there), and the winner gets the remaining ETH. Payouts are released once no Kleros case is pending.</p>
+  </section>
+
   <footer>
-    <p>The deposit address shown here is the same one on the Luma event page. Hosts never ask for your recovery phrase or private key. The contract can't pay anything out before the event starts, and if the hosts never settle, every confirmed guest can withdraw their own deposit after the claim deadline.</p>
+    <p>The deposit address shown here is the same one on the Luma event page. Hosts never ask for your recovery phrase or private key. The contract can't pay anything out before the event starts, a guest left off the attendance list can challenge it on Kleros, and if the hosts never settle, every confirmed guest can withdraw their own deposit after the claim deadline.</p>
     <p>Show up and check in: you get your 25 USDC back plus an equal share of the no-shows' deposits. If the event is cancelled, every deposit is refunded.</p>
   </footer>
 </main>
@@ -227,12 +241,16 @@ const CONFIG = {
   "usdc": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
   "deposit": "25",
   "decimals": 6,
-  "lumaUrl": "https://luma.com/qewnqhas"
+  "lumaUrl": "https://luma.com/qewnqhas",
+  "klerosCourt": "https://v2.kleros.builders"
 };
 /*END CONFIG*/
 const $ = (id) => document.getElementById(id);
 const SEL = { token: "0xfc0c546a", deposit: "0xd0e30db0", eventStart: "0x202887e7", claimDeadline: "0x3ba86c44", phase: "0xb1c9fe6e",
-  stakerCount: "0xdff69787", status: "0x645b8b1b", owed: "0xdf18e047", balanceOf: "0x70a08231", transfer: "0xa9059cbb", claim: "0x1e83409a", emergencyWithdraw: "0x6ff1c9bc" };
+  stakerCount: "0xdff69787", status: "0x645b8b1b", owed: "0xdf18e047", balanceOf: "0x70a08231", transfer: "0xa9059cbb", claim: "0x1e83409a", emergencyWithdraw: "0x6ff1c9bc",
+  attended: "0x48c17fb6", challengeEndsAt: "0x765be13f", challenges: "0x08b43a19", challengeDeposit: "0x0d13fd7b", challengers: "0x8f59ca25",
+  challenge: "0xd2ef7398", matchChallenge: "0x6d6df455", resolveChallenge: "0x32064dac", ethOwed: "0x680686b7", withdrawEth: "0x25e16063" };
+const PHASE = { Open: 0, Listed: 1, Finalized: 2, Cancelled: 3 };
 const TOPIC_TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const NETWORKS = { 1: "Ethereum mainnet", 10: "Optimism", 56: "BNB Chain", 137: "Polygon", 324: "zkSync", 8453: "Base", 42161: "Arbitrum One", 42170: "Arbitrum Nova", 59144: "Linea", 11155111: "Sepolia testnet" };
 const isAddr = (a) => /^0x[0-9a-fA-F]{40}$/.test(a || "");
@@ -243,6 +261,9 @@ const UNIT = 10n ** BigInt(CONFIG.decimals);
 const DEPOSIT = BigInt(Math.round(Number(CONFIG.deposit) * 1e6)) * UNIT / 1000000n;
 const short = (a) => a.slice(0, 6) + "…" + a.slice(-4);
 const txUrl = (h) => `${CONFIG.explorer}/tx/${h}`;
+const eth = (wei) => { const s = (Number(wei) / 1e18).toFixed(4).replace(/0+$/, "").replace(/\.$/, ""); return `${s} ETH`; };
+const words = (hex) => (hex || "0x").slice(2).match(/.{64}/g) || [];
+const caseUrl = (id) => `${CONFIG.klerosCourt}/#/cases/${id}/overview`;
 function usd(n) {
   const whole = n / UNIT, frac = (n % UNIT).toString().padStart(CONFIG.decimals, "0").slice(0, 2);
   return `${whole.toLocaleString("en-US")}${frac === "00" ? "" : "." + frac} USDC`;
@@ -303,6 +324,7 @@ async function loadContract() {
     state.info = info;
     renderChecks(info);
     $("stats").innerHTML = `<span>${info.count} spot${info.count === 1n ? "" : "s"} confirmed</span><span>${usd(info.pool)} held in the contract</span>`;
+    if (info.phase === PHASE.Listed) loadOpenChallenges().catch(() => {});
   } catch (e) {
     state.info = null;
     renderChecks({ error: e.message });
@@ -318,7 +340,8 @@ function renderChecks(info) {
     add(info.code, info.code ? "The deposit address is a live contract on Arbitrum One" : "No contract found at this address on Arbitrum One. Don't send anything.");
     add(info.tokenOk, info.tokenOk ? "It takes native USDC on Arbitrum One" : "It is set up for a different token. Don't send anything.");
     add(info.depositOk, info.depositOk ? `The deposit is exactly ${usd(DEPOSIT)}` : `The deposit amount is ${usd(info.deposit)}, not ${usd(DEPOSIT)}. Don't send anything.`);
-    if (info.phase !== 0) add(false, info.phase === 1 ? "The event has been settled. Deposits are closed." : "The event was cancelled. Deposits are closed and every deposit was refunded.");
+    if (info.phase !== PHASE.Open) add(false, info.phase === PHASE.Listed ? "The attendance list is published and the challenge window is running. Deposits are closed."
+      : info.phase === PHASE.Finalized ? "The event has been settled. Deposits are closed." : "The event was cancelled. Deposits are closed and every deposit was refunded.");
     else add(info.open, info.open ? `Deposits are open until ${ist(info.start)}` : `Deposits closed at ${ist(info.start)}`);
   }
   $("checks").innerHTML = rows.join("");
@@ -456,58 +479,114 @@ async function waitReceipt(hash) {
   return null;
 }
 
-// ---------------------------------------------------------------- lookup + claim
+// ---------------------------------------------------------------- lookup + claim + challenges
+async function loadOpenChallenges() {
+  const c = CONFIG.contract;
+  const w = words(await call(c, SEL.challengers));
+  const list = w.slice(2, 2 + Number(big("0x" + (w[1] || "0")))).map((x) => "0x" + x.slice(24));
+  const rows = [];
+  for (const a of list) {
+    const ch = words(await call(c, SEL.challenges + pad(a)));
+    const st = Number(big("0x" + ch[0]));
+    if (st === 1) rows.push(`<li><span class="mark">·</span><span class="mono">${a}</span><span>&nbsp;waiting for a match until ${ist(big("0x" + ch[2]))}</span></li>`);
+    if (st === 2) rows.push(`<li><span class="mark">·</span><span class="mono">${a}</span><span>&nbsp;<a href="${caseUrl(big("0x" + ch[4]))}" target="_blank" rel="noopener">Kleros case #${big("0x" + ch[4])}</a></span></li>`);
+  }
+  $("open-ch-list").innerHTML = rows.join("");
+  $("open-ch").hidden = !rows.length;
+}
+
+let chAction = null;
+function showAction(label, fn) {
+  chAction = fn;
+  $("ch-action").textContent = label;
+  $("ch-box").hidden = false;
+}
+
 async function lookup() {
   const addr = $("lookup-addr").value.trim(), out = $("lookup-out");
-  $("claim-box").hidden = true;
+  $("claim-box").hidden = true; $("ch-box").hidden = true;
   if (!isAddr(addr)) { setNote(out, "bad", "That isn't a wallet address. It starts with 0x and has 42 characters."); return; }
   if (!isAddr(CONFIG.contract)) { setNote(out, "", "Deposits haven't opened yet."); return; }
   setNote(out, "", "Checking…");
   try {
     const c = CONFIG.contract;
-    const [st, ow, ph, dl] = await Promise.all([call(c, SEL.status + pad(addr)), call(c, SEL.owed + pad(addr)), call(c, SEL.phase), call(c, SEL.claimDeadline)]);
+    const [st, ow, ph, dl, att, we, chRaw, eo] = await Promise.all([call(c, SEL.status + pad(addr)), call(c, SEL.owed + pad(addr)), call(c, SEL.phase), call(c, SEL.claimDeadline),
+      call(c, SEL.attended + pad(addr)), call(c, SEL.challengeEndsAt), call(c, SEL.challenges + pad(addr)), call(c, SEL.ethOwed + pad(addr))]);
     const status = Number(big(st)), owed = big(ow), phase = Number(big(ph)), deadline = Number(big(dl));
+    const attended = big(att) === 1n, windowEnd = Number(big(we)), ethOwed = big(eo);
+    const chw = words(chRaw);
+    const ch = { state: Number(big("0x" + (chw[0] || "0"))), matchEndsAt: Number(big("0x" + (chw[2] || "0"))), deposit: big("0x" + (chw[3] || "0")), caseId: big("0x" + (chw[4] || "0")) };
     let logs = null;
     try { logs = await rpc("eth_getLogs", [{ address: CONFIG.usdc, fromBlock: "0x" + Number(CONFIG.deployBlock || 0).toString(16), toBlock: "latest", topics: [TOPIC_TRANSFER, "0x" + pad(addr), "0x" + pad(c)] }]); } catch {}
     const sent = logs && logs.length ? logs[logs.length - 1].transactionHash : null;
     const sentLink = sent ? ` Deposit: <a href="${txUrl(sent)}" target="_blank" rel="noopener">${short(sent)}</a>.` : "";
     const now = Math.floor(Date.now() / 1000);
+    const kleros = ch.state >= 2 ? ` <a href="${caseUrl(ch.caseId)}" target="_blank" rel="noopener">Kleros case #${ch.caseId}</a> (evidence goes there).` : "";
     let kind = "", text = "";
     if (status === 0) {
-      if (phase !== 0) { text = "No confirmed spot for this wallet."; }
+      if (phase !== PHASE.Open) { text = "No confirmed spot for this wallet."; }
       else if (sent) { kind = "warn"; text = `Deposit received. Waiting for the hosts to review your Luma registration.${sentLink}`; }
       else { text = "No deposit found from this wallet yet. Make sure you sent it on Arbitrum One from this exact wallet."; }
+    } else if (status === 1 && phase === PHASE.Listed) {
+      if (ch.state === 3) { kind = attended ? "good" : "bad"; text = attended ? "Challenge settled: on the attendance list." : `Kleros jurors ruled this spot a no-show.${kleros}`; }
+      else if (attended && ch.state !== 2) { kind = "good"; text = `On the attendance list. Payouts are released after the challenge window (until ${ist(windowEnd)}) once no Kleros case is pending.`; }
+      else if (ch.state === 0 && now <= windowEnd) {
+        const fee = big(await call(c, SEL.challengeDeposit));
+        kind = "warn";
+        text = `Not on the attendance list. If you were at the event, you can challenge until ${ist(windowEnd)} with a deposit of ${eth(fee)} (the Kleros fee). If nobody matches it within 1 day, you count as attended and get the ETH back. If someone does, Kleros jurors decide.`;
+        showAction(`Challenge (${eth(fee)})`, () => sendFrom(addr, SEL.challenge, fee, out, "Challenge sent. Check back here: if nobody matches it within 1 day, you count as attended."));
+      } else if (ch.state === 0) { kind = "bad"; text = `Not on the attendance list, and the challenge window closed at ${ist(windowEnd)}. This spot counts as a no-show.`; }
+      else if (ch.state === 1 && now <= ch.matchEndsAt) {
+        kind = "warn";
+        text = `Challenge open: this guest says they attended. If nobody matches the ${eth(ch.deposit)} deposit by ${ist(ch.matchEndsAt)}, they count as attended. If you know they were not there, you can dispute it: you send the same deposit and Kleros jurors decide (the winner gets the remaining ETH; payouts wait for the ruling, about 3 weeks).`;
+        showAction(`Dispute this claim (${eth(ch.deposit)})`, () => sendFrom(null, SEL.matchChallenge + pad(addr), ch.deposit, out, "Dispute created on Kleros. Add your evidence on the Kleros court site."));
+      } else if (ch.state === 1) {
+        kind = "good"; text = "Nobody matched the challenge in time, so this guest counts as attended. Anyone can settle it now (it also happens automatically at payout).";
+        showAction("Settle challenge", () => sendFrom(null, SEL.resolveChallenge + pad(addr), 0n, out, "Settled: on the attendance list, and the ETH deposit went back."));
+      } else if (ch.state === 2) {
+        kind = "warn"; text = `In a Kleros dispute.${kleros} Payouts wait for the ruling. Once Kleros rules, anyone can settle it here.`;
+        showAction("Settle (after the ruling)", () => sendFrom(null, SEL.resolveChallenge + pad(addr), 0n, out, "Settled according to the Kleros ruling."));
+      }
     } else if (status === 1) {
-      if (phase === 1) { kind = "bad"; text = "This spot was marked as a no-show, so the deposit was shared among the guests who checked in."; }
+      if (phase === PHASE.Finalized) { kind = "bad"; text = "This spot was marked as a no-show, so the deposit was shared among the guests who checked in."; }
       else if (now > deadline) { kind = "warn"; text = "The event was never settled before the deadline, so you can take your deposit back yourself. Connect this wallet and claim it below."; showClaim(addr, "emergency"); }
       else { kind = "good"; text = `Spot confirmed. Your deposit is staked. Check in at the door to get it back plus a share of the no-shows' deposits.${sentLink}`; }
     } else if (status === 2) {
       kind = "good";
-      text = phase === 2 ? "The event was cancelled and this deposit was refunded." : "Paid out. This wallet checked in and received its share.";
+      text = phase === PHASE.Cancelled ? "The event was cancelled and this deposit was refunded." : "Paid out. This wallet checked in and received its share.";
       if (owed > 0n) { kind = "warn"; text += ` ${usd(owed)} couldn't be delivered to this wallet. Connect it and claim the money to another address below.`; showClaim(addr, "claim"); }
     } else if (status === 3) { kind = ""; text = "Refunded. The deposit went back to this wallet."; }
+    if (ethOwed > 0n && $("claim-box").hidden) { text += ` ${eth(ethOwed)} from a challenge couldn't be sent to this wallet. Connect it and withdraw it to another address below.`; showClaim(addr, "eth"); }
     setNote(out, kind, text);
   } catch (e) { setNote(out, "bad", `Couldn't check right now (${e.message}). Try again in a minute.`); }
 }
+
+// Sends a transaction from the connected wallet. `onlyFrom`: the wallet that must be connected (or null for anyone).
+async function sendFrom(onlyFrom, data, value, out, done) {
+  if (!state.account) { setNote(out, "bad", "Connect your wallet first (step 1)."); return; }
+  if (onlyFrom && state.account.toLowerCase() !== onlyFrom.toLowerCase()) { setNote(out, "bad", `Connect the wallet ${short(onlyFrom)} first (step 1). Only that wallet can do this.`); return; }
+  if (state.chainId !== CONFIG.chainId) { setNote(out, "bad", "Switch your wallet to Arbitrum One first (step 2)."); return; }
+  try {
+    const hash = await window.ethereum.request({ method: "eth_sendTransaction", params: [{ from: state.account, to: CONFIG.contract, data, value: "0x" + value.toString(16) }] });
+    setNote(out, "", `Sent. Waiting for confirmation… <a href="${txUrl(hash)}" target="_blank" rel="noopener">${short(hash)}</a>`);
+    $("ch-box").hidden = true; $("claim-box").hidden = true;
+    const r = await waitReceipt(hash);
+    const ok = r && r.status === "0x1";
+    setNote(out, ok ? "good" : "bad", ok ? `${done} <a href="${txUrl(hash)}" target="_blank" rel="noopener">See it on Arbiscan</a>.` : `It didn't go through. <a href="${txUrl(hash)}" target="_blank" rel="noopener">See it on Arbiscan</a>.`);
+  } catch (e) { setNote(out, "bad", e && e.code === 4001 ? "You cancelled in your wallet." : (e.message || String(e))); }
+}
+
 let claimMode = null, claimFor = null;
 function showClaim(addr, mode) {
   claimMode = mode; claimFor = addr;
   $("claim-box").hidden = false;
-  $("claim").textContent = mode === "emergency" ? "Withdraw my deposit" : "Claim";
+  $("claim").textContent = mode === "emergency" ? "Withdraw my deposit" : mode === "eth" ? "Withdraw ETH" : "Claim";
 }
 async function claim() {
   const to = $("claim-to").value.trim(), out = $("lookup-out");
-  if (!isAddr(to)) { setNote(out, "bad", "Enter the address that should receive the USDC."); return; }
-  if (!state.account || state.account.toLowerCase() !== claimFor.toLowerCase()) { setNote(out, "bad", `Connect the wallet ${short(claimFor)} first (step 1). Only that wallet can claim.`); return; }
-  if (state.chainId !== CONFIG.chainId) { setNote(out, "bad", "Switch your wallet to Arbitrum One first (step 2)."); return; }
-  try {
-    const data = (claimMode === "emergency" ? SEL.emergencyWithdraw : SEL.claim) + pad(to);
-    const hash = await window.ethereum.request({ method: "eth_sendTransaction", params: [{ from: state.account, to: CONFIG.contract, data, value: "0x0" }] });
-    setNote(out, "", `Sent. Waiting for confirmation… <a href="${txUrl(hash)}" target="_blank" rel="noopener">${short(hash)}</a>`);
-    const r = await waitReceipt(hash);
-    setNote(out, r && r.status === "0x1" ? "good" : "bad", r && r.status === "0x1" ? `Done. <a href="${txUrl(hash)}" target="_blank" rel="noopener">See it on Arbiscan</a>.` : `It didn't go through. <a href="${txUrl(hash)}" target="_blank" rel="noopener">See it on Arbiscan</a>.`);
-    $("claim-box").hidden = true;
-  } catch (e) { setNote(out, "bad", e && e.code === 4001 ? "You cancelled in your wallet." : (e.message || String(e))); }
+  if (!isAddr(to)) { setNote(out, "bad", "Enter the address that should receive it."); return; }
+  const sel = claimMode === "emergency" ? SEL.emergencyWithdraw : claimMode === "eth" ? SEL.withdrawEth : SEL.claim;
+  await sendFrom(claimFor, sel + pad(to), 0n, out, "Done.");
 }
 
 // ---------------------------------------------------------------- wire up
@@ -516,6 +595,7 @@ $("switch").addEventListener("click", switchNetwork);
 $("send").addEventListener("click", send);
 $("lookup").addEventListener("click", lookup);
 $("claim").addEventListener("click", claim);
+$("ch-action").addEventListener("click", () => chAction && chAction());
 $("copy-contract").addEventListener("click", (e) => copy(CONFIG.contract, e.currentTarget));
 $("copy-tx").addEventListener("click", (e) => copy($("tx-link").textContent, e.currentTarget));
 $("copy-wallet").addEventListener("click", (e) => copy($("tx-wallet").textContent, e.currentTarget));

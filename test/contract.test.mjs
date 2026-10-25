@@ -1,5 +1,6 @@
-// Contract-level tests (v2): curation refunds, guarded finalize, failed-transfer claims,
-// emergency exit, two-step ownership and a 150-guest run. Local in-memory chain (ganache).
+// Contract-level tests (v3): curation refunds, attendance list + Kleros challenges, payouts,
+// failed-transfer claims, emergency exit, two-step ownership and a 150-guest run.
+// Local in-memory chain (ganache) with stand-ins for the Kleros contracts.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -15,7 +16,11 @@ const U = (x) => ethers.parseUnits(String(x), 6);
 const PORT = 18546;
 const N = 160; // accounts: owner + 159 guests
 
-let server, prov, owner, guests, usdc;
+let server, prov, owner, guests, usdc, arbitrator, resolver;
+const DAY = 86400;
+const FEE = ethers.parseEther("0.015");
+const EXTRA = ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256", "uint256"], [1, 3, 1]);
+const POLICY = "/ipfs/QmPolicyForTests/attendance-policy.md";
 const keys = Array.from({ length: N }, (_, i) => "0x" + (i + 1).toString(16).padStart(64, "0"));
 
 async function deploy(name, signer, ...params) {
@@ -45,7 +50,14 @@ const send = async (p) => (await p).wait();
 
 async function freshKick({ startIn = 3600, deadlineIn = 3600 * 24 * 14 } = {}) {
   const t = await now();
-  return deploy("GroundTruthKickback", owner, await usdc.getAddress(), U(15), "Ground Truth", await addr(owner), t + startIn, t + deadlineIn);
+  return deploy("GroundTruthKickback", owner, await usdc.getAddress(), U(15), "Ground Truth", await addr(owner), t + startIn, t + deadlineIn, arb());
+}
+const arb = () => [resolver.target, EXTRA, POLICY];
+// post the list, let the 1-day challenge window pass, release
+async function settle(kick, att, share) {
+  await send(kick.postAttendance(att, share));
+  await warp(DAY + 1);
+  return send(kick.releasePayouts());
 }
 async function stake(kick, gs) {
   for (const g of gs) await send(usdc.connect(g).transfer(await kick.getAddress(), U(15)));
@@ -66,6 +78,8 @@ before(async () => {
   [owner, ...guests] = ws;
   usdc = await deploy("MockUSDC", owner);
   for (const g of guests) await send(usdc.mint(await addr(g), U(100)));
+  arbitrator = await deploy("MockArbitrator", owner);
+  resolver = await deploy("MockDisputeResolver", owner, arbitrator.target);
 });
 after(async () => server && (await server.close()));
 
@@ -75,10 +89,12 @@ test("constructor rejects a deadline before the event start", async () => {
   const f = new ethers.ContractFactory(abi, bytecode, owner);
   // the settlement window after the event must be at least 7 days
   for (const [s, d] of [[t + 100, t + 100], [t + 100, t + 100 + 7 * 86400 - 1]]) {
-    await assert.rejects(f.deploy(await usdc.getAddress(), U(15), "x", await addr(owner), s, d));
+    await assert.rejects(f.deploy(await usdc.getAddress(), U(15), "x", await addr(owner), s, d, arb()));
     owner.reset(); // the refused deploy used up a nonce locally; resync with the chain
   }
-  const ok = await f.deploy(await usdc.getAddress(), U(15), "x", await addr(owner), t + 100, t + 100 + 7 * 86400);
+  await assert.rejects(f.deploy(await usdc.getAddress(), U(15), "x", await addr(owner), t + 100, t + 100 + 7 * 86400, [ethers.ZeroAddress, EXTRA, POLICY]));
+  owner.reset();
+  const ok = await f.deploy(await usdc.getAddress(), U(15), "x", await addr(owner), t + 100, t + 100 + 7 * 86400, arb());
   await ok.waitForDeployment();
 });
 
@@ -129,23 +145,38 @@ test("registerStakers refuses wallets the balance does not cover", async () => {
   await send(kick.registerStakers([await addr(a)]));
 });
 
-test("finalize: not before the event, and only with the share the organiser confirmed", async () => {
+test("postAttendance: not before the event, and only with the share the organiser confirmed", async () => {
   const kick = await freshKick({ startIn: 3600 });
   const gs = guests.slice(40, 44);
   await stake(kick, gs);
   await send(kick.registerStakers(await Promise.all(gs.map(addr))));
   const att = await Promise.all(gs.slice(0, 3).map(addr)); // 3 of 4 show up
   const share = (U(15) * 4n) / 3n;
-  await reverts(kick, "finalize", [att, share], "TooEarly");
+  await reverts(kick, "postAttendance", [att, share], "TooEarly");
   await warp(3601);
-  await reverts(kick, "finalize", [att, U(15)], "ShareMismatch");
-  await reverts(kick, "finalize", [[], 0n], "NoAttendees");
-  await reverts(kick, "finalize", [[att[0], att[0]], U(30)], "DuplicateAttendee");
-  await reverts(kick, "finalize", [[await addr(guests[50])], U(60)], "NotAStaker");
+  await reverts(kick, "postAttendance", [att, U(15)], "ShareMismatch");
+  await reverts(kick, "postAttendance", [[], 0n], "NoAttendees");
+  await reverts(kick, "postAttendance", [[att[0], att[0]], U(30)], "DuplicateAttendee");
+  await reverts(kick, "postAttendance", [[await addr(guests[50])], U(60)], "NotAStaker");
+  await reverts(kick.connect(gs[0]), "postAttendance", [att, share], "NotOwner");
+  await reverts(kick, "releasePayouts", [], "NotListed");
   const b0 = await bal(att[0]);
-  await send(kick.finalize(att, share));
+  await send(kick.postAttendance(att, share));
+  assert.equal(await kick.phase(), 1n); // Listed
+  assert.equal(await kick.attendeeCount(), 3n);
+  // the list is posted once; the pool stays locked during the challenge window
+  await reverts(kick, "postAttendance", [att, share], "NotOpen");
+  await reverts(kick, "cancel", [], "NotOpen");
+  await reverts(kick, "rejectAndRefund", [[att[0]]], "CannotReject");
+  await reverts(kick, "sweep", [await addr(owner)], "NotSettled");
+  assert.equal(await kick.spare(), 0n);
+  await reverts(kick, "releasePayouts", [], "TooEarly");
+  await warp(DAY + 1);
+  await send(kick.connect(guests[51]).releasePayouts()); // anyone can release
   assert.equal(await bal(att[0]), b0 + share);
-  assert.equal(await kick.phase(), 1n);
+  assert.equal(await kick.phase(), 2n); // Finalized
+  assert.equal(await kick.status(att[0]), 2n); // Paid
+  assert.equal(await kick.status(await addr(gs[3])), 1n); // no-show stays a Staker, deposit forfeited
   // dust only; sweep takes it, nothing else
   const dust = await bal(await kick.getAddress());
   assert.ok(dust < 3n);
@@ -161,7 +192,7 @@ test("a blocklisted attendee does not block the payout; they claim to another ad
   await warp(2);
   await send(usdc.setBlocked(await addr(gs[1]), true));
   const others = [await bal(gs[0]), await bal(gs[2])];
-  await send(kick.finalize(await Promise.all(gs.map(addr)), U(15)));
+  await settle(kick, await Promise.all(gs.map(addr)), U(15));
   assert.equal(await bal(gs[0]), others[0] + U(15));
   assert.equal(await bal(gs[2]), others[1] + U(15));
   assert.equal(await kick.owed(await addr(gs[1])), U(15));
@@ -210,7 +241,7 @@ test("emergencyWithdraw only after the deadline, only for active stakers, only o
   await reverts(kick.connect(gs[0]), "emergencyWithdraw", [to0], "TooEarly");
   await warp(11 + W);
   // after the deadline the organiser can no longer settle: no last-second race with stakers
-  await reverts(kick, "finalize", [[await addr(gs[1])], U(45)], "TooLate");
+  await reverts(kick, "postAttendance", [[await addr(gs[1])], U(45)], "TooLate");
   await reverts(kick, "cancel", [], "TooLate");
   const b0 = await bal(gs[0]);
   await send(kick.connect(gs[0]).emergencyWithdraw(to0));
@@ -256,7 +287,7 @@ test("tokens that return false or return nothing are handled", async () => {
     await send(usdc.setMode(1)); // blocked transfers return false instead of reverting
     await send(usdc.setBlocked(await addr(gs[0]), true));
     const b1 = await bal(gs[1]);
-    await send(kick.finalize(await Promise.all(gs.map(addr)), U(15)));
+    await settle(kick, await Promise.all(gs.map(addr)), U(15));
     assert.equal(await kick.owed(await addr(gs[0])), U(15)); // false = failed, credited
     assert.equal(await bal(gs[1]), b1 + U(15));
     await send(usdc.setMode(2));
@@ -280,7 +311,7 @@ test("two-step ownership", async () => {
   await reverts(kick, "registerStakers", [[await addr(x)]], "NotOwner");
 });
 
-test("150 guests: register in batches, finalize with 120 attendees fits easily in a block", async () => {
+test("150 guests: register in batches, post 120 attendees and release, all fit easily in a block", async () => {
   const kick = await freshKick({ startIn: 1 });
   const gs = guests.slice(0, 150);
   await stake(kick, gs);
@@ -291,8 +322,160 @@ test("150 guests: register in batches, finalize with 120 attendees fits easily i
   const att = all.slice(0, 120);
   const share = (U(15) * 150n) / 120n; // 18.75
   assert.equal(share, U("18.75"));
-  const r = await send(kick.finalize(att, share));
-  console.log(`  gas: register 150 = ${regGas}, finalize 120 = ${r.gasUsed}`);
-  assert.ok(r.gasUsed < 10_000_000n);
+  const p = await send(kick.postAttendance(att, share));
+  await warp(DAY + 1);
+  const r = await send(kick.releasePayouts());
+  console.log(`  gas: register 150 = ${regGas}, post 120 = ${p.gasUsed}, release 120 = ${r.gasUsed}`);
+  assert.ok(p.gasUsed < 10_000_000n && r.gasUsed < 10_000_000n);
   assert.equal(await bal(await kick.getAddress()), 0n);
+});
+
+// ------------------------------------------------------------------ Kleros challenges
+
+async function listed(slice, attendingCount) {
+  const kick = await freshKick({ startIn: 1 });
+  const gs = guests.slice(...slice);
+  await stake(kick, gs);
+  await send(kick.registerStakers(await Promise.all(gs.map(addr))));
+  await warp(2);
+  const att = await Promise.all(gs.slice(0, attendingCount).map(addr));
+  await send(kick.postAttendance(att, (U(15) * BigInt(gs.length)) / BigInt(att.length)));
+  return { kick, gs };
+}
+const ethBal = async (s) => prov.getBalance(await addr(s));
+
+test("challenge guards: only listed-out stakers, inside the window, with the exact Kleros fee", async () => {
+  const { kick, gs } = await listed([140, 144], 2); // gs[2], gs[3] left off
+  assert.equal(await kick.challengeDeposit(), FEE);
+  await reverts(kick.connect(gs[0]), "challenge", [{ value: FEE }], "AlreadyAttending");
+  await reverts(kick.connect(guests[145]), "challenge", [{ value: FEE }], "NotAStaker");
+  await reverts(kick.connect(gs[2]), "challenge", [{ value: FEE - 1n }], "WrongDeposit");
+  await reverts(kick, "matchChallenge", [await addr(gs[2]), { value: FEE }], "NoChallenge");
+  // overpaying is fine: the extra comes straight back
+  const e0 = await ethBal(gs[2]);
+  const r = await send(kick.connect(gs[2]).challenge({ value: FEE * 2n }));
+  assert.equal(await ethBal(gs[2]), e0 - FEE - r.gasUsed * r.gasPrice);
+  await reverts(kick.connect(gs[2]), "challenge", [{ value: FEE }], "AlreadyChallenged");
+  await reverts(kick, "resolveChallenge", [await addr(gs[2])], "TooEarly");
+  await reverts(kick, "matchChallenge", [await addr(gs[2]), { value: FEE - 1n }], "WrongDeposit");
+  // the challenge window closes after 1 day
+  await warp(DAY + 1);
+  await reverts(kick.connect(gs[3]), "challenge", [{ value: FEE }], "TooLate");
+  // the match window (1 day from the challenge) has closed too
+  await reverts(kick, "matchChallenge", [await addr(gs[2]), { value: FEE }], "TooLate");
+});
+
+test("unmatched challenge: the guest counts as attended, gets the deposit back, shares the pool", async () => {
+  const { kick, gs } = await listed([0, 4], 2);
+  const g = gs[2];
+  await send(kick.connect(g).challenge({ value: FEE }));
+  assert.equal(await prov.getBalance(kick.target), FEE);
+  await warp(DAY + 1);
+  const e0 = await ethBal(g);
+  const u0 = await bal(g);
+  // releasePayouts accepts the unmatched challenge on its own: 4 x 15 over 3 attendees = 20 each
+  await send(kick.connect(guests[150]).releasePayouts());
+  assert.equal(await ethBal(g), e0 + FEE);
+  assert.equal(await bal(g), u0 + U(20));
+  assert.equal(await kick.attendeeCount(), 3n);
+  assert.equal(await prov.getBalance(kick.target), 0n);
+  const c = await kick.challenges(await addr(g));
+  assert.equal(c.state, 3n); // Resolved
+});
+
+test("matched challenge opens a Kleros dispute and holds the payout until the ruling", async () => {
+  const { kick, gs } = await listed([4, 8], 2);
+  const [g, m] = [gs[2], owner];
+  await send(kick.connect(g).challenge({ value: FEE }));
+  await send(kick.connect(m).matchChallenge(await addr(g), { value: FEE }));
+  const c = await kick.challenges(await addr(g));
+  assert.equal(c.state, 2n); // Disputed
+  assert.equal(c.arbitratorDisputeID, 1000n + c.localDisputeID);
+  assert.equal(await prov.getBalance(kick.target), FEE); // 2 deposits - 1 fee
+  // the template is valid JSON naming the wallet, the policy and the arbitrator
+  const tpl = JSON.parse(await resolver.lastTemplate());
+  assert.match(tpl.question, new RegExp((await addr(g)).toLowerCase()));
+  assert.equal(tpl.policyURI, POLICY);
+  assert.equal(tpl.arbitratorAddress, arbitrator.target.toLowerCase());
+  assert.equal(tpl.arbitratorChainID, "1337");
+  assert.deepEqual(tpl.answers.map((a) => a.id), ["0x1", "0x2"]);
+  await warp(DAY * 3);
+  await reverts(kick, "releasePayouts", [], "ChallengesPending");
+  await reverts(kick, "resolveChallenge", [await addr(g)], "NotRuled");
+  await send(resolver.giveRuling(c.localDisputeID, 1)); // jurors: attended
+  const e0 = await ethBal(g);
+  await send(kick.connect(guests[151]).resolveChallenge(await addr(g)));
+  assert.equal(await ethBal(g), e0 + FEE); // winner gets the other side's deposit
+  await reverts(kick, "resolveChallenge", [await addr(g)], "WrongChallengeState");
+  const u0 = await bal(g);
+  await send(kick.releasePayouts());
+  assert.equal(await bal(g), u0 + U(20));
+});
+
+test("Kleros rules absent: the matcher is repaid and the guest forfeits", async () => {
+  const { kick, gs } = await listed([8, 12], 2);
+  const [g, m] = [gs[2], guests[152]];
+  await send(kick.connect(g).challenge({ value: FEE }));
+  await send(kick.connect(m).matchChallenge(await addr(g), { value: FEE }));
+  const c = await kick.challenges(await addr(g));
+  await send(resolver.giveRuling(c.localDisputeID, 2));
+  const em = await ethBal(m);
+  await send(kick.connect(owner).resolveChallenge(await addr(g)));
+  assert.equal(await ethBal(m), em + FEE);
+  await warp(DAY + 1);
+  const [u0, a0] = [await bal(g), await bal(gs[0])];
+  await send(kick.releasePayouts());
+  assert.equal(await bal(g), u0); // nothing
+  assert.equal(await bal(gs[0]), a0 + U(30)); // 60 over 2 attendees
+});
+
+test("Kleros refuses to arbitrate: both sides get half back, guest stays off the list", async () => {
+  const { kick, gs } = await listed([12, 15], 2);
+  const [g, m] = [gs[2], guests[153]];
+  await send(kick.connect(g).challenge({ value: FEE }));
+  await send(kick.connect(m).matchChallenge(await addr(g), { value: FEE }));
+  await send(resolver.giveRuling((await kick.challenges(await addr(g))).localDisputeID, 0));
+  const [eg, em] = [await ethBal(g), await ethBal(m)];
+  await send(kick.connect(owner).resolveChallenge(await addr(g)));
+  assert.equal(await ethBal(g), eg + FEE / 2n);
+  assert.equal(await ethBal(m), em + FEE / 2n);
+  assert.equal(await kick.attended(await addr(g)), false);
+});
+
+test("the organiser can add a forgotten guest during the window; a waiting challenge is refunded", async () => {
+  const { kick, gs } = await listed([15, 19], 2);
+  const g = gs[2];
+  await send(kick.connect(g).challenge({ value: FEE }));
+  const e0 = await ethBal(g);
+  await reverts(kick.connect(g), "addAttendees", [[await addr(g)]], "NotOwner");
+  await send(kick.addAttendees([await addr(g), await addr(gs[3])]));
+  assert.equal(await ethBal(g), e0 + FEE);
+  assert.equal(await kick.attendeeCount(), 4n);
+  assert.equal(await kick.pendingChallenges(), 0n);
+  await reverts(kick, "addAttendees", [[await addr(g)]], "DuplicateAttendee");
+  await warp(DAY + 1);
+  await reverts(kick, "addAttendees", [[await addr(guests[154])]], "TooLate");
+  await send(kick.releasePayouts());
+  assert.equal(await bal(await kick.getAddress()), 0n);
+});
+
+test("a wallet that refuses ETH can withdraw its challenge money later", async () => {
+  const kick = await freshKick({ startIn: 1 });
+  const refuser = await deploy("EthRefuser", owner);
+  const gs = guests.slice(19, 21);
+  await stake(kick, gs);
+  // register the refusing contract as a staker (gs[0] pays its deposit)
+  await send(usdc.connect(gs[0]).transfer(kick.target, U(15)));
+  await send(kick.registerStakers([...(await Promise.all(gs.map(addr))), refuser.target]));
+  await warp(2);
+  await send(kick.postAttendance(await Promise.all(gs.map(addr)), (U(15) * 3n) / 2n));
+  await send(refuser.challenge(kick.target, { value: FEE }));
+  await warp(DAY + 1);
+  await send(kick.releasePayouts()); // unmatched: accepted, but the refund bounces
+  assert.equal(await kick.ethOwed(refuser.target), FEE);
+  const to = await addr(guests[155]);
+  const e0 = await prov.getBalance(to);
+  await send(refuser.withdrawTo(kick.target, to));
+  assert.equal(await prov.getBalance(to), e0 + FEE);
+  assert.equal(await kick.ethOwed(refuser.target), 0n);
 });

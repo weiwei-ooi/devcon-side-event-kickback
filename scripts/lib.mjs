@@ -73,6 +73,32 @@ export function loadConfig(file = "config.json") {
 }
 
 export const MIN_SETTLEMENT_WINDOW = 7 * 24 * 3600; // must match the contract
+export const CHALLENGE_PERIOD = 24 * 3600; // must match the contract
+export const MATCH_PERIOD = 24 * 3600; // must match the contract
+
+// Kleros v2 on Arbitrum One. Disputes go through the DisputeResolver, a general-purpose arbitrable
+// that Kleros Court accepts (the court only takes disputes from whitelisted contracts).
+// Source: @kleros/kleros-v2-contracts deployments (arbitrum).
+export const KLEROS = {
+  42161: { disputeResolver: "0xb5526D022962A1fFf6eD32C93e8b714c901F4323", klerosCore: "0x991d2df165670b9cac3B022f4B68D65b664222ea", court: "https://v2.kleros.builders" },
+  421614: { disputeResolver: "0xed31bEE8b1F7cE89E93033C0d3B2ccF4cEb27652", klerosCore: "0xE8442307d36e9bf6aB27F1A009F95CE8E11C3479", court: "https://v2-testnet.kleros.builders" },
+};
+
+/** Kleros settings from config.kleros, with Arbitrum defaults: General Court (1), 3 jurors, classic dispute kit (1). */
+export function klerosConfig(cfg) {
+  const k = cfg.kleros ?? {};
+  const known = KLEROS[Number(cfg.chainId)] ?? {};
+  const disputeResolver = k.disputeResolver ?? known.disputeResolver;
+  if (!disputeResolver) throw new Error('Set "kleros.disputeResolver" in the config for this network');
+  const court = k.court ?? 1, jurors = k.jurors ?? 3, disputeKit = k.disputeKit ?? 1;
+  return {
+    disputeResolver: ethers.getAddress(disputeResolver),
+    court, jurors, disputeKit,
+    extraData: ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256", "uint256"], [court, jurors, disputeKit]),
+    policyURI: k.policyURI ?? "",
+    courtUrl: k.courtUrl ?? known.court ?? "https://v2.kleros.builders",
+  };
+}
 
 /** Constructor arguments for GroundTruthKickback, checked before anything is sent. */
 export function deployArgs(cfg, owner) {
@@ -80,12 +106,15 @@ export function deployArgs(cfg, owner) {
   if (!start || !end)
     throw new Error('Set "eventStart" and "claimDeadline" in the config (ISO dates with timezone)');
   if (end < start + MIN_SETTLEMENT_WINDOW) throw new Error("claimDeadline must be at least 7 days after eventStart");
-  return [cfg.token, cfg.depositUnits, cfg.eventName ?? "Ground Truth", owner, start, end];
+  const k = klerosConfig(cfg);
+  if (cfg.mode === "live" && !/^\/ipfs\/\S+/.test(k.policyURI))
+    throw new Error('Set "kleros.policyURI" to the IPFS path of docs/attendance-policy.md (e.g. /ipfs/Qm…) before the live deploy');
+  return [cfg.token, cfg.depositUnits, cfg.eventName ?? "Ground Truth", owner, start, end, [k.disputeResolver, k.extraData, k.policyURI]];
 }
 
 // Contract Status enum
 export const STATUS = { None: 0, Staker: 1, Paid: 2, Rejected: 3 };
-export const PHASES = ["Open", "Finalized", "Cancelled"];
+export const PHASES = ["Open", "Listed", "Finalized", "Cancelled"];
 
 export function provider(cfg) {
   const url = process.env.RPC_URL || cfg.rpcUrl;

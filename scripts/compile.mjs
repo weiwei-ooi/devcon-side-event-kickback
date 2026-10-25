@@ -8,6 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const files = {
   "GroundTruthKickback.sol": path.join(root, "contracts/GroundTruthKickback.sol"),
   "MockUSDC.sol": path.join(root, "test/MockUSDC.sol"),
+  "MockKleros.sol": path.join(root, "test/MockKleros.sol"),
 };
 
 const input = {
@@ -28,7 +29,7 @@ for (const e of out.errors || []) console.error(e.formattedMessage);
 if (errors.length) process.exit(1);
 
 fs.mkdirSync(path.join(root, "build"), { recursive: true });
-// For "Verify & Publish" on Arbiscan (Solidity standard-JSON input, compiler v0.8.24)
+// For "Verify & Publish" on Arbiscan (Solidity standard-JSON input, compiler v0.8.28)
 fs.writeFileSync(
   path.join(root, "build", "GroundTruthKickback.standard-input.json"),
   JSON.stringify({ ...input, sources: { "GroundTruthKickback.sol": input.sources["GroundTruthKickback.sol"] } }, null, 2)

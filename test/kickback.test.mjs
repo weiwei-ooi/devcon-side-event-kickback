@@ -1,5 +1,6 @@
 // End-to-end test on a local in-memory chain (ganache): contract + the CLI scripts, including
-// curation (approved → register, declined → refund) and the guarded payout.
+// curation (approved → register, declined → refund), the attendance list, a Kleros challenge
+// (unmatched, so it counts as attended) and the payout.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -17,7 +18,7 @@ const load = (n) => JSON.parse(fs.readFileSync(path.join(root, "build", `${n}.js
 const U = (x) => ethers.parseUnits(String(x), 6);
 const PORT = 18545;
 
-let server, prov, owner, guests, usdc, kick, tmp;
+let server, prov, owner, guests, usdc, kick, resolver, tmp;
 const ownerKey = "0x" + "11".repeat(32);
 const guestKeys = Array.from({ length: 9 }, (_, i) => "0x" + (i + 2).toString(16).padStart(2, "0").repeat(32));
 
@@ -41,7 +42,11 @@ before(async () => {
   guests = guestKeys.map((k) => new ethers.NonceManager(new ethers.Wallet(k, prov)));
   usdc = await deploy("MockUSDC", owner);
   const t = (await prov.getBlock("latest")).timestamp;
-  kick = await deploy("GroundTruthKickback", owner, await usdc.getAddress(), U(15), "Ground Truth", await owner.getAddress(), t + 3600, t + 3600 + 14 * 86400);
+  const arbitrator = await deploy("MockArbitrator", owner);
+  resolver = await deploy("MockDisputeResolver", owner, await arbitrator.getAddress());
+  const extra = ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256", "uint256"], [1, 3, 1]);
+  kick = await deploy("GroundTruthKickback", owner, await usdc.getAddress(), U(15), "Ground Truth", await owner.getAddress(), t + 3600, t + 3600 + 14 * 86400,
+    [await resolver.getAddress(), extra, "/ipfs/QmTest/attendance-policy.md"]);
   for (const g of guests) await (await usdc.mint(await g.getAddress(), U(100))).wait();
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "gt-"));
 });
@@ -63,7 +68,7 @@ async function reverts(contract, method, params, errorName) {
 const addr = (s) => s.getAddress();
 const pay = async (g, amount, to) => (await (await usdc.connect(g).transfer(to ?? (await kick.getAddress()), U(amount))).wait()).hash;
 
-test("full flow: verify → curate on Luma → register / refund declined → check-ins → finalize(share)", async () => {
+test("full flow: verify → curate on Luma → register / refund declined → check-ins → post list → challenge → release", async () => {
   const kAddr = await kick.getAddress();
   const [g0, g1, g2, g3, g4, g5, g6, g7, g8] = guests;
 
@@ -99,6 +104,7 @@ test("full flow: verify → curate on Luma → register / refund declined → ch
     chain: "local", chainId: 1337, rpcUrl: `http://127.0.0.1:${PORT}`, token: await usdc.getAddress(),
     tokenDecimals: 6, deposit: "15", receiver: kAddr, contract: kAddr, explorer: "https://example.org",
     depositOpensAt: "2020-01-01T00:00:00Z", depositDeadline: "2099-01-01T00:00:00Z",
+    kleros: { disputeResolver: await resolver.getAddress() },
   }));
 
   // async exec: ganache runs in this process, so a sync child call would deadlock
@@ -188,20 +194,37 @@ test("full flow: verify → curate on Luma → register / refund declined → ch
   const payoutLog = await run("build-payout.mjs", "--checkins", "after.csv", "--extra-checkins", "manual.csv");
   assert.match(payoutLog, /Stakers \| 4/);
   assert.match(payoutLog, /Showed up \| 3/);
-  assert.match(payoutLog, /Payout per attendee \| 20\.0 USDC/);
+  assert.match(payoutLog, /Payout per attendee \(if nobody is added by a challenge\) \| 20\.0 USDC/);
+  assert.ok(fs.existsSync(path.join(tmp, "out/safe-post-attendance.json")));
 
   const plan = jsonOut("payout-plan.json");
   assert.equal(plan.share, U(20).toString());
   assert.equal(plan.stakers, 4);
-  await reverts(kick, "finalize", [plan.attendees, BigInt(plan.share)], "TooEarly");
+  await reverts(kick, "postAttendance", [plan.attendees, BigInt(plan.share)], "TooEarly");
   await prov.send("evm_increaseTime", [3601]);
   await prov.send("evm_mine", []);
-  await reverts(kick, "finalize", [plan.attendees, U(15)], "ShareMismatch");
-  const before = await Promise.all(plan.attendees.map((w) => usdc.balanceOf(w)));
-  await (await kick.finalize(plan.attendees, BigInt(plan.share))).wait();
-  const afterBal = await Promise.all(plan.attendees.map((w) => usdc.balanceOf(w)));
-  afterBal.forEach((b, i) => assert.equal(b - before[i], U(20))); // 4 stakers × 15 = 60 pool / 3 attendees
-  assert.equal(await usdc.balanceOf(await addr(g8)), U(85)); // Pat lost the 15
+  await reverts(kick, "postAttendance", [plan.attendees, U(15)], "ShareMismatch");
+  await (await kick.postAttendance(plan.attendees, BigInt(plan.share))).wait();
+  await reverts(kick, "releasePayouts", [], "TooEarly");
+
+  // Pat says they were there but was not scanned: challenges with the Kleros fee; nobody matches
+  const fee = await kick.challengeDeposit();
+  const pat = kick.connect(guests[8]);
+  await (await pat.challenge({ value: fee })).wait();
+  const challengesLog = await run("owner.mjs", "challenges");
+  assert.match(challengesLog, /Waiting for a match/);
+  const statusLog = await run("owner.mjs", "status");
+  assert.match(statusLog, /phase: 'Listed'/);
+  assert.match(statusLog, /pendingChallenges: 1/);
+
+  await prov.send("evm_increaseTime", [86400 + 60]);
+  await prov.send("evm_mine", []);
+  const before = await Promise.all([...plan.attendees, await addr(g8)].map((w) => usdc.balanceOf(w)));
+  await (await kick.connect(guests[3]).releasePayouts()).wait(); // anyone can release
+  const afterBal = await Promise.all([...plan.attendees, await addr(g8)].map((w) => usdc.balanceOf(w)));
+  afterBal.forEach((b, i) => assert.equal(b - before[i], U(15))); // 4 stakers × 15 = 60 pool / 4 attendees (Pat added)
+  assert.equal(await usdc.balanceOf(await addr(g8)), U(100)); // Pat kept their deposit
+  assert.equal(await prov.getBalance(kAddr), 0n); // Pat's ETH challenge deposit went back
 
   // Gus' unclaimed 15 stays → swept after settlement
   assert.equal(await usdc.balanceOf(kAddr), U(15));

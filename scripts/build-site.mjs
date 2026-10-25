@@ -7,7 +7,7 @@
 // look-alike link can't point guests at another address. Re-run after every deploy.
 import fs from "node:fs";
 import path from "node:path";
-import { args, loadConfig } from "./lib.mjs";
+import { args, loadConfig, klerosConfig } from "./lib.mjs";
 
 const a = args();
 const cfg = loadConfig(a.config ?? "config.json");
@@ -28,6 +28,7 @@ const site = {
   deposit: String(cfg.deposit),
   decimals: Number(cfg.decimals ?? 6),
   lumaUrl: cfg.lumaUrl ?? "https://luma.com/qewnqhas",
+  klerosCourt: klerosConfig(cfg).courtUrl,
 };
 const src = fs.readFileSync(new URL("../site/index.html", import.meta.url), "utf8");
 const start = src.indexOf("/*CONFIG*/"), end = src.indexOf("/*END CONFIG*/");

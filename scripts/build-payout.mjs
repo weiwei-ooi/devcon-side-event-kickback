@@ -6,10 +6,13 @@
 //
 // Matches Luma check-ins against verified stakers and writes:
 //   out/attendees.json        staker wallets who checked in
-//   out/payout-plan.json      attendees + the share per person → "Pay attendees" = finalize(attendees, share)
+//   out/payout-plan.json      attendees + the share per person → "Post attendance list" = postAttendance(attendees, share)
 //   out/payout.csv            per-wallet payout
 //   out/payout-summary.md     numbers to share publicly
-//   out/safe-finalize.json    Safe Transaction Builder batch for finalize()
+//   out/safe-post-attendance.json  Safe Transaction Builder batch for postAttendance()
+//
+// Posting the list opens a 1-day challenge window (Kleros). Payouts are released afterwards
+// with "Release payouts", once no challenge is pending.
 //
 // --extra-checkins: optional CSV with an `email` and/or `wallet` column for anyone the door
 // team checked in by hand (paper list, Luma app offline, etc.).
@@ -122,7 +125,7 @@ const summary = `# Ground Truth: deposit settlement
 | Showed up | ${attendees.length} |
 | No-shows | ${noShows.length} |
 | Pool | ${fmt(pool, cfg.decimals)} USDC |
-| Payout per attendee | ${fmt(share, cfg.decimals)} USDC (deposit ${cfg.deposit} + ${fmt(share - cfg.depositUnits, cfg.decimals)} bonus) |
+| Payout per attendee (if nobody is added by a challenge) | ${fmt(share, cfg.decimals)} USDC (deposit ${cfg.deposit} + ${fmt(share - cfg.depositUnits, cfg.decimals)} bonus) |
 | Rounding dust | ${fmt(dust, cfg.decimals)} USDC |
 ${contractAddr ? `| Contract | ${cfg.explorer}/address/${contractAddr} |\n` : ""}`;
 fs.writeFileSync(`${out}/payout-summary.md`, summary);
@@ -131,10 +134,11 @@ console.log(summary);
 if (contractAddr && attendees.length) {
   const { abi } = loadAbi("GroundTruthKickback");
   const iface = new ethers.Interface(abi);
-  writeJson(`${out}/safe-finalize.json`, safeBatch(cfg, `Ground Truth: pay ${attendees.length} attendees`, [
-    { to: contractAddr, data: iface.encodeFunctionData("finalize", [attendees.map((x) => x.wallet), share]) },
+  writeJson(`${out}/safe-post-attendance.json`, safeBatch(cfg, `Ground Truth: post ${attendees.length} attendees`, [
+    { to: contractAddr, data: iface.encodeFunctionData("postAttendance", [attendees.map((x) => x.wallet), share]) },
   ]));
-  console.log(`Next: click "Pay attendees" in the console (reads ${out}/payout-plan.json), or upload ${out}/safe-finalize.json in Safe`);
+  console.log(`Next: click "Post attendance list" in the console (reads ${out}/payout-plan.json), or upload ${out}/safe-post-attendance.json in Safe.`);
+  console.log(`Then wait 1 day for challenges; click "Release payouts" once none is pending.`);
 } else if (attendees.length) {
   // No contract: deposits sit in a Safe. Pay out with one batched Safe tx of USDC transfers.
   const erc20 = new ethers.Interface(["function transfer(address,uint256)"]);

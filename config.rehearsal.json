@@ -14,5 +14,11 @@
   "owner": "0x259a1084C2043a7B3b5b288596E05C41b8EFa5d6",
   "mode": "rehearsal",
   "poolCap": "500",
-  "deployBlock": ""
+  "deployBlock": "",
+  "kleros": {
+    "court": 1,
+    "jurors": 3,
+    "disputeKit": 1,
+    "policyURI": "/ipfs/rehearsal-placeholder"
+  }
 }

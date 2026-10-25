@@ -73,9 +73,24 @@
   </div>
 
   <div class="card">
-    <h2>5. Pay out after the event</h2>
-    <p>Loads <code>out/payout-plan.json</code> (stakers who checked in). Splits the whole pool equally between them. The button stays locked until the event starts, and you must type PAY to confirm. Only possible once.</p>
-    <div class="row"><button id="finalize" disabled>Pay attendees</button><span id="finInfo" class="mono"></span></div>
+    <h2>5. Post the attendance list after the event</h2>
+    <p>Loads <code>out/payout-plan.json</code> (stakers who checked in). Publishes the list on-chain and opens a <b>1-day challenge window</b>: a staker left off the list can challenge through Kleros. The button stays locked until the event starts, and you must type POST to confirm. Only possible once.</p>
+    <div class="row"><button id="postList" disabled>Post attendance list</button><span id="postInfo" class="mono"></span></div>
+  </div>
+
+  <div class="card">
+    <h2>6. Challenges, then pay out</h2>
+    <p>Anyone left off the list has 1 day to challenge (with an ETH deposit equal to the Kleros fee). Anyone, you included, then has 1 day to match that deposit if they disagree, which sends the case to Kleros jurors. A challenge nobody matches counts as attended. Payouts can be released once the window is over and no Kleros case is pending.</p>
+    <div id="challenges" class="kv"></div>
+    <h2 style="margin-top:14px">Add someone you left off by mistake</h2>
+    <p>During the 1-day window only. If they already challenged and nobody matched, their ETH deposit goes back to them.</p>
+    <div class="row"><input id="addAddrs" placeholder="Wallet 0x… (several: separate with commas)"><button class="secondary" id="addAtt" disabled>Add to the list</button></div>
+    <h2 style="margin-top:14px">Dispute or settle one challenge</h2>
+    <p><b>Dispute</b> = you believe this person did not attend: you match their ETH deposit and Kleros jurors decide (about 3 weeks; all payouts wait for the ruling). <b>Settle</b> = close a challenge that was not matched in time, or whose Kleros ruling is in.</p>
+    <div class="row"><input id="chAddr" placeholder="Challenger wallet 0x…"><button class="secondary" id="matchOne" disabled>Dispute (send to Kleros)</button><button class="secondary" id="resolveOne" disabled>Settle</button></div>
+    <h2 style="margin-top:14px">Release payouts</h2>
+    <p>Splits the whole pool equally between everyone on the final list. You must type PAY to confirm. Only possible once.</p>
+    <div class="row"><button id="release" disabled>Release payouts</button><span id="relInfo" class="mono"></span></div>
   </div>
 
   <details class="card">
@@ -108,13 +123,18 @@
 const $ = (id) => document.getElementById(id);
 const log = (msg, cls) => { const d = document.createElement("div"); if (cls) d.className = cls; d.textContent = msg; $("log").prepend(d); };
 const CHAINS = {
-  arbitrum: { chainId: 42161, name: "Arbitrum One", rpc: "https://arb1.arbitrum.io/rpc", explorer: "https://arbiscan.io", usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" },
+  arbitrum: { chainId: 42161, name: "Arbitrum One", rpc: "https://arb1.arbitrum.io/rpc", explorer: "https://arbiscan.io", usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+    kleros: { disputeResolver: "0xb5526D022962A1fFf6eD32C93e8b714c901F4323", court: "https://v2.kleros.builders" } },
   base: { chainId: 8453, name: "Base", rpc: "https://mainnet.base.org", explorer: "https://basescan.org", usdc: "0x833589fCD6eDb6E08f4c7C32D09f71B4cE5DdA02" },
   optimism: { chainId: 10, name: "OP Mainnet", rpc: "https://mainnet.optimism.io", explorer: "https://optimistic.etherscan.io", usdc: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85" },
-  "arbitrum-sepolia": { chainId: 421614, name: "Arbitrum Sepolia (test network)", rpc: "https://sepolia-rollup.arbitrum.io/rpc", explorer: "https://sepolia.arbiscan.io", usdc: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d", testnet: true },
+  "arbitrum-sepolia": { chainId: 421614, name: "Arbitrum Sepolia (test network)", rpc: "https://sepolia-rollup.arbitrum.io/rpc", explorer: "https://sepolia.arbiscan.io", usdc: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d", testnet: true,
+    kleros: { disputeResolver: "0xed31bEE8b1F7cE89E93033C0d3B2ccF4cEb27652", court: "https://v2-testnet.kleros.builders" } },
 };
 const MIN_WINDOW = 7 * 24 * 3600; // must match the contract
-const OWNER_BUTTONS = ["register", "refundDeclined", "finalize", "removeOne", "refundOne", "sweep", "cancel"];
+const PHASES = ["Open", "List posted (challenge window)", "Paid out", "Cancelled"];
+const CH_STATES = ["", "waiting for a match", "in a Kleros dispute", "settled"];
+const OWNER_BUTTONS = ["register", "refundDeclined", "postList", "addAtt", "removeOne", "refundOne", "sweep", "cancel"];
+const ANYONE_BUTTONS = ["matchOne", "resolveOne", "release"]; // the contract lets any wallet do these
 let cfg, cfgText, chain, artifact, iface, rp, wallet, signer, account, dec, state, busy = false;
 
 const short = (a) => (a ? a.slice(0, 6) + "…" + a.slice(-4) : "");
@@ -150,12 +170,22 @@ function explain(e) {
     switch (err.name) {
       case "NotOwner": return "Only the owner wallet can do this. Switch to the owner account in your wallet.";
       case "NotPendingOwner": return "This wallet was not proposed as the new owner.";
-      case "NotOpen": return "The event is already paid out or cancelled, so this is no longer possible.";
+      case "NotOpen": return "The attendance list is already posted, or the event is paid out or cancelled, so this is no longer possible.";
+      case "NotListed": return "This is only possible after the attendance list is posted and before the payout.";
+      case "AlreadyAttending": return `${x} is already on the attendance list.`;
+      case "AlreadyChallenged": return `${x} has already challenged.`;
+      case "NoChallenge": return `${x} has not challenged.`;
+      case "WrongChallengeState": return `The challenge of ${x} is not in a state that allows this (see the challenge list).`;
+      case "WrongDeposit": return `The ETH deposit must be ${ethers.formatEther(x)} ETH (sent ${ethers.formatEther(y)}).`;
+      case "ArbitrationCostTooHigh": return "The Kleros fee went up since the challenge was opened, so a dispute cannot be created. Ask Claude.";
+      case "NotRuled": return `Kleros has not ruled yet on the challenge of ${x}.`;
+      case "ChallengesPending": return `${x} challenge(s) are still waiting for a match or a Kleros ruling. Payouts wait until they are settled.`;
+      case "Reentrancy": return "The contract refused a nested call.";
       case "NotSettled": return "Leftovers can only be collected after the payout or a cancellation.";
       case "ZeroAddress": return "One of the addresses is empty or zero.";
       case "BadTimes": return "The settlement deadline must be at least 7 days after the event start. Ask Claude to fix the dates in the config.";
-      case "TooLate": return "The settlement deadline has passed. You can no longer pay out or cancel; each guest can now withdraw their own deposit.";
-      case "TooEarly": return "Too early: the payout opens at the event start time shown in the status.";
+      case "TooLate": return "Too late: either the 1-day window is over, or the settlement deadline passed (then each guest can withdraw their own deposit).";
+      case "TooEarly": return "Too early: check the times in the status (list opens at the event start; payouts and settling wait for the windows to end).";
       case "AlreadyRegistered": return `${x} is already registered. Ask Claude to rebuild the list.`;
       case "NotAStaker": return `${x} is not a registered staker. Ask Claude to rebuild the list.`;
       case "CannotReject": return `${x} cannot be refunded: they were already refunded or paid out.`;
@@ -206,12 +236,21 @@ async function init() {
     ["Token", "USDC · " + (cfg.token || chain.usdc)],
     ["Deposit", cfg.deposit + " USDC"],
     ["Event name", cfg.eventName || "Ground Truth"],
-    ["Payout opens", start ? when(start) : "missing in config", start ? "" : "err"],
-    ["Settle by", end ? when(end) + " (after this, guests can withdraw their own deposit)" : "missing in config", end ? "" : "err"],
+    ["Attendance list from", start ? when(start) : "missing in config", start ? "" : "err"],
+    ["List by", end ? when(end) + " (if no list by then, guests can withdraw their own deposit)" : "missing in config", end ? "" : "err"],
+    ["Challenges", klerosInfo() ? `Kleros, ${cfg.kleros?.jurors ?? 3} jurors, policy ${cfg.kleros?.policyURI || "(not set)"}` : "Kleros not configured", klerosInfo() ? "" : "err"],
     ["Owner", "the wallet you connect"],
   ]);
   if (cfg.contract) $("addr").value = cfg.contract;
   if (!window.ethereum) log("No browser wallet detected. Open this page in the browser that has your wallet extension.", "err");
+}
+
+// Kleros settings: config.kleros overrides the known addresses for the network.
+function klerosInfo() {
+  const k = { ...(chain?.kleros ?? {}), ...(cfg?.kleros ?? {}) };
+  if (!k.disputeResolver) return null;
+  const extraData = ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256", "uint256"], [k.court ?? 1, k.jurors ?? 3, k.disputeKit ?? 1]);
+  return { disputeResolver: ethers.getAddress(k.disputeResolver), extraData, policyURI: k.policyURI ?? "", courtUrl: k.courtUrl ?? chain.kleros?.court ?? "https://v2.kleros.builders" };
 }
 
 async function ensureNetwork() {
@@ -309,10 +348,13 @@ async function deploy() {
   if (end < start + MIN_WINDOW) throw new Error("The settlement deadline must be at least 7 days after the event start. Ask Claude to fix the config.");
   if (cfg.owner && cfg.owner.toLowerCase() !== account.toLowerCase())
     throw new Error(`The connected wallet (${short(account)}) is not the owner wallet in the config (${short(cfg.owner)}). Switch accounts in your wallet first.`);
-  if (!confirm(`Deploy a new deposit contract on ${chain.name}?\nOwner: ${account}\nDeposit: ${cfg.deposit} USDC\nPayout opens: ${when(start)}\nSettle by: ${when(end)}`)) return;
+  const k = klerosInfo();
+  if (!k) throw new Error("Kleros is not configured for this network. Ask Claude to add it to the config.");
+  if (cfg.mode === "live" && !/^\/ipfs\/\S+/.test(k.policyURI)) throw new Error("The attendance policy for Kleros jurors is not on IPFS yet (kleros.policyURI). Ask Claude to add it before the live deploy.");
+  if (!confirm(`Deploy a new deposit contract on ${chain.name}?\nOwner: ${account}\nDeposit: ${cfg.deposit} USDC\nAttendance list from: ${when(start)}\nList by: ${when(end)}\nChallenges: Kleros (${short(k.disputeResolver)})`)) return;
   const units = ethers.parseUnits(String(cfg.deposit), dec);
   const f = new ethers.ContractFactory(artifact.abi, artifact.bytecode);
-  const dtx = await f.getDeployTransaction(cfg.token || chain.usdc, units, cfg.eventName || "Ground Truth", account, start, end);
+  const dtx = await f.getDeployTransaction(cfg.token || chain.usdc, units, cfg.eventName || "Ground Truth", account, start, end, [k.disputeResolver, k.extraData, k.policyURI]);
   const r = await sendTx("deploy the contract", { data: dtx.data });
   const addr = ethers.getAddress(r.contractAddress);
   $("addr").value = addr;
@@ -323,25 +365,44 @@ async function deploy() {
 async function refresh() {
   const c = new ethers.Contract(contractAddr(), artifact.abi, rp);
   const tokenC = new ethers.Contract(await c.token(), ["function balanceOf(address) view returns (uint256)"], rp);
-  const [owner, pending, phase, count, dep, bal, owedTotal, spare, start, end] = await Promise.all([
+  const [owner, pending, phase, count, dep, bal, owedTotal, spare, start, end, attCount, windowEnd, pendingCh, chList, fee] = await Promise.all([
     c.owner(), c.pendingOwner(), c.phase(), c.stakerCount(), c.deposit(), tokenC.balanceOf(c.target), c.owedTotal(), c.spare(), c.eventStart(), c.claimDeadline(),
+    c.attendeeCount(), c.challengeEndsAt(), c.pendingChallenges(), c.challengers(), c.challengeDeposit().catch(() => null),
   ]);
-  state = { owner, phase: Number(phase), count, dep, bal, owedTotal, spare, start: Number(start), end: Number(end) };
+  const chs = await Promise.all(chList.map((w) => c.challenges(w)));
+  state = { owner, phase: Number(phase), count, dep, bal, owedTotal, spare, start: Number(start), end: Number(end),
+    attCount, windowEnd: Number(windowEnd), pendingCh: Number(pendingCh), fee,
+    challenges: chList.map((w, i) => ({ wallet: w, state: Number(chs[i].state), matchEndsAt: Number(chs[i].matchEndsAt), deposit: chs[i].deposit, disputeID: chs[i].arbitratorDisputeID })) };
   const isOwner = account && owner.toLowerCase() === account.toLowerCase();
   const pairs = [
     ["Owner", owner + (isOwner ? " (you)" : ""), isOwner ? "mono ok" : "mono"],
-    ["Phase", ["Open", "Paid out", "Cancelled"][state.phase]],
+    ["Phase", PHASES[state.phase]],
     ["Registered stakers", String(count)],
+    ...(state.phase >= 1 ? [["On the attendance list", String(attCount)]] : []),
     ["Staked pool", usdc(dep * count)],
     ["USDC in contract", usdc(bal)],
     ["Unclaimed payouts", usdc(owedTotal), owedTotal > 0n ? "warn" : ""],
     ["Spare (not staked)", usdc(spare)],
-    ["Payout opens", when(start)],
-    ["Settle by", when(end)],
+    ["Attendance list from", when(start)],
+    ["List by", when(end)],
     ["Explorer", link(`${chain.explorer}/address/${c.target}`, "view on explorer ↗")],
   ];
   if (pending !== ethers.ZeroAddress) pairs.splice(1, 0, ["Proposed new owner", pending, "mono warn"]);
   kv($("status"), pairs);
+  const k = klerosInfo();
+  const chPairs = [
+    ["Challenge window", state.phase === 0 ? "opens when you post the list" : state.phase === 1 ? `until ${when(state.windowEnd)}` : "closed"],
+    ["Challenge deposit", fee === null ? "unknown" : ethers.formatEther(fee) + " ETH (the Kleros fee)"],
+    ["Pending challenges", String(state.pendingCh), state.pendingCh ? "warn" : ""],
+  ];
+  for (const ch of state.challenges) {
+    let v = CH_STATES[ch.state];
+    if (ch.state === 1) v += `, match by ${when(ch.matchEndsAt)}`;
+    if (ch.state >= 2 && k) v = [v + ", ", link(`${k.courtUrl}/#/cases/${ch.disputeID}/overview`, `Kleros case #${ch.disputeID} ↗`)];
+    const el = document.createElement("span"); el.append(...[v].flat());
+    chPairs.push([short(ch.wallet), el, "mono"]);
+  }
+  kv($("challenges"), chPairs);
   if (cfg.poolCap && bal > ethers.parseUnits(String(cfg.poolCap), dec)) log(`⚠ The contract holds more than the ${cfg.poolCap} USDC safety cap.`, "err");
   if (account && !isOwner) log("The connected wallet is not the owner of this contract, so owner actions are disabled.", "warn");
   state.isOwner = isOwner;
@@ -419,25 +480,81 @@ async function refundOne() {
   await refresh();
 }
 
-async function finalize() {
+async function postList() {
   await preflight();
   let plan;
-  try { plan = await getJson("/out/payout-plan.json"); } catch { log("out/payout-plan.json not found. Ask Claude to build the payout first.", "err"); return; }
+  try { plan = await getJson("/out/payout-plan.json"); } catch { log("out/payout-plan.json not found. Ask Claude to build the attendance list first.", "err"); return; }
   await refresh();
   const now = Math.floor(Date.now() / 1000);
-  if (now < state.start) throw new Error(`Too early: the payout opens ${when(state.start)}.`);
+  if (now < state.start) throw new Error(`Too early: the attendance list opens ${when(state.start)}.`);
   if (now > state.end) throw new Error("The settlement deadline has passed; guests can now withdraw their own deposits.");
   if (!plan.contract || plan.contract.toLowerCase() !== contractAddr().toLowerCase() || Number(plan.chainId) !== chain.chainId)
-    throw new Error("This payout plan was built for a different contract or network. Ask Claude to rebuild it.");
-  if (BigInt(plan.stakers) !== state.count) throw new Error(`The plan counts ${plan.stakers} stakers but the contract has ${state.count}. Ask Claude to rebuild the payout.`);
+    throw new Error("This attendance list was built for a different contract or network. Ask Claude to rebuild it.");
+  if (BigInt(plan.stakers) !== state.count) throw new Error(`The plan counts ${plan.stakers} stakers but the contract has ${state.count}. Ask Claude to rebuild it.`);
   const c = new ethers.Contract(contractAddr(), artifact.abi, rp);
   const share = await c.previewShare(plan.attendees.length);
-  if (share.toString() !== String(plan.share)) throw new Error(`The share changed (plan ${plan.shareUsdc}, now ${usdc(share)}). Ask Claude to rebuild the payout.`);
-  const msg = `Pay ${plan.attendees.length} of ${state.count} stakers ${usdc(share)} each, ${where()}?\nPool: ${usdc(state.dep * state.count)}. This can only be done once.`;
-  $("finInfo").textContent = `${plan.attendees.length} attendees × ${usdc(share)}`;
-  const typed = prompt(`${msg}\n\nType PAY to continue.`);
+  if (share.toString() !== String(plan.share)) throw new Error(`The share changed (plan ${plan.shareUsdc}, now ${usdc(share)}). Ask Claude to rebuild it.`);
+  const msg = `Post ${plan.attendees.length} of ${state.count} stakers as attendees, ${where()}?\nEach would get ${usdc(share)} (pool ${usdc(state.dep * state.count)}), unless challenges add people.\nThis opens the 1-day challenge window and can only be done once.`;
+  $("postInfo").textContent = `${plan.attendees.length} attendees × ${usdc(share)}`;
+  const typed = prompt(`${msg}\n\nType POST to continue.`);
+  if (typed !== "POST") { log("Attendance list not posted."); return; }
+  await sendTx("post the attendance list", call("postAttendance", [plan.attendees, share]));
+  log("✅ Attendance list posted. The 1-day challenge window is open.", "ok");
+  await refresh();
+}
+
+async function addAtt() {
+  const list = $("addAddrs").value.split(/[\s,]+/).filter(Boolean);
+  if (!list.length || !list.every((a) => ethers.isAddress(a))) throw new Error("Enter one or more wallet addresses (0x…), separated by commas");
+  const wallets = list.map((a) => ethers.getAddress(a));
+  await preflight();
+  if (!confirm(`Add ${wallets.length} staker(s) to the attendance list, ${where()}?\n${wallets.join("\n")}`)) return;
+  await sendTx("add attendees", call("addAttendees", [wallets]));
+  log(`✅ Added ${wallets.length} to the list`, "ok");
+  $("addAddrs").value = "";
+  await refresh();
+}
+
+function chTarget() {
+  const a = $("chAddr").value.trim();
+  if (!ethers.isAddress(a)) throw new Error("Enter the challenger's wallet (0x…)");
+  return ethers.getAddress(a);
+}
+
+async function matchOne() {
+  const w = chTarget();
+  await preflight();
+  await refresh();
+  const ch = state.challenges.find((x) => x.wallet === w);
+  if (!ch || ch.state !== 1) throw new Error(`${short(w)} has no challenge waiting for a match.`);
+  const typed = prompt(`Dispute the claim of ${w} that they attended?\nYou send ${ethers.formatEther(ch.deposit)} ETH. Kleros jurors decide (about 3 weeks), and ALL payouts wait for the ruling.\nIf jurors say they attended, they get your deposit; if not, you get theirs (minus the Kleros fee).\n\nType DISPUTE to continue.`);
+  if (typed !== "DISPUTE") { log("Dispute not sent."); return; }
+  await sendTx("dispute a challenge", { ...call("matchChallenge", [w]), value: ch.deposit });
+  log(`✅ Sent to Kleros. Evidence can be added on the Kleros court site (link in the challenge list).`, "ok");
+  await refresh();
+}
+
+async function resolveOne() {
+  const w = chTarget();
+  await preflight();
+  await sendTx("settle a challenge", call("resolveChallenge", [w]));
+  log(`✅ Challenge of ${short(w)} settled`, "ok");
+  await refresh();
+}
+
+async function release() {
+  await preflight();
+  await refresh();
+  const now = Math.floor(Date.now() / 1000);
+  if (state.phase !== 1) throw new Error("Post the attendance list first.");
+  if (now <= state.windowEnd) throw new Error(`The challenge window is open until ${when(state.windowEnd)}.`);
+  const stuck = state.challenges.filter((x) => x.state === 2 || (x.state === 1 && now <= x.matchEndsAt));
+  if (stuck.length) throw new Error(`${stuck.length} challenge(s) are still open (waiting for a match or a Kleros ruling). Payouts wait for them.`);
+  const n = state.attCount + BigInt(state.challenges.filter((x) => x.state === 1).length); // unmatched ones are accepted now
+  const share = (state.dep * state.count) / n;
+  const typed = prompt(`Pay ${n} attendees ${usdc(share)} each, ${where()}?\nPool: ${usdc(state.dep * state.count)}. This can only be done once.\n\nType PAY to continue.`);
   if (typed !== "PAY") { log("Payout not sent."); return; }
-  const r = await sendTx("pay out", call("finalize", [plan.attendees, share]));
+  const r = await sendTx("release payouts", call("releasePayouts", []));
   const failed = r.logs.map((l) => { try { return iface.parseLog(l); } catch { return null; } }).filter((x) => x?.name === "PayoutFailed");
   for (const f of failed) log(`USDC refused the payout to ${f.args[0]}; it is kept for them to claim to another address.`, "warn");
   log("✅ Paid out", "ok");
@@ -447,7 +564,7 @@ async function finalize() {
 async function sweep() {
   await preflight();
   await refresh();
-  if (state.phase === 0) throw new Error("Leftovers can only be collected after the payout or a cancellation.");
+  if (state.phase < 2) throw new Error("Leftovers can only be collected after the payout or a cancellation.");
   if (state.spare === 0n) { log("Nothing left over."); return; }
   if (state.spare >= state.dep) {
     // that much is not rounding dust: most likely a guest's deposit that was never refunded
@@ -469,22 +586,32 @@ async function cancel() {
   await refresh();
 }
 
-// Owner buttons follow ownership. "Pay attendees" stays locked (greyed out) until the event has
-// started, and after the payout or settlement deadline, so it cannot be pressed by accident.
+// Owner buttons follow ownership. "Post attendance list" stays locked (greyed out) until the event
+// has started, and after posting or the settlement deadline, so it cannot be pressed by accident.
 function applyButtons() {
   if (!state) return;
   OWNER_BUTTONS.forEach((id) => ($(id).disabled = !state.isOwner));
+  ANYONE_BUTTONS.forEach((id) => ($(id).disabled = !account));
   const now = Math.floor(Date.now() / 1000);
-  const b = $("finalize");
-  if (state.phase !== 0) { b.disabled = true; b.textContent = "Pay attendees (done)"; }
-  else if (now < state.start) { b.disabled = true; b.textContent = `Pay attendees (locked until ${when(state.start)})`; }
-  else if (now > state.end) { b.disabled = true; b.textContent = "Pay attendees (deadline passed)"; }
-  else b.textContent = "Pay attendees";
+  const b = $("postList");
+  if (state.phase !== 0) { b.disabled = true; b.textContent = "Post attendance list (done)"; }
+  else if (now < state.start) { b.disabled = true; b.textContent = `Post attendance list (locked until ${when(state.start)})`; }
+  else if (now > state.end) { b.disabled = true; b.textContent = "Post attendance list (deadline passed)"; }
+  else b.textContent = "Post attendance list";
+  const listed = state.phase === 1;
+  if (!listed || now > state.windowEnd) $("addAtt").disabled = true;
+  if (!listed) { $("matchOne").disabled = true; $("resolveOne").disabled = true; }
+  const r = $("release");
+  if (state.phase >= 2) { r.disabled = true; r.textContent = state.phase === 2 ? "Release payouts (done)" : "Release payouts (cancelled)"; }
+  else if (!listed) { r.disabled = true; r.textContent = "Release payouts (post the list first)"; }
+  else if (now <= state.windowEnd) { r.disabled = true; r.textContent = `Release payouts (locked until ${when(state.windowEnd)})`; }
+  else if (state.challenges.some((x) => x.state === 2 || (x.state === 1 && now <= x.matchEndsAt))) { r.disabled = true; r.textContent = "Release payouts (waiting for challenges)"; }
+  else r.textContent = "Release payouts";
 }
 setInterval(() => { if (!busy) applyButtons(); }, 30_000); // unlocks by itself when the event starts
 
 // One action at a time: every button stays disabled until the current action has finished.
-const ALL_BUTTONS = ["connect", "deploy", "refresh", ...OWNER_BUTTONS];
+const ALL_BUTTONS = ["connect", "deploy", "refresh", ...OWNER_BUTTONS, ...ANYONE_BUTTONS];
 const wrap = (fn) => async () => {
   if (busy) return;
   busy = true;
@@ -498,7 +625,7 @@ const wrap = (fn) => async () => {
     if (account) { $("deploy").disabled = false; $("refresh").disabled = false; }
   }
 };
-for (const [id, fn] of Object.entries({ connect, deploy, refresh, register, refundDeclined, removeOne, refundOne, finalize, sweep, cancel })) $(id).onclick = wrap(fn);
+for (const [id, fn] of Object.entries({ connect, deploy, refresh, register, refundDeclined, removeOne, refundOne, postList, addAtt, matchOne, resolveOne, release, sweep, cancel })) $(id).onclick = wrap(fn);
 init().catch((e) => log(explain(e), "err"));
 </script>
 </body>

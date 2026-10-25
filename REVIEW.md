@@ -1,8 +1,31 @@
-# Ground Truth Kickback v2: review summary (23 Oct 2026, deposit 25 USDC on Arbitrum One)
+# Ground Truth Kickback v3: review summary (25 Oct 2026, deposit 25 USDC on Arbitrum One)
 
 For Wei Wei and the developers reviewing the code before the live deployment.
 
-## What changed since the rehearsal (v1)
+## What changed in v3 (please review this first)
+
+Requested by the organiser on 25 Oct:
+
+1. **`require(condition, CustomError(...))` everywhere** instead of `if (!condition) revert CustomError(...)`. Needs Solidity ≥ 0.8.27 on the legacy pipeline; the compiler is now **0.8.28** (optimizer 200, EVM `paris`).
+2. **Attendance challenges on Kleros**, integrated directly in the contract:
+   - `postAttendance(list, share)` (owner, from `eventStart`) replaces `finalize`. It publishes the attendance list and opens a **1-day challenge window** (`challengeEndsAt`). Phase becomes `Listed`. The enum is now `Open, Listed, Finalized, Cancelled`.
+   - `challenge()` (a registered staker not on the list, within the window, `msg.value ≥ challengeDeposit()` = the Kleros arbitration cost; excess refunded).
+   - `matchChallenge(staker)` (anyone, within 1 day of that challenge, same ETH amount). Creates the dispute through Kleros v2's **DisputeResolver** (`createDisputeForTemplate`, 2 options) with a JSON template built on-chain (event name, wallet, question, answers, `policyURI`). KlerosCore on Arbitrum only accepts whitelisted arbitrables (a direct `createDispute` reverts `ArbitrableNotWhitelisted`, checked with an `eth_call` against mainnet), and the DisputeResolver is the open, whitelisted entry point; we verified with a mainnet simulation that it returns a dispute ID for our template.
+   - `resolveChallenge(staker)` (anyone): unmatched after its 1-day match window → counts as attended, deposit back; ruled → ruling 1 adds the staker and pays them the remaining ETH, ruling 2 pays the matcher, ruling 0 splits it.
+   - `addAttendees(list)` (owner, during the window): fixes an honest mistake; a waiting challenger's deposit goes straight back.
+   - `releasePayouts()` (anyone, after the window): auto-accepts unmatched challenges whose match window ran out, requires `pendingChallenges == 0`, then pays `pool / attendeeCount` to everyone on the list.
+   - ETH transfers use a 30k-gas call; if it fails the amount is kept in `ethOwed` for `withdrawEth(to)`. All ETH-moving functions are `nonReentrant`.
+   - `cancel` and `emergencyWithdraw` only while `Open` (before the list is posted). After posting, payout no longer depends on the owner.
+3. Owner console: **Post attendance list** (locked until the event starts, type POST), challenge list with Kleros case links, **Add to the list**, **Dispute**, **Settle**, **Release payouts** (locked until the window ends and no case is pending, type PAY). Deploy passes the Kleros settings from `config.kleros`.
+4. Guest page: challenge / dispute / settle from "Check a deposit", an "Open challenges" list, and an explainer.
+
+Points we would like reviewers to look at in particular: the ETH accounting in `resolveChallenge` (2 × deposit − fee, rounding on the split), the `cost ≤ 2 × deposit` guard if the Kleros fee rises between challenge and match, the unbounded loop over `_challengers` in `releasePayouts` (bounded by the number of stakers, at most 150), and the template JSON (no user-controlled strings except the owner-set event name and policy path).
+
+**Tradeoffs the organiser accepted:** a fee of about 0.015 ETH per side; a matched challenge holds every payout for about 3 weeks (one Kleros round, longer with appeals); the juror policy (`docs/attendance-policy.md`) must be pinned on IPFS and set in `config.kleros.policyURI` before the live deploy (the deploy refuses otherwise).
+
+Tests: 19 contract tests (including every challenge path against a mock DisputeResolver and an ETH-refusing wallet), the end-to-end script test (posts the list, an unmatched challenge, release), 43 browser checks on the guest page and 19 on the owner console (deploy with Kleros settings → register → post → challenge → dispute → ruling → settle → release).
+
+## What changed in v2 (since the rehearsal of v1)
 
 | Area | v1 (rehearsal contract 0x1F04…620f) | v2 (this zip) |
 |---|---|---|
@@ -37,11 +60,11 @@ Deploy, 25 USDC deposit, verify, decline + refund (`rejectAndRefund`, tx 0x4c738
 - The contract counts money in total, not per wallet: deposits are plain USDC transfers verified off-chain from the Luma tx links. Only register wallets the verify script lists.
 - Guests who paid but were never registered depend on the organiser to refund them (the console and scripts make this one click).
 - The owner is a single wallet, not a multisig (organiser's choice for a side event).
-- Attendance is decided by the organiser from the Luma check-in; publish `payout-summary.md` and the payout transaction.
+- Attendance is published by the organiser from the Luma check-in; stakers left off can challenge on Kleros (see v3 above).
 
 ## Before going live
 
-1. Short v2 rehearsal on Arbitrum One (`npm run console:rehearsal`, 500 USDC cap, throwaway contract).
+1. Short v3 rehearsal on Arbitrum One (`npm run console:rehearsal`, 500 USDC cap, throwaway contract), including one challenge left unmatched.
 2. Developer review of `contracts/GroundTruthKickback.sol` and `console/index.html`.
-3. Deploy the live contract from `npm run console`, verify the source on Arbiscan (`build/GroundTruthKickback.standard-input.json`, compiler 0.8.24), record `contract`, `receiver`, `deployBlock` and `depositOpensAt` in `config.json`, and put the address on Luma while the event stays Private.
+3. Pin `docs/attendance-policy.md` on IPFS and set `kleros.policyURI`. Deploy the live contract from `npm run console`, verify the source on Arbiscan (`build/GroundTruthKickback.standard-input.json`, compiler 0.8.28), record `contract`, `receiver`, `deployBlock` and `depositOpensAt` in `config.json`, and put the address on Luma while the event stays Private.
 4. Go Public only when the organiser says so.

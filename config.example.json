@@ -14,5 +14,11 @@
   "claimDeadline": "2026-11-18T18:00:00+05:30",
   "poolCap": "",
   "mode": "live",
-  "deployBlock": ""
+  "deployBlock": "",
+  "kleros": {
+    "court": 1,
+    "jurors": 3,
+    "disputeKit": 1,
+    "policyURI": ""
+  }
 }

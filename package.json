@@ -13,13 +13,14 @@
     "console:testnet": "node scripts/console.mjs --config config.testnet.json --out out-testnet",
     "console:rehearsal": "node scripts/console.mjs --config config.rehearsal.json --out out-rehearsal",
     "site": "node scripts/build-site.mjs",
-    "test:site": "node test/site.e2e.mjs"
+    "test:site": "node test/site.e2e.mjs",
+    "test:console": "node test/console.e2e.mjs"
   },
   "license": "MIT",
   "dependencies": {
     "csv-parse": "^5.5.6",
     "ethers": "^6.13.4",
-    "solc": "0.8.24"
+    "solc": "0.8.28"
   },
   "devDependencies": {
     "ganache": "^7.9.2"

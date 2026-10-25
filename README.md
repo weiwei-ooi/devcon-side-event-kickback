@@ -1,6 +1,6 @@
 # Ground Truth: Kickback-style deposits for Luma
 
-Guests who want a guaranteed spot send a **$25 USDC refundable deposit**. Guests who show up get their deposit back, **plus an equal share of the no-shows' deposits**. Everyone else can still request a free spot, which the hosts approve by hand.
+Guests who want a guaranteed spot send a **$25 USDC refundable deposit**. Guests who show up get their deposit back, **plus an equal share of the no-shows' deposits**. Everyone else can still request a free spot, which the hosts approve by hand. A staker who was there but missed at check-in can challenge the attendance list on **Kleros**.
 
 ```
  Guest                       Organisers                              Contract (on-chain)
@@ -11,8 +11,11 @@ Guests who want a guaranteed spot send a **$25 USDC refundable deposit**. Guests
                                                 ├─▶ approved: registerStakers()  ─▶ public staker list
                                                 └─▶ declined: rejectAndRefund()  ─▶ 25 USDC straight back
  check in at the door ─────▶ Luma check-in app
-                             build-payout.mjs ─────▶ finalize(attendees, share) ─▶ pool ÷ attendees
-                                                                           paid to each attendee
+                             build-payout.mjs ─────▶ postAttendance(attendees, share)
+                                                     │  1 day: a staker left off the list can challenge() (ETH deposit = Kleros fee)
+                                                     │  1 day: anyone can matchChallenge() → Kleros dispute; unmatched = attended
+                                                     ▼
+                             anyone ───────────────▶ releasePayouts() once no Kleros case is pending ─▶ pool ÷ attendees
 ```
 
 **Example:** 100 stakers make a 2,500 USDC pool. If 80 show up, each of them gets **31.25 USDC** back: their own 25 plus 6.25 from the no-shows.
@@ -21,14 +24,15 @@ Guests who want a guaranteed spot send a **$25 USDC refundable deposit**. Guests
 
 | File | What it does |
 |---|---|
-| `contracts/GroundTruthKickback.sol` | Holds the deposits, keeps a public staker list, and splits the pool equally among attendees. It also refunds declined guests, handles cancellation (full refunds), returns mistaken transfers (spare money only), keeps failed payouts for the guest to claim, lets stakers withdraw their own deposit if the organiser never settles, and sweeps rounding dust after settlement. |
+| `contracts/GroundTruthKickback.sol` | Holds the deposits, keeps a public staker list, publishes the attendance list, runs the Kleros challenge window, and splits the pool equally among attendees. It also refunds declined guests, handles cancellation (full refunds), returns mistaken transfers (spare money only), keeps failed payouts for the guest to claim, lets stakers withdraw their own deposit if the organiser never settles, and sweeps rounding dust after settlement. |
 | `scripts/verify-deposits.mjs` | Reads the Luma guest CSV and checks every pasted tx on-chain: correct token, correct receiver, sent from the guest's wallet, at least $25, inside the deposit window, and not reused. It also lists deposits that nobody claimed. |
 | `scripts/build-payout.mjs` | Matches the Luma check-in export (plus an optional manual list) against the stakers and computes each payout. |
 | `scripts/owner.mjs` | Sends the owner transactions directly, if the owner is a normal wallet. |
 | `scripts/deploy.mjs` | Deploys the contract. |
 | `console/` + `scripts/console.mjs` | The owner console: a local page where the organiser clicks buttons and confirms in her wallet. |
 | `site/index.html` + `scripts/build-site.mjs` | The public guest deposit page: switches the wallet to Arbitrum One, checks the contract, sends exactly 25 USDC and gives the tx link for Luma. See "Guest deposit page". |
-| `test/` | Contract tests (guards, blocklisted wallets, odd tokens, 150 guests) and an end-to-end test of the scripts on a local chain. |
+| `docs/attendance-policy.md` | The policy Kleros jurors apply in an attendance dispute. Pinned on IPFS; its path goes in `config.kleros.policyURI` before the live deploy. |
+| `test/` | Contract tests (guards, blocklisted wallets, odd tokens, 150 guests, every challenge path with a mock Kleros), an end-to-end test of the scripts on a local chain, and browser tests of the guest page and the owner console. |
 
 All the owner transactions are also written out as **Safe Transaction Builder** files (`out/safe-*.json`), so a Kleros or Arkiv Safe can own the contract and sign the payouts.
 
@@ -47,7 +51,7 @@ cp -n config.example.json config.json   # only if config.json is missing; then f
 npm run console      # opens http://localhost:8787
 ```
 
-The owner console is a local page: **Connect wallet**, **Deploy contract**, **Register stakers**, **Refund declined guests** and **Pay attendees**, plus (folded away) remove-and-refund one guest, return a stray transfer, collect leftovers and cancel. Every button simulates the transaction first and explains any problem in plain words before the wallet opens; reads and fee estimates go through the public RPC so the wallet only signs. A banner shows whether it is LIVE, a REHEARSAL (optional `poolCap` safety cap) or a test network.
+The owner console is a local page: **Connect wallet**, **Deploy contract**, **Register stakers**, **Refund declined guests**, **Post attendance list** and, after the challenge window, **Release payouts** (with a challenge list, **Add to the list**, **Dispute** and **Settle** in between), plus (folded away) remove-and-refund one guest, return a stray transfer, collect leftovers and cancel. Every button simulates the transaction first and explains any problem in plain words before the wallet opens; reads and fee estimates go through the public RPC so the wallet only signs. A banner shows whether it is LIVE, a REHEARSAL (optional `poolCap` safety cap) or a test network.
 
 ### Developer alternative (private key in the environment)
 
@@ -57,9 +61,9 @@ Deploy once. The deployer only pays gas, and the Safe becomes the owner:
 PRIVATE_KEY=0x… node scripts/deploy.mjs --owner 0xYourSafe   # uses eventStart / claimDeadline from config
 ```
 
-Put the deployed address in `config.json` as **both** `receiver` and `contract`, the deploy block as `deployBlock` (used to find deposits nobody claimed), set `depositOpensAt` to the deploy time, and share the address as the deposit address. Verify the source on Arbiscan (Solidity 0.8.24, optimizer on, 200 runs, EVM `paris`) so guests can use `claim` / `emergencyWithdraw` from Arbiscan's "Write contract" tab if they ever need to.
+Put the deployed address in `config.json` as **both** `receiver` and `contract`, the deploy block as `deployBlock` (used to find deposits nobody claimed), set `depositOpensAt` to the deploy time, and share the address as the deposit address. Verify the source on Arbiscan (Solidity 0.8.28, optimizer on, 200 runs, EVM `paris`) so guests can use `claim` / `emergencyWithdraw` from Arbiscan's "Write contract" tab if they ever need to.
 
-> **Without the contract:** set `receiver` to a Safe and leave out `contract`. Verification works the same way, and `build-payout.mjs` writes a batched Safe transaction of USDC transfers instead of a `finalize()` call.
+> **Without the contract:** set `receiver` to a Safe and leave out `contract`. Verification works the same way, and `build-payout.mjs` writes a batched Safe transaction of USDC transfers instead of a `postAttendance()` call (no Kleros challenges then).
 
 ## Luma setup
 
@@ -92,8 +96,10 @@ node scripts/build-payout.mjs --checkins ~/Downloads/luma-guests-after.csv [--ex
 ```
 
 - `out/payout-summary.md`: the numbers to post publicly.
-- `out/payout-plan.json`: the attendee list and per-person share that **Pay attendees** sends; it refuses if the on-chain numbers changed.
-- `out/safe-finalize.json`: upload and sign this, or run `node scripts/owner.mjs finalize`.
+- `out/payout-plan.json`: the attendee list and per-person share that **Post attendance list** sends; it refuses if the on-chain numbers changed.
+- `out/safe-post-attendance.json`: upload and sign this, or run `node scripts/owner.mjs post-attendance`.
+- **Challenge window (1 day after posting):** watch the challenge list in the console. If a challenger really was there (you recognise them, a host saw them), click **Add to the list**: their ETH deposit goes back and no Kleros case is needed. If you are sure they were not there, **Dispute** sends the case to Kleros (0.015 ETH from your wallet; jurors take about 3 weeks, and all payouts wait). Otherwise do nothing: an unmatched challenge counts as attended after 1 day.
+- **Release payouts:** once the window is over and no Kleros case is pending, click **Release payouts** (anyone can, so guests are not stuck if the owner wallet is lost). Share per person = pool ÷ final number of attendees.
 - **Before paying out:** decline on Luma every payer who is still pending or waitlisted, and every late (`OUTSIDE_WINDOW`) payer you won't admit; re-run verify and click **Refund declined guests**, so nobody's deposit is left behind as "spare".
 - When it's done, click **Collect leftovers** in the console (it refuses to quietly sweep anything that looks like a guest's deposit).
 
@@ -129,7 +135,9 @@ Overpayments are verified but flagged. Return the excess with `owner.mjs refund`
 4. Send exactly 25 USDC (a plain `USDC.transfer(contract, 25e6)`), wait for the receipt.
 5. Copy the Arbiscan tx link and wallet address for Luma.
 
-Before enabling the send button, the page reads the contract over the public RPC and checks there is code at the address, that `token()` is native USDC, that `deposit()` is exactly 25 USDC, and that `phase()` is Open with `eventStart` in the future. A "Check a deposit" box shows any wallet's status (received, confirmed, refunded, paid, no-show) and lets a guest `claim` an undeliverable payout or `emergencyWithdraw` after the deadline.
+Before enabling the send button, the page reads the contract over the public RPC and checks there is code at the address, that `token()` is native USDC, that `deposit()` is exactly 25 USDC, and that `phase()` is Open with `eventStart` in the future. A "Check a deposit" box shows any wallet's status (received, confirmed, refunded, on the list, challenged, in a Kleros case, paid, no-show) and lets a guest `claim` an undeliverable payout, `emergencyWithdraw` after the deadline, or `withdrawEth` a challenge refund that could not be sent.
+
+After the list is posted, the same box is how challenges work: a staker left off the list sees **Challenge** (pays `challengeDeposit()` in ETH); anyone looking up a challenger sees **Dispute this claim** (matches the deposit, creating the Kleros case) and later **Settle**. An "Open challenges" list shows who challenged, with a link to each Kleros case for evidence.
 
 The deposit address is compiled into the page (`npm run site` writes `site/dist/index.html` from `config.json`); it is never read from the URL, so a look-alike link can't redirect deposits. Re-run after deploying. `npm run site -- --preview` builds a page without an address. Browser test: `npm run test:site` (needs Playwright).
 
@@ -139,10 +147,12 @@ This setup isn't trustless, but anyone can check it:
 
 - **Deposits:** Every deposit and every registered staker is public on-chain (`StakerRegistered` events and `stakers()`).
 - **The pool:** `refund` and `sweep` can only move *spare* money: balance above the staked pool and unclaimed payouts. Declined guests are refunded exactly their deposit, to their own wallet.
-- **Attendance:** The organiser decides who attended, based on the Luma check-in. Publish `payout-summary.md` and the finalize tx so stakers can check it. The payout needs the exact per-person share the organiser confirmed.
-- **Deadlines:** payout opens at `eventStart`. After `claimDeadline` (at least 7 days later) the organiser can no longer settle and every staker can withdraw their own deposit, so a lost owner key cannot lock the pool.
+- **Attendance:** The organiser publishes who attended (`postAttendance`), based on the Luma check-in, with the exact per-person share she confirmed. A staker left off the list has 1 day to challenge; anyone has 1 day to match, which creates a Kleros dispute decided by jurors under `docs/attendance-policy.md`. An unmatched challenge counts as attended. `releasePayouts` (callable by anyone) pays out only after the window, with no dispute pending.
+- **Kleros integration:** permissionless, through Kleros v2's `DisputeResolver` on Arbitrum One (`0xb5526D022962A1fFf6eD32C93e8b714c901F4323`): KlerosCore only accepts whitelisted arbitrables, and the DisputeResolver is the whitelisted, open entry point. The contract sends its own dispute template (event, wallet, question, policy) and reads the ruling back from `disputes(localID)`. Defaults: General Court, 3 jurors, classic dispute kit; fee about 0.015 ETH, paid in ETH (USDC is not accepted). A round takes about 3 weeks (evidence, commit, vote, appeal periods), and appeals can add rounds.
+- **Challenge money:** both sides put in the same ETH. The Kleros fee comes out of the two deposits; the winner gets the rest (split if jurors refuse to arbitrate). ETH that cannot be sent is kept for `withdrawEth`.
+- **Deadlines:** the list can be posted from `eventStart`. If no list is posted by `claimDeadline` (at least 7 days later), every staker can withdraw their own deposit, so a lost owner key cannot lock the pool. Once the list is posted, payouts no longer depend on the owner.
 - **Failed transfers:** if USDC refuses a payout (blocklisted address), the amount is kept for that guest to `claim` to another address; nobody else is blocked.
-- **Known limits:** balances are counted in total, not per wallet, so the organiser must only register wallets the verify script lists. Unregistered payers depend on the organiser to refund them. The owner is a single wallet (no multisig), by the organiser's choice.
+- **Known limits:** balances are counted in total, not per wallet, so the organiser must only register wallets the verify script lists. Unregistered payers depend on the organiser to refund them. The owner is a single wallet (no multisig), by the organiser's choice. A matched challenge holds every payout until Kleros rules (about 3 weeks per round). Adding someone who is already in a Kleros case puts them on the list, but payouts still wait for that ruling.
 
 ## Guest instructions (for the Luma page)
 
@@ -154,3 +164,4 @@ This setup isn't trustless, but anyone can check it:
 > 3. Every registration is reviewed. If you are declined or not admitted from the waitlist, your 25 USDC goes back to the same wallet.
 > 4. If you don't check in, you lose your 25 USDC. If the organisers never settle, you can withdraw it yourself after 18 Nov.
 > 5. Check in at the door. After the event, everyone who showed up gets their 25 USDC back, plus an equal share of the no-shows' deposits. If your registration is declined, your 25 USDC is sent back to the same wallet.
+> 6. **Missed at check-in?** The attendance list is published on-chain after the event. If you were there but are not on it, you have 1 day to challenge it from the deposit page with a small ETH deposit (the Kleros fee, about 0.015 ETH). If nobody disputes it within a day, you count as attended and get the ETH back. If someone does, independent Kleros jurors decide from the evidence (photos, messages, hosts' statements).
