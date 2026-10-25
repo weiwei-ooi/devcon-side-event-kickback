@@ -27,6 +27,7 @@ Guests who want a guaranteed spot send a **$25 USDC refundable deposit**. Guests
 | `scripts/owner.mjs` | Sends the owner transactions directly, if the owner is a normal wallet. |
 | `scripts/deploy.mjs` | Deploys the contract. |
 | `console/` + `scripts/console.mjs` | The owner console: a local page where the organiser clicks buttons and confirms in her wallet. |
+| `site/index.html` + `scripts/build-site.mjs` | The public guest deposit page: switches the wallet to Arbitrum One, checks the contract, sends exactly 25 USDC and gives the tx link for Luma. See "Guest deposit page". |
 | `test/` | Contract tests (guards, blocklisted wallets, odd tokens, 150 guests) and an end-to-end test of the scripts on a local chain. |
 
 All the owner transactions are also written out as **Safe Transaction Builder** files (`out/safe-*.json`), so a Kleros or Arkiv Safe can own the contract and sign the payouts.
@@ -117,6 +118,20 @@ node scripts/build-payout.mjs --checkins ~/Downloads/luma-guests-after.csv [--ex
 Overpayments are verified but flagged. Return the excess with `owner.mjs refund`.
 
 **Wrong network (USDC sent on Ethereum mainnet to the contract address):** the money sits at that address on Ethereum, where no contract exists. The only way to recover it is to deploy the same contract on Ethereum from the owner wallet at the same nonce, so that it lands at the same address, then `refund` it from there. This costs Ethereum gas and only works while the owner wallet has made fewer Ethereum mainnet transactions than that nonce. So **don't use the owner wallet on Ethereum mainnet** before settlement. Decide case by case.
+
+## Guest deposit page
+
+`site/index.html` is a single static page for guests, with no dependencies and no build step beyond baking in the address:
+
+1. Connect wallet (any injected wallet; on phones, the wallet app's own browser).
+2. Switch to Arbitrum One (`wallet_switchEthereumChain`, adds the network if missing). Sending is blocked on any other network, and the network is checked again right before the wallet prompt.
+3. Check balance: at least 25 USDC and some ETH on Arbitrum One. It also refuses a second deposit from a wallet that already has one or is already registered.
+4. Send exactly 25 USDC (a plain `USDC.transfer(contract, 25e6)`), wait for the receipt.
+5. Copy the Arbiscan tx link and wallet address for Luma.
+
+Before enabling the send button, the page reads the contract over the public RPC and checks there is code at the address, that `token()` is native USDC, that `deposit()` is exactly 25 USDC, and that `phase()` is Open with `eventStart` in the future. A "Check a deposit" box shows any wallet's status (received, confirmed, refunded, paid, no-show) and lets a guest `claim` an undeliverable payout or `emergencyWithdraw` after the deadline.
+
+The deposit address is compiled into the page (`npm run site` writes `site/dist/index.html` from `config.json`); it is never read from the URL, so a look-alike link can't redirect deposits. Re-run after deploying. `npm run site -- --preview` builds a page without an address. Browser test: `npm run test:site` (needs Playwright).
 
 ## Trust model
 

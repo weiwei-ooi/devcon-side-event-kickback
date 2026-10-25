@@ -11,7 +11,9 @@
     "owner": "node scripts/owner.mjs",
     "console": "node scripts/console.mjs",
     "console:testnet": "node scripts/console.mjs --config config.testnet.json --out out-testnet",
-    "console:rehearsal": "node scripts/console.mjs --config config.rehearsal.json --out out-rehearsal"
+    "console:rehearsal": "node scripts/console.mjs --config config.rehearsal.json --out out-rehearsal",
+    "site": "node scripts/build-site.mjs",
+    "test:site": "node test/site.e2e.mjs"
   },
   "license": "MIT",
   "dependencies": {

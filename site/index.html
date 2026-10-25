@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ground Truth Deposit</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Send your 25 USDC Committed Spot deposit for the Ground Truth dinner (Devcon Mumbai) on Arbitrum One.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one narrow column that reads like a receipt: event header, network warning, live contract checks, four numbered steps, then a deposit lookup. */
+:root {
+  --bg: #f3f5f9;
+  --surface: #ffffff;
+  --ink: #141b2b;
+  --muted: #5a6478;
+  --line: #d9dfea;
+  --accent: #1f5fd6;      /* Arbitrum blue */
+  --accent-ink: #ffffff;
+  --accent-soft: #e4ecfb;
+  --warn: #9a5b00;
+  --warn-soft: #fff3dc;
+  --bad: #b3261e;
+  --bad-soft: #fde7e5;
+  --good: #1b7a46;
+  --good-soft: #e2f4ea;
+  --font-display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1320; --surface: #161d2e; --ink: #e8ecf5; --muted: #9aa5bb; --line: #29324a;
+    --accent: #6c9cff; --accent-ink: #0b1020; --accent-soft: #1c2948;
+    --warn: #f2b65a; --warn-soft: #34270f; --bad: #ff8a80; --bad-soft: #3a1a1a; --good: #6fd39b; --good-soft: #13301f;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1320; --surface: #161d2e; --ink: #e8ecf5; --muted: #9aa5bb; --line: #29324a;
+  --accent: #6c9cff; --accent-ink: #0b1020; --accent-soft: #1c2948;
+  --warn: #f2b65a; --warn-soft: #34270f; --bad: #ff8a80; --bad-soft: #3a1a1a; --good: #6fd39b; --good-soft: #13301f;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.55 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 28px 48px;
+}
+[hidden] { display: none !important; }
+main { max-width: 600px; margin: 0 auto; display: grid; gap: 18px; }
+h1, h2 { font-family: var(--font-display); text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(1.7rem, 5vw, 2.3rem); line-height: 1.1; font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 1.12rem; font-weight: 700; }
+p { margin: 0; }
+a { color: var(--accent); }
+.mono { font-family: var(--font-mono); font-size: 0.92em; overflow-wrap: anywhere; }
+.muted { color: var(--muted); }
+.eyebrow { font-size: 0.74rem; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+
+header { display: grid; gap: 10px; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 16px; color: var(--muted); font-size: 0.92rem; }
+
+.network {
+  display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start;
+  background: var(--warn-soft); color: var(--ink); border: 1px solid var(--warn); border-radius: 10px; padding: 14px 16px;
+}
+.network .tag { font-family: var(--font-display); font-weight: 700; color: var(--warn); font-size: 1.5rem; line-height: 1; }
+.network strong { color: var(--warn); }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px; display: grid; gap: 12px; }
+.checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.checks li { display: grid; grid-template-columns: 22px 1fr; gap: 8px; align-items: start; font-size: 0.94rem; }
+.mark { width: 18px; height: 18px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 0.7rem; font-weight: 700; margin-top: 2px; background: var(--line); color: var(--muted); }
+.mark.ok { background: var(--good-soft); color: var(--good); }
+.mark.no { background: var(--bad-soft); color: var(--bad); }
+.addr-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.addr-row .mono { flex: 1 1 260px; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.stats { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 0.9rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+ol.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; counter-reset: step; }
+.step { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; display: grid; grid-template-columns: 34px 1fr; gap: 4px 12px; }
+.step::before {
+  counter-increment: step; content: counter(step);
+  grid-row: span 3; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center;
+  font: 700 0.95rem var(--font-display); background: var(--accent-soft); color: var(--accent);
+}
+.step.done::before { content: "✓"; background: var(--good-soft); color: var(--good); }
+.step.locked { opacity: 0.6; }
+.step > * { min-width: 0; }
+.step .body { display: grid; gap: 10px; }
+
+button {
+  font: 600 0.95rem var(--font-body); border-radius: 8px; padding: 10px 16px; cursor: pointer;
+  border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink);
+}
+a.btn { display: inline-block; text-decoration: none; font: 600 0.95rem var(--font-body); border-radius: 8px; padding: 10px 16px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); }
+button.ghost { background: transparent; color: var(--accent); }
+button.small { padding: 6px 10px; font-size: 0.85rem; }
+button:disabled { cursor: not-allowed; opacity: 0.45; }
+button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+input[type="text"] {
+  font: 0.92rem var(--font-mono); width: 100%; padding: 9px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+}
+.row input[type="text"] { flex: 1 1 240px; width: auto; min-width: 0; }
+.note { border-radius: 8px; padding: 10px 12px; font-size: 0.92rem; background: var(--bg); border: 1px solid var(--line); }
+.note.bad { background: var(--bad-soft); border-color: var(--bad); }
+.note.warn { background: var(--warn-soft); border-color: var(--warn); }
+.note.good { background: var(--good-soft); border-color: var(--good); }
+.pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; background: var(--line); color: var(--ink); }
+.pill.ok { background: var(--good-soft); color: var(--good); }
+.pill.no { background: var(--bad-soft); color: var(--bad); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 0.92rem; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; min-width: 0; font-variant-numeric: tabular-nums; }
+footer { color: var(--muted); font-size: 0.86rem; display: grid; gap: 6px; }
+@media (prefers-reduced-motion: no-preference) { button { transition: filter .15s; } button:hover:not(:disabled) { filter: brightness(1.08); } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="eyebrow">Committed Spot deposit · Devcon Mumbai side event</span>
+    <h1>Ground Truth: Queryable Data, Prediction Markets &amp; Decentralised Justice</h1>
+    <div class="meta"><span>Wed 4 Nov 2026 · 18:00–22:00 IST</span><span>Hitchki, BKC, Mumbai</span><span>Kleros · Arkiv · Web3 Mumbai</span></div>
+  </header>
+
+  <div class="network" role="note">
+    <span class="tag">!</span>
+    <div><strong>Arbitrum One only.</strong> Most wallets open on Ethereum mainnet. USDC sent on Ethereum or any other network can't be counted and may be lost. This page switches your wallet to Arbitrum One before you send.</div>
+  </div>
+
+  <section class="panel" aria-labelledby="contract-h">
+    <h2 id="contract-h">Deposit contract</h2>
+    <div id="preview" class="note warn" hidden>Deposits open soon. The deposit address appears here once the contract has passed its security review and is live.</div>
+    <div id="contract-box" hidden>
+      <div class="addr-row">
+        <span class="mono" id="contract-addr">0x…</span>
+        <button class="ghost small" id="copy-contract" type="button">Copy</button>
+        <a id="contract-link" href="#" target="_blank" rel="noopener">View on Arbiscan</a>
+      </div>
+    </div>
+    <ul class="checks" id="checks"></ul>
+    <div class="stats" id="stats"></div>
+  </section>
+
+  <ol class="steps">
+    <li class="step" id="s-connect">
+      <h2>Connect your wallet</h2>
+      <div class="body">
+        <p class="muted">Use your own wallet, not an exchange account. A declined registration is refunded to the wallet that sent the deposit.</p>
+        <div class="row"><button id="connect" type="button">Connect wallet</button><span id="who" class="mono"></span></div>
+        <div id="no-wallet" class="note" hidden>No wallet found in this browser. On a phone, open this page in your wallet app's built-in browser (MetaMask, Rabby, Zerion, Coinbase Wallet). On a computer, install a wallet extension and reload.</div>
+      </div>
+    </li>
+    <li class="step locked" id="s-network">
+      <h2>Switch to Arbitrum One</h2>
+      <div class="body">
+        <div class="row"><span>Your wallet is on:</span><span class="pill" id="net-pill">Not connected</span></div>
+        <div id="net-wrong" class="note bad" hidden></div>
+        <div class="row"><button id="switch" type="button" disabled>Switch to Arbitrum One</button></div>
+      </div>
+    </li>
+    <li class="step locked" id="s-check">
+      <h2>Check your balance</h2>
+      <div class="body">
+        <dl class="kv"><dt>USDC on Arbitrum One</dt><dd id="bal-usdc">–</dd><dt>ETH for the fee</dt><dd id="bal-eth">–</dd></dl>
+        <div id="check-msg" class="note" hidden></div>
+      </div>
+    </li>
+    <li class="step locked" id="s-send">
+      <h2>Send exactly 25 USDC</h2>
+      <div class="body">
+        <p id="send-summary" class="muted">You'll send 25 USDC on Arbitrum One to the deposit contract above. Your wallet asks you to confirm, and the fee is a few cents at most.</p>
+        <div class="row"><button id="send" type="button" disabled>Send 25 USDC</button></div>
+        <div id="send-msg" class="note" hidden></div>
+      </div>
+    </li>
+    <li class="step locked" id="s-luma">
+      <h2>Paste the link on Luma</h2>
+      <div class="body">
+        <p class="muted">Register with the <strong>Committed Spot ($25 Deposit)</strong> ticket. Use this wallet as your ETH address and paste the transaction link into "Deposit tx link".</p>
+        <div id="luma-box" hidden class="kv">
+          <dt>Transaction link</dt><dd><span class="mono" id="tx-link">–</span> <button class="ghost small" id="copy-tx" type="button">Copy</button></dd>
+          <dt>Your wallet</dt><dd><span class="mono" id="tx-wallet">–</span> <button class="ghost small" id="copy-wallet" type="button">Copy</button></dd>
+        </div>
+        <div class="row"><a id="luma-link" class="btn" href="https://luma.com/qewnqhas" target="_blank" rel="noopener">Open Luma registration</a></div>
+      </div>
+    </li>
+  </ol>
+
+  <section class="panel" aria-labelledby="lookup-h">
+    <h2 id="lookup-h">Check a deposit</h2>
+    <p class="muted">See where a wallet stands: deposit received, spot confirmed, refunded or paid out.</p>
+    <div class="row"><input type="text" id="lookup-addr" placeholder="0x… wallet address" autocomplete="off" spellcheck="false"><button id="lookup" type="button" class="ghost">Check</button></div>
+    <div id="lookup-out" class="note" hidden></div>
+    <div id="claim-box" hidden class="body">
+      <label for="claim-to" class="muted">Send it to this address instead:</label>
+      <input type="text" id="claim-to" placeholder="0x… address that can receive USDC" autocomplete="off" spellcheck="false">
+      <div class="row"><button id="claim" type="button">Claim</button></div>
+    </div>
+  </section>
+
+  <footer>
+    <p>The deposit address shown here is the same one on the Luma event page. Hosts never ask for your recovery phrase or private key. The contract can't pay anything out before the event starts, and if the hosts never settle, every confirmed guest can withdraw their own deposit after the claim deadline.</p>
+    <p>Show up and check in: you get your 25 USDC back plus an equal share of the no-shows' deposits. If the event is cancelled, every deposit is refunded.</p>
+  </footer>
+</main>
+
+<script>
+/*CONFIG*/
+const CONFIG = {
+  "contract": "",
+  "deployBlock": 0,
+  "chainId": 42161,
+  "chainName": "Arbitrum One",
+  "rpc": "https://arb1.arbitrum.io/rpc",
+  "explorer": "https://arbiscan.io",
+  "usdc": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+  "deposit": "25",
+  "decimals": 6,
+  "lumaUrl": "https://luma.com/qewnqhas"
+};
+/*END CONFIG*/
+const $ = (id) => document.getElementById(id);
+const SEL = { token: "0xfc0c546a", deposit: "0xd0e30db0", eventStart: "0x202887e7", claimDeadline: "0x3ba86c44", phase: "0xb1c9fe6e",
+  stakerCount: "0xdff69787", status: "0x645b8b1b", owed: "0xdf18e047", balanceOf: "0x70a08231", transfer: "0xa9059cbb", claim: "0x1e83409a", emergencyWithdraw: "0x6ff1c9bc" };
+const TOPIC_TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+const NETWORKS = { 1: "Ethereum mainnet", 10: "Optimism", 56: "BNB Chain", 137: "Polygon", 324: "zkSync", 8453: "Base", 42161: "Arbitrum One", 42170: "Arbitrum Nova", 59144: "Linea", 11155111: "Sepolia testnet" };
+const isAddr = (a) => /^0x[0-9a-fA-F]{40}$/.test(a || "");
+const pad = (hex) => hex.replace(/^0x/, "").toLowerCase().padStart(64, "0");
+const word = (n) => BigInt(n).toString(16).padStart(64, "0");
+const big = (hex) => (!hex || hex === "0x" ? 0n : BigInt(hex));
+const UNIT = 10n ** BigInt(CONFIG.decimals);
+const DEPOSIT = BigInt(Math.round(Number(CONFIG.deposit) * 1e6)) * UNIT / 1000000n;
+const short = (a) => a.slice(0, 6) + "…" + a.slice(-4);
+const txUrl = (h) => `${CONFIG.explorer}/tx/${h}`;
+function usd(n) {
+  const whole = n / UNIT, frac = (n % UNIT).toString().padStart(CONFIG.decimals, "0").slice(0, 2);
+  return `${whole.toLocaleString("en-US")}${frac === "00" ? "" : "." + frac} USDC`;
+}
+function ist(ts) {
+  return new Date(Number(ts) * 1000).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false }) + " IST";
+}
+
+// Reads go to the public Arbitrum RPC, so they work before a wallet is connected and whatever network the wallet is on.
+let rpcId = 0;
+async function rpc(method, params) {
+  try {
+    const r = await fetch(CONFIG.rpc, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }) });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error.message || "RPC error");
+    return j.result;
+  } catch (e) {
+    if (window.ethereum && state.account && state.chainId === CONFIG.chainId) return window.ethereum.request({ method, params });
+    throw e;
+  }
+}
+const call = (to, data) => rpc("eth_call", [{ to, data }, "latest"]);
+
+const state = { account: null, chainId: null, info: null, usdc: null, eth: null, prior: null, status: null, sending: false, lastTx: null };
+
+function setNote(el, kind, html) {
+  el.className = "note" + (kind ? " " + kind : "");
+  el.innerHTML = html;
+  el.hidden = !html;
+}
+async function copy(text, btn) {
+  try { await navigator.clipboard.writeText(text); btn.textContent = "Copied"; }
+  catch { const r = document.createRange(); const el = btn.previousElementSibling; if (el) { r.selectNodeContents(el); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } btn.textContent = "Selected"; }
+  setTimeout(() => (btn.textContent = "Copy"), 1500);
+}
+
+// ---------------------------------------------------------------- contract checks
+async function loadContract() {
+  const c = CONFIG.contract;
+  if (!isAddr(c)) { $("preview").hidden = false; renderChecks(null); refresh(); return; }
+  $("contract-box").hidden = false;
+  $("contract-addr").textContent = c;
+  $("contract-link").href = `${CONFIG.explorer}/address/${c}`;
+  try {
+    const [code, token, dep, start, deadline, phase, count, pool] = await Promise.all([
+      rpc("eth_getCode", [c, "latest"]), call(c, SEL.token), call(c, SEL.deposit), call(c, SEL.eventStart),
+      call(c, SEL.claimDeadline), call(c, SEL.phase), call(c, SEL.stakerCount), call(CONFIG.usdc, SEL.balanceOf + pad(c)),
+    ]);
+    const now = Math.floor(Date.now() / 1000);
+    const info = {
+      code: code && code !== "0x", token: "0x" + (token || "").slice(-40), deposit: big(dep), start: Number(big(start)), deadline: Number(big(deadline)),
+      phase: Number(big(phase)), count: big(count), pool: big(pool),
+    };
+    info.tokenOk = info.token.toLowerCase() === CONFIG.usdc.toLowerCase();
+    info.depositOk = info.deposit === DEPOSIT;
+    info.open = info.phase === 0 && now < info.start;
+    info.ok = info.code && info.tokenOk && info.depositOk && info.open;
+    state.info = info;
+    renderChecks(info);
+    $("stats").innerHTML = `<span>${info.count} spot${info.count === 1n ? "" : "s"} confirmed</span><span>${usd(info.pool)} held in the contract</span>`;
+  } catch (e) {
+    state.info = null;
+    renderChecks({ error: e.message });
+  }
+  refresh();
+}
+function renderChecks(info) {
+  const rows = [];
+  const add = (ok, text) => rows.push(`<li><span class="mark ${ok === true ? "ok" : ok === false ? "no" : ""}">${ok === true ? "✓" : ok === false ? "✕" : "·"}</span><span>${text}</span></li>`);
+  if (!info) { add(null, "Waiting for the live contract"); }
+  else if (info.error) { add(false, `Couldn't reach Arbitrum One to check the contract (${info.error}). Reload the page in a minute.`); }
+  else {
+    add(info.code, info.code ? "The deposit address is a live contract on Arbitrum One" : "No contract found at this address on Arbitrum One. Don't send anything.");
+    add(info.tokenOk, info.tokenOk ? "It takes native USDC on Arbitrum One" : "It is set up for a different token. Don't send anything.");
+    add(info.depositOk, info.depositOk ? `The deposit is exactly ${usd(DEPOSIT)}` : `The deposit amount is ${usd(info.deposit)}, not ${usd(DEPOSIT)}. Don't send anything.`);
+    if (info.phase !== 0) add(false, info.phase === 1 ? "The event has been settled. Deposits are closed." : "The event was cancelled. Deposits are closed and every deposit was refunded.");
+    else add(info.open, info.open ? `Deposits are open until ${ist(info.start)}` : `Deposits closed at ${ist(info.start)}`);
+  }
+  $("checks").innerHTML = rows.join("");
+}
+
+// ---------------------------------------------------------------- wallet
+async function connect() {
+  if (!window.ethereum) { $("no-wallet").hidden = false; return; }
+  try {
+    const accts = await window.ethereum.request({ method: "eth_requestAccounts" });
+    state.account = accts && accts[0] ? accts[0] : null;
+    state.chainId = Number(await window.ethereum.request({ method: "eth_chainId" }));
+  } catch (e) { setNote($("no-wallet"), "bad", `The wallet didn't connect: ${e.message || e}`); return; }
+  if (window.ethereum.on) {
+    window.ethereum.on("accountsChanged", (a) => { state.account = a && a[0] ? a[0] : null; state.prior = null; state.status = null; afterWalletChange(); });
+    window.ethereum.on("chainChanged", (id) => { state.chainId = Number(id); afterWalletChange(); });
+  }
+  afterWalletChange();
+}
+async function switchNetwork() {
+  const hex = "0x" + CONFIG.chainId.toString(16);
+  try {
+    await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: hex }] });
+  } catch (e) {
+    if (e && (e.code === 4902 || /unrecognized|not added|unknown chain/i.test(e.message || ""))) {
+      await window.ethereum.request({ method: "wallet_addEthereumChain", params: [{ chainId: hex, chainName: CONFIG.chainName, rpcUrls: [CONFIG.rpc], nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, blockExplorerUrls: [CONFIG.explorer] }] });
+    } else { setNote($("net-wrong"), "bad", `The wallet didn't switch: ${e.message || e}. Switch to Arbitrum One in your wallet's network menu.`); return; }
+  }
+  state.chainId = Number(await window.ethereum.request({ method: "eth_chainId" }));
+  afterWalletChange();
+}
+async function afterWalletChange() {
+  if (state.account) {
+    $("lookup-addr").value = $("lookup-addr").value || state.account;
+    try {
+      const [u, e] = await Promise.all([call(CONFIG.usdc, SEL.balanceOf + pad(state.account)), rpc("eth_getBalance", [state.account, "latest"])]);
+      state.usdc = big(u); state.eth = big(e);
+    } catch { state.usdc = null; state.eth = null; }
+    if (isAddr(CONFIG.contract)) await loadHistory(state.account);
+  }
+  refresh();
+}
+// Has this wallet already sent a deposit, and what does the contract say about it?
+async function loadHistory(addr) {
+  const c = CONFIG.contract;
+  try { state.status = Number(big(await call(c, SEL.status + pad(addr)))); } catch { state.status = null; }
+  try {
+    const logs = await rpc("eth_getLogs", [{ address: CONFIG.usdc, fromBlock: "0x" + Number(CONFIG.deployBlock || 0).toString(16), toBlock: "latest", topics: [TOPIC_TRANSFER, "0x" + pad(addr), "0x" + pad(c)] }]);
+    state.prior = (logs || []).map((l) => ({ tx: l.transactionHash, amount: big(l.data), block: Number(big(l.blockNumber)) }));
+  } catch { state.prior = null; }
+}
+
+// ---------------------------------------------------------------- render
+function refresh() {
+  const info = state.info, live = !!(info && info.ok);
+  const connected = !!state.account, onArb = state.chainId === CONFIG.chainId;
+  $("connect").disabled = connected || !isAddr(CONFIG.contract);
+  $("who").textContent = connected ? state.account : "";
+  $("s-connect").classList.toggle("done", connected);
+
+  $("s-network").classList.toggle("locked", !connected);
+  $("s-network").classList.toggle("done", connected && onArb);
+  const net = state.chainId ? NETWORKS[state.chainId] || `network ${state.chainId}` : "Not connected";
+  $("net-pill").textContent = net;
+  $("net-pill").className = "pill" + (connected ? (onArb ? " ok" : " no") : "");
+  $("switch").disabled = !connected || onArb;
+  setNote($("net-wrong"), "bad", connected && !onArb ? `You're on <strong>${net}</strong>. Don't send from here: USDC on ${net} can't be counted. Switch to Arbitrum One first.` : "");
+
+  const checkReady = connected && onArb;
+  $("s-check").classList.toggle("locked", !checkReady);
+  $("bal-usdc").textContent = checkReady && state.usdc !== null ? usd(state.usdc) : "–";
+  $("bal-eth").textContent = checkReady && state.eth !== null ? (Number(state.eth) / 1e18).toFixed(5) + " ETH" : "–";
+  let problem = "", kind = "";
+  const prior = (state.prior || []).filter((p) => !state.lastTx || p.tx.toLowerCase() !== state.lastTx.toLowerCase());
+  if (checkReady) {
+    if (state.status === 1) { problem = "This wallet already has a confirmed spot. You don't need to send anything else."; kind = "good"; }
+    else if (state.status === 2) { problem = "This wallet's deposit has already been settled. Look it up below."; kind = "warn"; }
+    else if (state.status !== 3 && prior.length) {
+      problem = `We already see a deposit from this wallet: <a href="${txUrl(prior[0].tx)}" target="_blank" rel="noopener">${short(prior[0].tx)}</a>. Don't send it twice. Paste that link on Luma (shown in step 5).`; kind = "warn";
+    } else if (state.usdc !== null && state.usdc < DEPOSIT) {
+      problem = `You need ${usd(DEPOSIT)} on Arbitrum One. If your USDC is on Ethereum, bridge it first (for example at <a href="https://bridge.arbitrum.io" target="_blank" rel="noopener">bridge.arbitrum.io</a>), or withdraw from your exchange choosing the Arbitrum One network.`; kind = "bad";
+    } else if (state.eth !== null && state.eth === 0n) {
+      problem = "You need a little ETH on Arbitrum One to pay the network fee (a few cents)."; kind = "bad";
+    } else if (state.status === 3) {
+      problem = "This wallet was refunded before. Only send again if the hosts asked you to."; kind = "warn";
+    } else if (state.usdc !== null) { problem = "All set. You have enough USDC and ETH on Arbitrum One."; kind = "good"; }
+  }
+  setNote($("check-msg"), kind, problem);
+  const balanceOk = checkReady && kind === "good" && state.status !== 1;
+  $("s-check").classList.toggle("done", balanceOk || (checkReady && state.status === 3 && state.usdc >= DEPOSIT && state.eth > 0n));
+  const sendable = live && checkReady && state.usdc !== null && state.usdc >= DEPOSIT && state.eth > 0n && state.status !== 1 && state.status !== 2 && !(state.status !== 3 && prior.length) && !state.lastTx;
+  $("s-send").classList.toggle("locked", !sendable && !state.lastTx);
+  $("s-send").classList.toggle("done", !!state.lastTx);
+  $("send").disabled = !sendable || state.sending;
+  if (isAddr(CONFIG.contract)) $("send-summary").innerHTML = `You'll send <strong>${usd(DEPOSIT)}</strong> on <strong>Arbitrum One</strong> to the deposit contract <span class="mono">${short(CONFIG.contract)}</span>. Your wallet asks you to confirm, and the fee is a few cents at most.`;
+
+  const linkTx = state.lastTx || (state.status !== 3 && prior[0] && prior[0].tx);
+  $("s-luma").classList.toggle("locked", !linkTx);
+  $("luma-box").hidden = !linkTx;
+  if (linkTx) { $("tx-link").textContent = txUrl(linkTx); $("tx-wallet").textContent = state.account; }
+  $("luma-link").href = CONFIG.lumaUrl;
+}
+
+// ---------------------------------------------------------------- send
+async function send() {
+  if (state.sending) return;
+  state.sending = true; refresh();
+  const msg = $("send-msg");
+  try {
+    // re-check everything right before asking the wallet: network, contract, balance
+    state.chainId = Number(await window.ethereum.request({ method: "eth_chainId" }));
+    if (state.chainId !== CONFIG.chainId) throw new Error("Your wallet is no longer on Arbitrum One. Switch back and try again.");
+    await loadContract();
+    if (!state.info || !state.info.ok) throw new Error("The contract checks above didn't pass, so nothing was sent.");
+    const data = SEL.transfer + pad(CONFIG.contract) + word(DEPOSIT);
+    setNote(msg, "", "Confirm the transfer in your wallet: 25 USDC on Arbitrum One.");
+    const hash = await window.ethereum.request({ method: "eth_sendTransaction", params: [{ from: state.account, to: CONFIG.usdc, data, value: "0x0" }] });
+    setNote(msg, "", `Sent. Waiting for Arbitrum One to confirm it… <a href="${txUrl(hash)}" target="_blank" rel="noopener">${short(hash)}</a>`);
+    const receipt = await waitReceipt(hash);
+    if (!receipt) { setNote(msg, "warn", `Still waiting for confirmation. You can already copy the link below and check it on <a href="${txUrl(hash)}" target="_blank" rel="noopener">Arbiscan</a>.`); state.lastTx = hash; }
+    else if (receipt.status !== "0x1") throw new Error(`The transfer failed on-chain, so no USDC moved. <a href="${txUrl(hash)}" target="_blank" rel="noopener">See it on Arbiscan</a>.`);
+    else { state.lastTx = hash; setNote(msg, "good", `Done. 25 USDC received by the deposit contract. Now paste the link on Luma.`); }
+    try { localStorage.setItem("gt-last-tx", JSON.stringify({ hash, account: state.account, contract: CONFIG.contract })); } catch {}
+    afterWalletChange();
+  } catch (e) {
+    const text = e && e.code === 4001 ? "You cancelled in your wallet. Nothing was sent." : (e.message || String(e));
+    setNote(msg, "bad", text);
+  } finally { state.sending = false; refresh(); }
+}
+async function waitReceipt(hash) {
+  for (let i = 0; i < 90; i++) {
+    try { const r = await rpc("eth_getTransactionReceipt", [hash]); if (r) return r; } catch {}
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------- lookup + claim
+async function lookup() {
+  const addr = $("lookup-addr").value.trim(), out = $("lookup-out");
+  $("claim-box").hidden = true;
+  if (!isAddr(addr)) { setNote(out, "bad", "That isn't a wallet address. It starts with 0x and has 42 characters."); return; }
+  if (!isAddr(CONFIG.contract)) { setNote(out, "", "Deposits haven't opened yet."); return; }
+  setNote(out, "", "Checking…");
+  try {
+    const c = CONFIG.contract;
+    const [st, ow, ph, dl] = await Promise.all([call(c, SEL.status + pad(addr)), call(c, SEL.owed + pad(addr)), call(c, SEL.phase), call(c, SEL.claimDeadline)]);
+    const status = Number(big(st)), owed = big(ow), phase = Number(big(ph)), deadline = Number(big(dl));
+    let logs = null;
+    try { logs = await rpc("eth_getLogs", [{ address: CONFIG.usdc, fromBlock: "0x" + Number(CONFIG.deployBlock || 0).toString(16), toBlock: "latest", topics: [TOPIC_TRANSFER, "0x" + pad(addr), "0x" + pad(c)] }]); } catch {}
+    const sent = logs && logs.length ? logs[logs.length - 1].transactionHash : null;
+    const sentLink = sent ? ` Deposit: <a href="${txUrl(sent)}" target="_blank" rel="noopener">${short(sent)}</a>.` : "";
+    const now = Math.floor(Date.now() / 1000);
+    let kind = "", text = "";
+    if (status === 0) {
+      if (phase !== 0) { text = "No confirmed spot for this wallet."; }
+      else if (sent) { kind = "warn"; text = `Deposit received. Waiting for the hosts to review your Luma registration.${sentLink}`; }
+      else { text = "No deposit found from this wallet yet. Make sure you sent it on Arbitrum One from this exact wallet."; }
+    } else if (status === 1) {
+      if (phase === 1) { kind = "bad"; text = "This spot was marked as a no-show, so the deposit was shared among the guests who checked in."; }
+      else if (now > deadline) { kind = "warn"; text = "The event was never settled before the deadline, so you can take your deposit back yourself. Connect this wallet and claim it below."; showClaim(addr, "emergency"); }
+      else { kind = "good"; text = `Spot confirmed. Your deposit is staked. Check in at the door to get it back plus a share of the no-shows' deposits.${sentLink}`; }
+    } else if (status === 2) {
+      kind = "good";
+      text = phase === 2 ? "The event was cancelled and this deposit was refunded." : "Paid out. This wallet checked in and received its share.";
+      if (owed > 0n) { kind = "warn"; text += ` ${usd(owed)} couldn't be delivered to this wallet. Connect it and claim the money to another address below.`; showClaim(addr, "claim"); }
+    } else if (status === 3) { kind = ""; text = "Refunded. The deposit went back to this wallet."; }
+    setNote(out, kind, text);
+  } catch (e) { setNote(out, "bad", `Couldn't check right now (${e.message}). Try again in a minute.`); }
+}
+let claimMode = null, claimFor = null;
+function showClaim(addr, mode) {
+  claimMode = mode; claimFor = addr;
+  $("claim-box").hidden = false;
+  $("claim").textContent = mode === "emergency" ? "Withdraw my deposit" : "Claim";
+}
+async function claim() {
+  const to = $("claim-to").value.trim(), out = $("lookup-out");
+  if (!isAddr(to)) { setNote(out, "bad", "Enter the address that should receive the USDC."); return; }
+  if (!state.account || state.account.toLowerCase() !== claimFor.toLowerCase()) { setNote(out, "bad", `Connect the wallet ${short(claimFor)} first (step 1). Only that wallet can claim.`); return; }
+  if (state.chainId !== CONFIG.chainId) { setNote(out, "bad", "Switch your wallet to Arbitrum One first (step 2)."); return; }
+  try {
+    const data = (claimMode === "emergency" ? SEL.emergencyWithdraw : SEL.claim) + pad(to);
+    const hash = await window.ethereum.request({ method: "eth_sendTransaction", params: [{ from: state.account, to: CONFIG.contract, data, value: "0x0" }] });
+    setNote(out, "", `Sent. Waiting for confirmation… <a href="${txUrl(hash)}" target="_blank" rel="noopener">${short(hash)}</a>`);
+    const r = await waitReceipt(hash);
+    setNote(out, r && r.status === "0x1" ? "good" : "bad", r && r.status === "0x1" ? `Done. <a href="${txUrl(hash)}" target="_blank" rel="noopener">See it on Arbiscan</a>.` : `It didn't go through. <a href="${txUrl(hash)}" target="_blank" rel="noopener">See it on Arbiscan</a>.`);
+    $("claim-box").hidden = true;
+  } catch (e) { setNote(out, "bad", e && e.code === 4001 ? "You cancelled in your wallet." : (e.message || String(e))); }
+}
+
+// ---------------------------------------------------------------- wire up
+$("connect").addEventListener("click", connect);
+$("switch").addEventListener("click", switchNetwork);
+$("send").addEventListener("click", send);
+$("lookup").addEventListener("click", lookup);
+$("claim").addEventListener("click", claim);
+$("copy-contract").addEventListener("click", (e) => copy(CONFIG.contract, e.currentTarget));
+$("copy-tx").addEventListener("click", (e) => copy($("tx-link").textContent, e.currentTarget));
+$("copy-wallet").addEventListener("click", (e) => copy($("tx-wallet").textContent, e.currentTarget));
+try {
+  const saved = JSON.parse(localStorage.getItem("gt-last-tx") || "null");
+  if (saved && saved.contract === CONFIG.contract && isAddr(saved.account)) $("lookup-addr").value = saved.account;
+} catch {}
+if (!window.ethereum && isAddr(CONFIG.contract)) $("no-wallet").hidden = false;
+loadContract();
+</script>
+</body>
+</html>
