@@ -27,6 +27,7 @@ const usdc = await dep("MockUSDC");
 const arbitrator = await dep("MockArbitrator");
 const resolver = await dep("MockDisputeResolver", arbitrator.target);
 await (await arbitrator.setResolver(resolver.target)).wait();
+const evidence = await dep("MockEvidenceModule");
 for (const g of [g1, g2, g3]) await (await usdc.mint(await addr(g), U(100))).wait();
 const now = (await prov.getBlock("latest")).timestamp;
 
@@ -38,7 +39,7 @@ const write = (f, d) => fs.writeFileSync(path.join(proj, dir, f), JSON.stringify
 write("config.json", {
   eventName: "Console E2E", chain: "local", chainId: 1337, rpcUrl: `http://127.0.0.1:${RPC}`, token: usdc.target, deposit: "25",
   eventStart: new Date((now - 60) * 1000).toISOString(), claimDeadline: new Date((now + 9 * DAY) * 1000).toISOString(),
-  owner: await addr(owner), mode: "live", kleros: { disputeResolver: resolver.target, policyURI: "/ipfs/QmConsoleE2E/policy.md" },
+  owner: await addr(owner), mode: "live", kleros: { disputeResolver: resolver.target, evidenceModule: evidence.target, policyURI: "/ipfs/QmConsoleE2E/policy.md" },
 });
 const web = spawn("node", ["scripts/console.mjs", "--config", `${dir}/config.json`, "--out", dir], { cwd: proj, env: { ...process.env, PORT: String(WEB) }, stdio: "ignore" });
 await new Promise((r) => setTimeout(r, 800));
@@ -109,7 +110,18 @@ await page.waitForTimeout(1000);
 check("Kleros case link shown", /Kleros case #1000/.test(await txt("challenges")), await txt("challenges"));
 await skew(DAY + 60);
 await page.click("#refresh"); await page.waitForTimeout(800);
-check("release waits for the Kleros case", (await page.isDisabled("#release")) && /waiting for challenges/.test(await txt("release")), await txt("release"));
+check("release not held by the Kleros case", !(await page.isDisabled("#release")) && (await txt("release")) === "Release payouts", await txt("release"));
+// payout now: Ana and Ben get 75 / 3 = 25 each; Cai's 25 is set aside until the final ruling
+const before = await Promise.all([g1, g2, g3].map(async (g) => usdc.balanceOf(await addr(g))));
+check("release payouts during the case", await click("release", /Paid out/), await logText());
+const mid = await Promise.all([g1, g2, g3].map(async (g) => usdc.balanceOf(await addr(g))));
+check("attendees paid 25, challenger's share set aside", mid[0] - before[0] === U(25) && mid[1] - before[1] === U(25) && mid[2] === before[2], mid.map(String).join(","));
+await page.waitForTimeout(800);
+check("set-aside share shown", /Set aside for open Kleros cases\s*25\.0 USDC/.test(await txt("challenges")), await txt("challenges"));
+await page.fill("#evTitle", "Door list"); await page.fill("#evText", "Cai is not on the door list and no host saw them."); await page.fill("#evLink", "ipfs://QmDoorList");
+check("submit evidence", await click("submitEvidence", /Evidence sent to Kleros case #1000/), await logText());
+const evs = await evidence.queryFilter(evidence.filters.Evidence(1000));
+check("evidence on Kleros, from the owner", evs.length === 1 && evs[0].args._party === me && JSON.parse(evs[0].args._evidence).fileURI === "ipfs://QmDoorList", evs.map((e) => `${e.args._party} ${e.args._evidence}`).join("; "));
 
 // (mock hooks get an explicit gas limit: ganache under-estimates them)
 // round 1: jurors say Cai did not attend. Cai's side appeals, the owner defends; both funded → round 2
@@ -137,13 +149,17 @@ await skew(DAY + 60);
 await page.click("#refresh"); await page.waitForTimeout(800);
 check("appeal window over shown", /appeal window is over/.test(await txt("challenges")), await txt("challenges"));
 check("deliver the final ruling", await click("deliverRuling", /Final ruling delivered/), await logText());
-check("collect appeal money", await click("collectAppeal", /Appeal money collected/), await logText());
-// final: Cai attended → settle → release to 3 attendees (75 / 3 = 25 each)
-check("settle after ruling", await click("resolveOne", /settled/), await logText());
-const before = await Promise.all([g1, g2, g3].map(async (g) => usdc.balanceOf(await addr(g))));
-check("release payouts", await click("release", /Paid out/), await logText());
+check("appeal money waits for the settlement", await click("collectAppeal", /not settled yet/), await logText());
+// final: Cai attended → settle (Cai gets the set-aside 25) → collect appeal rewards
+check("settle after ruling", await click("resolveOne", /Challenge of \S+ settled/), await logText());
+check("challenger got the set-aside share", (await usdc.balanceOf(await addr(g3))) - mid[2] === U(25));
+const eOwner = await prov.getBalance(me);
+check("collect appeal rewards", await click("collectAppeal", /Appeal money collected/), await logText());
+check("owner got the 'attended' side's rewards back", (await prov.getBalance(me)) > eOwner, String((await prov.getBalance(me)) - eOwner));
+check("deposit contract holds no appeal money", (await prov.getBalance(kAddr)) < 10n, String(await prov.getBalance(kAddr)));
 const after = await Promise.all([g1, g2, g3].map(async (g) => usdc.balanceOf(await addr(g))));
-check("each of 3 attendees got 25", after.every((b, i) => b - before[i] === U(25)), after.map(String).join(","));
+check("each of 3 attendees got 25 in the end", after.every((b, i) => b - before[i] === U(25)), after.map(String).join(","));
+check("contract holds no USDC", (await usdc.balanceOf(kAddr)) === 0n);
 await page.waitForTimeout(1000);
 check("phase shows paid out", /Paid out/.test(await txt("status")), await txt("status"));
 check("no page errors", errs.length === 0, errs.join("; "));

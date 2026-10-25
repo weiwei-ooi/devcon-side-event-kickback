@@ -10,7 +10,7 @@
 //   PRIVATE_KEY=0x… node scripts/owner.mjs add-attendees --file wallets.json   (during the 1-day window)
 //   PRIVATE_KEY=0x… node scripts/owner.mjs challenges                   (read-only list)
 //   PRIVATE_KEY=0x… node scripts/owner.mjs resolve --staker 0x…          (anyone; after match window / ruling)
-//   PRIVATE_KEY=0x… node scripts/owner.mjs release                      (anyone; after the window, no pending challenge)
+//   PRIVATE_KEY=0x… node scripts/owner.mjs release                      (anyone; after the window, none waiting for a match)
 //   PRIVATE_KEY=0x… node scripts/owner.mjs cancel
 //   PRIVATE_KEY=0x… node scripts/owner.mjs sweep --to 0x…
 import fs from "node:fs";

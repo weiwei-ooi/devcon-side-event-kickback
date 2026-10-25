@@ -31,6 +31,7 @@ const deployBlock = await prov.getBlockNumber();
 const arbitrator = await (await new ethers.ContractFactory(load("MockArbitrator").abi, load("MockArbitrator").bytecode, owner).deploy()).waitForDeployment();
 const resolver = await (await new ethers.ContractFactory(load("MockDisputeResolver").abi, load("MockDisputeResolver").bytecode, owner).deploy(arbitrator.target)).waitForDeployment();
 await (await arbitrator.setResolver(resolver.target)).wait();
+const evidence = await (await new ethers.ContractFactory(load("MockEvidenceModule").abi, load("MockEvidenceModule").bytecode, owner).deploy()).waitForDeployment();
 const kleros = [resolver.target, ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256", "uint256"], [1, 3, 1]), "/ipfs/QmE2E/policy.md"];
 const deploy = async (dep) => (await new ethers.ContractFactory(kabi, kbc, owner).deploy(await usdc.getAddress(), U(dep), "E2E", await addr(owner), now + 86400, now + 86400 * 9, kleros)).waitForDeployment();
 const kick = await deploy(25), bad = await deploy(15);
@@ -39,7 +40,7 @@ const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "gt-site-"));
 const build = (contract, name) => {
   const cfg = path.join(outDir, `${name}.json`);
   fs.mkdirSync(outDir, { recursive: true });
-  fs.writeFileSync(cfg, JSON.stringify({ eventName: "E2E", chain: "local", chainId: 1337, rpcUrl: `http://127.0.0.1:${RPC}`, token: usdc.target, explorer: "https://arbiscan.io", deposit: "25", receiver: contract || "0x0000000000000000000000000000000000000001", contract, eventStart: new Date((now + 86400) * 1000).toISOString(), claimDeadline: new Date((now + 86400 * 9) * 1000).toISOString(), owner: "0x0000000000000000000000000000000000000001", deployBlock, kleros: { disputeResolver: resolver.target } }));
+  fs.writeFileSync(cfg, JSON.stringify({ eventName: "E2E", chain: "local", chainId: 1337, rpcUrl: `http://127.0.0.1:${RPC}`, token: usdc.target, explorer: "https://arbiscan.io", deposit: "25", receiver: contract || "0x0000000000000000000000000000000000000001", contract, eventStart: new Date((now + 86400) * 1000).toISOString(), claimDeadline: new Date((now + 86400 * 9) * 1000).toISOString(), owner: "0x0000000000000000000000000000000000000001", deployBlock, kleros: { disputeResolver: resolver.target, evidenceModule: evidence.target } }));
   execFileSync("node", ["scripts/build-site.mjs", "--config", cfg, "--out", path.join(outDir, name), ...(contract ? [] : ["--preview"])], { cwd: proj });
 };
 build(kick.target, "live"); build(bad.target, "bad"); build("", "preview");
@@ -171,6 +172,12 @@ check("challenge open: dispute offered", /Challenge open/.test(await lookupAs(p,
 await p.click("#ch-action"); await p.waitForTimeout(1500);
 check("dispute created", /Dispute created on Kleros/.test(await waitText(p, "lookup-out", /Dispute created on Kleros|didn't go through|cancelled/)), await txt(p, "lookup-out"));
 check("in dispute: Kleros case link", /In a Kleros dispute/.test(await lookupAs(p, await addr(g3))) && /Kleros case #1000/.test(await txt(p, "lookup-out")), await txt(p, "lookup-out"));
+check("evidence form shown", await vis(p, "ev-box"));
+await p.fill("#ev-title", "Photo at the venue"); await p.fill("#ev-text", "Cai at the bar at 19:30, with the Ground Truth banner."); await p.fill("#ev-link", "ipfs://QmPhoto");
+await p.click("#ev-send"); await p.waitForTimeout(1500);
+check("evidence sent", /Evidence sent to Kleros case #1000/.test(await waitText(p, "lookup-out", /Evidence sent|didn't go through|cancelled/)), await txt(p, "lookup-out"));
+const evs = await evidence.queryFilter(evidence.filters.Evidence(1000));
+check("evidence on Kleros from the guest", evs.length === 1 && evs[0].args._party === await addr(g2) && JSON.parse(evs[0].args._evidence).name === "Photo at the venue", evs.map((e) => e.args._evidence).join("; "));
 // round 1: jurors say g3 did not attend; anyone can fund an appeal from the page, one side at a time
 await (await arbitrator.startAppealPeriod(1000, 2, 3 * 86400, { gasLimit: 500000 })).wait();
 check("appeal window shown", /Round 1: jurors voted No, did not attend/.test(await lookupAs(p, await addr(g3))) && /Appeal: fund "Yes, attended" \(0\.105 ETH\)/.test(await txt(p, "ch-action")) && /Appeal: fund "No, did not attend" \(0\.07 ETH\)/.test(await txt(p, "ch-action2")), await txt(p, "lookup-out"));
@@ -189,6 +196,10 @@ check("final ruling shown", /Final ruling: Yes, attended/.test(await lookupAs(p,
 await p.click("#ch-action"); await p.waitForTimeout(1500);
 check("settled after ruling", /Settled according to the Kleros ruling/.test(await waitText(p, "lookup-out", /Settled according to the Kleros ruling|didn't go through|cancelled/)), await txt(p, "lookup-out"));
 check("challenger now on the list", /Challenge settled: on the attendance list/.test(await lookupAs(p, await addr(g3))), await txt(p, "lookup-out"));
+check("appeal funder offered rewards", /Collect my appeal rewards/.test(await txt(p, "ch-action")) && (await vis(p, "ch-box")), await txt(p, "ch-action"));
+const e2 = await prov.getBalance(await addr(g2));
+await p.click("#ch-action"); await p.waitForTimeout(1500);
+check("appeal rewards collected", /Appeal money collected/.test(await waitText(p, "lookup-out", /Appeal money collected|didn't go through|cancelled/)) && (await prov.getBalance(await addr(g2))) > e2, await txt(p, "lookup-out"));
 check("no page errors (challenges)", p.errs.length === 0, p.errs.join("; "));
 await p.close();
 

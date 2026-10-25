@@ -80,7 +80,7 @@ export const MATCH_PERIOD = 24 * 3600; // must match the contract
 // that Kleros Court accepts (the court only takes disputes from whitelisted contracts).
 // Source: @kleros/kleros-v2-contracts deployments (arbitrum).
 export const KLEROS = {
-  42161: { disputeResolver: "0xb5526D022962A1fFf6eD32C93e8b714c901F4323", klerosCore: "0x991d2df165670b9cac3B022f4B68D65b664222ea", court: "https://v2.kleros.builders" },
+  42161: { disputeResolver: "0xb5526D022962A1fFf6eD32C93e8b714c901F4323", klerosCore: "0x991d2df165670b9cac3B022f4B68D65b664222ea", evidenceModule: "0x48e052B4A6dC4F30e90930F1CeaAFd83b3981EB3", court: "https://v2.kleros.builders" },
   421614: { disputeResolver: "0xed31bEE8b1F7cE89E93033C0d3B2ccF4cEb27652", klerosCore: "0xE8442307d36e9bf6aB27F1A009F95CE8E11C3479", court: "https://v2-testnet.kleros.builders" },
 };
 
@@ -97,6 +97,7 @@ export function klerosConfig(cfg) {
     extraData: ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256", "uint256"], [court, jurors, disputeKit]),
     policyURI: k.policyURI ?? "",
     courtUrl: k.courtUrl ?? known.court ?? "https://v2.kleros.builders",
+    evidenceModule: k.evidenceModule ?? known.evidenceModule ?? "",
   };
 }
 

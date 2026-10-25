@@ -30,6 +30,7 @@ const site = {
   lumaUrl: cfg.lumaUrl ?? "https://luma.com/qewnqhas",
   klerosCourt: klerosConfig(cfg).courtUrl,
   klerosDisputeKit: klerosConfig(cfg).disputeKit,
+  klerosEvidenceModule: klerosConfig(cfg).evidenceModule,
 };
 const src = fs.readFileSync(new URL("../site/index.html", import.meta.url), "utf8");
 const start = src.indexOf("/*CONFIG*/"), end = src.indexOf("/*END CONFIG*/");

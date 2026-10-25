@@ -384,7 +384,7 @@ test("unmatched challenge: the guest counts as attended, gets the deposit back, 
   assert.equal(c.state, 3n); // Resolved
 });
 
-test("matched challenge opens a Kleros dispute and holds the payout until the ruling", async () => {
+test("matched challenge opens a Kleros dispute; payouts go out anyway, with the challenger's share set aside", async () => {
   const { kick, gs } = await listed([4, 8], 2);
   const [g, m] = [gs[2], owner];
   await send(kick.connect(g).challenge({ value: FEE }));
@@ -400,17 +400,25 @@ test("matched challenge opens a Kleros dispute and holds the payout until the ru
   assert.equal(tpl.arbitratorAddress, arbitrator.target.toLowerCase());
   assert.equal(tpl.arbitratorChainID, "1337");
   assert.deepEqual(tpl.answers.map((a) => a.id), ["0x1", "0x2"]);
+  await reverts(kick, "addAttendees", [[await addr(g)]], "InDispute"); // the jurors decide now
   await warp(DAY * 3);
-  await reverts(kick, "releasePayouts", [], "ChallengesPending");
   await reverts(kick, "resolveChallenge", [await addr(g)], "NotRuled");
+  const [a0, a1] = [await bal(gs[0]), await bal(gs[1])];
+  await send(kick.releasePayouts()); // 60 = 3 shares of 20: two attendees paid, one set aside
+  assert.equal(await bal(gs[0]), a0 + U(20));
+  assert.equal(await bal(gs[1]), a1 + U(20));
+  assert.equal(await kick.heldBack(), U(20));
+  assert.equal(await kick.reserved(), U(20));
+  assert.equal(await kick.spare(), 0n);
   await send(resolver.giveRuling(c.localDisputeID, 1)); // jurors: attended
-  const e0 = await ethBal(g);
+  const [e0, u0] = [await ethBal(g), await bal(g)];
   await send(kick.connect(guests[151]).resolveChallenge(await addr(g)));
   assert.equal(await ethBal(g), e0 + FEE); // winner gets the other side's deposit
+  assert.equal(await bal(g), u0 + U(20)); // and the share set aside
+  assert.equal(await kick.attended(await addr(g)), true);
+  assert.equal(await kick.heldBack(), 0n);
+  assert.equal(await bal(await kick.getAddress()), 0n);
   await reverts(kick, "resolveChallenge", [await addr(g)], "WrongChallengeState");
-  const u0 = await bal(g);
-  await send(kick.releasePayouts());
-  assert.equal(await bal(g), u0 + U(20));
 });
 
 test("Kleros rules absent: the matcher is repaid and the guest forfeits", async () => {
@@ -473,7 +481,6 @@ test("appeals: payouts wait through every appeal round and only the final ruling
   // round 1: jurors say "did not attend"; the guest's side appeals (cost + 2x), the matcher's side defends (cost + 1x)
   await send(arbitrator.startAppealPeriod(id, 2, 3 * DAY));
   await reverts(kick, "resolveChallenge", [await addr(g)], "NotRuled"); // a round-1 vote is not final
-  await reverts(kick, "releasePayouts", [], "ChallengesPending");
   const cost = await arbitrator.appealCost(id);
   await send(kit.connect(guests[157]).fundAppeal(id, 1, { value: cost })); // crowdfunding: anyone can chip in
   await send(kit.connect(g).fundAppeal(id, 1, { value: 3n * cost })); // the rest (any excess comes back)
@@ -496,6 +503,122 @@ test("appeals: payouts wait through every appeal round and only the final ruling
   await send(kick.releasePayouts());
   assert.equal(await bal(g), u0 + U(20)); // 60 over 3 attendees
   assert.equal(await prov.getBalance(kick.target), 0n); // appeal money never passes through this contract
+});
+
+// an appealed case funded through the deposit contract: round 1 says absent, appealed, round 2 says attended
+async function appealedThroughContract(slice, crowd, m, { newStyle = false } = {}) {
+  const { kick, gs } = await listed(slice, 2);
+  const g = gs[2];
+  await send(kick.connect(g).challenge({ value: FEE }));
+  await send(kick.connect(m).matchChallenge(await addr(g), { value: FEE }));
+  const id = (await kick.challenges(await addr(g))).arbitratorDisputeID;
+  const kit = new ethers.Contract(await arbitrator.kit(), load("MockDisputeKit").abi, owner);
+  await send(kit.setNewStyle(newStyle));
+  await send(arbitrator.startAppealPeriod(id, 2, 3 * DAY, { gasLimit: 500000 }));
+  return { kick, gs, g, id, kit };
+}
+
+test("appeals through the contract: status, crowdfunding, refunds of surplus, rewards shared by contribution", async () => {
+  const [crowd, m] = [guests[158], guests[156]];
+  const { kick, gs, g, id, kit } = await appealedThroughContract([25, 29], crowd, m);
+  await reverts(kick, "appealStatus", [await addr(gs[3])], "NotAppealable");
+  await reverts(kick, "fundAppeal", [await addr(gs[3]), 1, { value: 1n }], "NotAppealable");
+  await reverts(kick, "fundAppeal", [await addr(g), 3, { value: 1n }], "BadSide");
+  await reverts(kick, "claimAppealRewards", [await addr(g), await addr(g)], "WrongChallengeState");
+  const cost = await arbitrator.appealCost(id);
+  const st = await kick.appealStatus(await addr(g));
+  assert.equal(st.round, 1n);
+  assert.equal(st.ruling, 2n);
+  assert.equal(st.costAttended, 3n * cost); // lost the vote: cost + 2x
+  assert.equal(st.costAbsent, 2n * cost); // won the vote: cost + 1x
+  assert.equal(st.loserEnd, st.start + (st.end - st.start) / 2n);
+
+  const part = ethers.parseEther("0.05");
+  await send(kick.connect(crowd).fundAppeal(await addr(g), 1, { value: part }));
+  const e0 = await ethBal(g);
+  const r = await send(kick.connect(g).fundAppeal(await addr(g), 1, { value: 3n * cost }));
+  const rest = 3n * cost - part;
+  assert.equal(await ethBal(g), e0 - rest - r.fee); // the surplus came back
+  assert.equal(await kick.appealPaid(await addr(g), 0, 1), 3n * cost);
+  assert.equal(await kick.appealContribution(await addr(g), 0, 1, await addr(crowd)), part);
+  await send(kick.connect(m).fundAppeal(await addr(g), 2, { value: 2n * cost }));
+  assert.equal(await arbitrator.getNumberOfRounds(id), 2n); // both sides funded: round 2
+  assert.equal(await prov.getBalance(kick.target), FEE); // only what is left of the challenge deposits
+  assert.equal((await kick.appealStatus(await addr(g))).end, 0n); // round 2 is not in its appeal period yet
+
+  // round 2: attended, final
+  await send(arbitrator.startAppealPeriod(id, 1, DAY, { gasLimit: 500000 }));
+  await warp(DAY + 1);
+  await send(arbitrator.passPeriod(id));
+  await send(arbitrator.executeRuling(id));
+  await reverts(kick, "collectAppealFunds", [await addr(g)], "WrongChallengeState"); // settle first
+  await send(kick.resolveChallenge(await addr(g)));
+  // round-1 fee rewards: both sides' funding minus the appeal cost, all to the "attended" funders
+  const rewards = 3n * cost + 2n * cost - cost;
+  const expCrowd = (part * rewards) / (3n * cost), expG = (rest * rewards) / (3n * cost);
+  assert.equal(await kick.appealRewardOf(await addr(g), await addr(crowd)), 0n); // not collected yet
+  const to = await addr(guests[150]);
+  const t0 = await prov.getBalance(to);
+  await send(kick.connect(crowd).claimAppealRewards(await addr(g), to)); // collects from Kleros first
+  assert.equal(await prov.getBalance(to), t0 + expCrowd);
+  assert.equal(await kick.appealRewardOf(await addr(g), await addr(g)), expG);
+  const e1 = await ethBal(g);
+  const r2 = await send(kick.connect(g).claimAppealRewards(await addr(g), await addr(g)));
+  assert.equal(await ethBal(g), e1 + expG - r2.fee);
+  await reverts(kick.connect(g), "claimAppealRewards", [await addr(g), await addr(g)], "NothingToClaim");
+  await reverts(kick.connect(m), "claimAppealRewards", [await addr(g), await addr(m)], "NothingToClaim"); // backed the losing side
+  await reverts(kick, "collectAppealFunds", [await addr(g)], "NothingToClaim"); // only once
+  assert.ok((await prov.getBalance(kick.target)) < 10n); // all paid out, rounding dust at most
+  await send(kick.releasePayouts());
+  assert.ok(await kick.attended(await addr(g)));
+});
+
+test("appeals through the contract: the losing side's deadline, a side never funded is refunded, newer Kleros kits", async () => {
+  const [crowd, m] = [guests[157], guests[155]];
+  const { kick, g, id, kit } = await appealedThroughContract([29, 33], crowd, m, { newStyle: true });
+  const cost = await arbitrator.appealCost(id);
+  // the guest's side raises only part of its appeal; nobody completes it
+  await send(kick.connect(crowd).fundAppeal(await addr(g), 1, { value: cost }));
+  await warp(Math.floor(1.5 * DAY) + 10);
+  await assert.rejects(kick.connect(crowd).fundAppeal.staticCall(await addr(g), 1, { value: cost }), /NotAppealPeriodForLoser/);
+  await warp(2 * DAY);
+  await send(arbitrator.passPeriod(id));
+  await send(arbitrator.executeRuling(id)); // round-1 vote stands: absent
+  await send(kick.resolveChallenge(await addr(g)));
+  assert.equal(await kick.attended(await addr(g)), false);
+  const to = await addr(guests[154]);
+  const t0 = await prov.getBalance(to);
+  await send(kick.connect(crowd).claimAppealRewards(await addr(g), to)); // 3-argument withdrawal used
+  assert.equal(await prov.getBalance(to), t0 + cost); // reimbursed in full
+  await send(kit.setNewStyle(false));
+});
+
+test("a lost case's set-aside share is split among the attendees; a challenge waiting for a match still holds the payout", async () => {
+  const { kick, gs } = await listed([33, 37], 2); // 4 stakers x 15 = 60, 2 on the list
+  const [g, late] = [gs[2], gs[3]];
+  await send(kick.connect(g).challenge({ value: FEE }));
+  await send(kick.matchChallenge(await addr(g), { value: FEE }));
+  await warp(DAY - 60);
+  await send(kick.connect(late).challenge({ value: FEE })); // last-minute challenge: its match window runs 1 more day
+  await warp(120);
+  await reverts(kick, "releasePayouts", [], "ChallengesPending");
+  await warp(DAY);
+  const before = await Promise.all([gs[0], gs[1], late].map(bal));
+  const g0 = await bal(g);
+  await send(kick.releasePayouts()); // late is accepted unmatched; g's case is open: 60 / (3 + 1) = 15
+  const mid = await Promise.all([gs[0], gs[1], late].map(bal));
+  assert.deepEqual(mid.map((b, i) => b - before[i]), [U(15), U(15), U(15)]);
+  assert.equal(await kick.payoutShare(), U(15));
+  assert.equal(await kick.heldBack(), U(15));
+  assert.equal(await kick.spare(), 0n); // the set-aside share cannot be swept or refunded
+  await reverts(kick, "refund", [await addr(owner), 1n], "InsufficientBalance");
+  await send(resolver.giveRuling((await kick.challenges(await addr(g))).localDisputeID, 2)); // jurors: absent
+  await send(kick.resolveChallenge(await addr(g)));
+  const end = await Promise.all([gs[0], gs[1], late].map(bal));
+  assert.deepEqual(end.map((b, i) => b - mid[i]), [U(5), U(5), U(5)]);
+  assert.equal(await bal(g), g0); // the challenger lost: nothing
+  assert.equal(await bal(await kick.getAddress()), 0n);
+  await reverts(kick.connect(late), "withdrawEth", [kick.target], "ZeroAddress"); // never to the contract itself
 });
 
 test("a wallet that refuses ETH can withdraw its challenge money later", async () => {

@@ -1,6 +1,6 @@
 # Ground Truth: attendance policy for Kleros jurors
 
-This policy applies to disputes created by the Ground Truth deposit contract on Arbitrum One. Each dispute asks one question: **did the guest who registered with this wallet attend the event?**
+This policy applies to disputes created by the Ground Truth deposit contract on Arbitrum One. Each dispute asks one question: **did the person who registered with this wallet attend the event?** (In the dispute, the event is called "Ground Truth: Devcon Mumbai 2026".)
 
 ## The event
 
@@ -39,8 +39,8 @@ This policy applies to disputes created by the Ground Truth deposit contract on 
 
 ## What happens after the final ruling
 
-- **Yes, attended:** the challenger is added to the attendance list and shares the pool. The challenger receives the remaining ETH deposits (both deposits minus the Kleros fee).
-- **No, did not attend:** the challenger stays off the list. The party who matched the challenge receives the remaining ETH deposits.
+- **Yes, attended:** the challenger is added to the attendance list and receives the same share of the pool as every attendee. The challenger receives the remaining ETH deposits (both deposits minus the Kleros fee).
+- **No, did not attend:** the challenger stays off the list and forfeits their deposit, which is shared among the attendees. The party who matched the challenge receives the remaining ETH deposits.
 - **Refused to arbitrate:** the challenger stays off the list and the remaining ETH is split equally between both parties.
 
-Payouts to all attendees are released only once every dispute has its final ruling and has been settled.
+Attendees can be paid before a dispute ends: the challenger's share is then set aside and handed out according to the final ruling. Once a challenge is in a dispute, the organiser can no longer add that person to the list directly; if the organiser agrees they attended, they say so in the case.

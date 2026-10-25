@@ -207,6 +207,13 @@ footer { color: var(--muted); font-size: 0.86rem; display: grid; gap: 6px; }
       <button id="ch-action" type="button">Challenge</button>
       <button id="ch-action2" type="button" class="ghost" hidden>Appeal</button>
     </div>
+    <div id="ev-box" hidden class="body">
+      <label for="ev-title" class="muted">Send evidence to the Kleros jurors (public and permanent):</label>
+      <input type="text" id="ev-title" placeholder="Title, e.g. Photo at the venue, 19:30" autocomplete="off">
+      <input type="text" id="ev-text" placeholder="What it shows" autocomplete="off">
+      <input type="text" id="ev-link" placeholder="Link to a photo or file (optional, https:// or ipfs://)" autocomplete="off" spellcheck="false">
+      <div class="row"><button id="ev-send" type="button" class="ghost">Send evidence</button></div>
+    </div>
     <div id="claim-box" hidden class="body">
       <label for="claim-to" class="muted">Send it to this address instead:</label>
       <input type="text" id="claim-to" placeholder="0x… address that can receive it" autocomplete="off" spellcheck="false">
@@ -221,7 +228,7 @@ footer { color: var(--muted); font-size: 0.86rem; display: grid; gap: 6px; }
 
   <section class="panel" aria-labelledby="fair-h">
     <h2 id="fair-h">Missed at check-in? Challenge it on Kleros</h2>
-    <p class="muted">After the event the hosts publish the attendance list on-chain. If you were there but are not on it, you have <b>1 day</b> to challenge from this page with a small ETH deposit (the Kleros arbitration fee, about 0.015 ETH). Anyone who disagrees has 1 day to match it. If nobody does, you count as attended and get your ETH back. If someone does, independent <a href="https://kleros.io" target="_blank" rel="noopener">Kleros</a> jurors decide from the evidence (photos, messages, anything that shows you were there), and the winner gets the remaining ETH. Either side can appeal a jury's vote: the case then goes to a larger jury, and anyone can help fund the appeal from this page or on Kleros. Payouts are released once every Kleros case has its final ruling.</p>
+    <p class="muted">After the event the hosts publish the attendance list on-chain. If you were there but are not on it, you have <b>1 day</b> to challenge from this page with a small ETH deposit (the Kleros arbitration fee, about 0.015 ETH). Anyone who disagrees has 1 day to match it. If nobody does, you count as attended and get your ETH back. If someone does, independent <a href="https://kleros.io" target="_blank" rel="noopener">Kleros</a> jurors decide from the evidence (photos, messages, anything that shows you were there), and the winner gets the remaining ETH. Either side can appeal a jury's vote: the case then goes to a larger jury, and anyone can help fund the appeal from this page. If one side funds an appeal and the other doesn't, the funded side wins, so keep an eye on your case until the final ruling. A Kleros case doesn't hold up everyone's payout: guests on the list are paid, and the challenger's share is set aside until the final ruling.</p>
   </section>
 
   <footer>
@@ -244,7 +251,8 @@ const CONFIG = {
   "decimals": 6,
   "lumaUrl": "https://luma.com/qewnqhas",
   "klerosCourt": "https://v2.kleros.builders",
-  "klerosDisputeKit": 1
+  "klerosDisputeKit": 1,
+  "klerosEvidenceModule": "0x48e052B4A6dC4F30e90930F1CeaAFd83b3981EB3"
 };
 /*END CONFIG*/
 const $ = (id) => document.getElementById(id);
@@ -252,10 +260,11 @@ const SEL = { token: "0xfc0c546a", deposit: "0xd0e30db0", eventStart: "0x202887e
   stakerCount: "0xdff69787", status: "0x645b8b1b", owed: "0xdf18e047", balanceOf: "0x70a08231", transfer: "0xa9059cbb", claim: "0x1e83409a", emergencyWithdraw: "0x6ff1c9bc",
   attended: "0x48c17fb6", challengeEndsAt: "0x765be13f", challenges: "0x08b43a19", challengeDeposit: "0x0d13fd7b", challengers: "0x8f59ca25",
   challenge: "0xd2ef7398", matchChallenge: "0x6d6df455", resolveChallenge: "0x32064dac", ethOwed: "0x680686b7", withdrawEth: "0x25e16063",
-  disputeResolver: "0xf5a3f4af" };
+  disputeResolver: "0xf5a3f4af", fundAppeal: "0x503fc58f", claimAppealRewards: "0x4e6186db", appealStatus: "0x17e411d5" };
+const TOPIC_APPEAL_FUNDED = "0x7c337b5f3c9a6ecbce111fd88231af5a4403a5f801357f9ac98cbe1df8790d9b";
 // Kleros v2 (KlerosCore and its DisputeKitClassic): appeals are crowdfunded there, not in the deposit contract.
 const KSEL = { arbitrator: "0x6cc6cde1", disputes: "0x564a565d", currentRuling: "0x1c3db16d", appealPeriod: "0xafe15cfb", appealCost: "0x59ec827e",
-  getNumberOfRounds: "0xfc6f8f16", disputeKits: "0xacdbf51d", fundAppeal: "0x4b2f0ea0", getFundedChoices: "0x65540b96" };
+  getNumberOfRounds: "0xfc6f8f16", disputeKits: "0xacdbf51d", getFundedChoices: "0x65540b96", submitEvidence: "0xa6a7f0eb" };
 const TOPIC_CONTRIBUTION = "0xcae597f39a3ad75c2e10d46b031f023c5c2babcd58ca0491b122acda3968d4c0";
 const RULINGS = ["no ruling", "Yes, attended", "No, did not attend"];
 const PHASE = { Open: 0, Listed: 1, Finalized: 2, Cancelled: 3 };
@@ -503,6 +512,29 @@ async function loadOpenChallenges() {
   $("open-ch").hidden = !rows.length;
 }
 
+// Someone who funded an appeal on this case through the deposit contract collects their part here.
+async function offerAppealRewards(staker, out) {
+  if (!state.account) return;
+  let logs = [];
+  try { logs = await rpc("eth_getLogs", [{ address: CONFIG.contract, fromBlock: "0x" + Number(CONFIG.deployBlock || 0).toString(16), toBlock: "latest", topics: [TOPIC_APPEAL_FUNDED, "0x" + pad(staker), "0x" + pad(state.account)] }]); } catch {}
+  if (!logs.length) return;
+  showAction("Collect my appeal rewards", () => sendFrom(null, SEL.claimAppealRewards + pad(staker) + pad(state.account), 0n, out, "Appeal money collected."));
+}
+
+let evCase = null;
+async function sendEvidence() {
+  const out = $("lookup-out");
+  const name = $("ev-title").value.trim(), description = $("ev-text").value.trim(), link = $("ev-link").value.trim();
+  if (!name || !description) { setNote(out, "bad", "Write a title and what the evidence shows."); return; }
+  if (link && !/^(https:\/\/|ipfs:\/\/|\/ipfs\/)\S+$/.test(link)) { setNote(out, "bad", "The link should start with https:// or ipfs://."); return; }
+  const json = JSON.stringify(link ? { name, description, fileURI: link } : { name, description });
+  const bytes = new TextEncoder().encode(json);
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  const data = KSEL.submitEvidence + word(evCase) + word(64) + word(bytes.length) + hex.padEnd(Math.ceil(hex.length / 64) * 64, "0");
+  await sendFrom(null, data, 0n, out, `Evidence sent to Kleros case #${evCase}.`, CONFIG.klerosEvidenceModule);
+  for (const id of ["ev-title", "ev-text", "ev-link"]) $(id).value = "";
+}
+
 let chAction = null, chAction2 = null;
 function showAction(label, fn, label2, fn2) {
   chAction = fn; chAction2 = fn2 || null;
@@ -521,20 +553,18 @@ async function klerosContracts() {
   const kit = "0x" + words(await call(core, KSEL.disputeKits + word(CONFIG.klerosDisputeKit || 1)))[0].slice(24);
   return (klerosAt = { core, kit });
 }
-async function appealInfo(id) {
+async function appealInfo(id, staker) {
   const { core, kit } = await klerosContracts();
   const [d, cr, nr] = await Promise.all([call(core, KSEL.disputes + word(id)), call(core, KSEL.currentRuling + word(id)), call(core, KSEL.getNumberOfRounds + word(id))]);
   const dw = words(d);
   const a = { id, kit, period: Number(big("0x" + dw[2])), ruled: big("0x" + dw[3]) === 1n, ruling: Number(big("0x" + words(cr)[0])), round: Number(big(nr)) };
   if (a.period !== 3) return a;
-  const [ap, ac, fc] = await Promise.all([call(core, KSEL.appealPeriod + word(id)), call(core, KSEL.appealCost + word(id)), call(kit, KSEL.getFundedChoices + word(id))]);
-  const apw = words(ap), fcw = words(fc);
-  a.start = Number(big("0x" + apw[0])); a.end = Number(big("0x" + apw[1]));
-  a.loserEnd = a.start + Math.floor((a.end - a.start) / 2);
-  const cost = big(ac);
+  // deadlines and amounts as the deposit contract computes them from Kleros (appealStatus)
+  const [st, fc] = await Promise.all([call(CONFIG.contract, SEL.appealStatus + pad(staker)), call(kit, KSEL.getFundedChoices + word(id))]);
+  const sw = words(st).map((x) => big("0x" + x)), fcw = words(fc);
+  a.start = Number(sw[2]); a.end = Number(sw[3]); a.loserEnd = Number(sw[4]);
   a.funded = fcw.slice(2, 2 + Number(big("0x" + (fcw[1] || "0")))).map((x) => Number(big("0x" + x)));
-  // the side that won this round raises the fee + 1x, the other side the fee + 2x
-  a.need = { 1: a.ruling === 1 ? cost * 2n : cost * 3n, 2: a.ruling === 2 ? cost * 2n : cost * 3n };
+  a.need = { 1: sw[5], 2: sw[6] };
   a.paid = { 1: 0n, 2: 0n };
   try {
     const logs = await rpc("eth_getLogs", [{ address: kit, fromBlock: "0x" + Number(CONFIG.deployBlock || 0).toString(16), toBlock: "latest", topics: [TOPIC_CONTRIBUTION, "0x" + word(id), "0x" + word(a.round - 1)] }]);
@@ -546,7 +576,7 @@ async function appealInfo(id) {
 
 async function lookup() {
   const addr = $("lookup-addr").value.trim(), out = $("lookup-out");
-  $("claim-box").hidden = true; $("ch-box").hidden = true;
+  $("claim-box").hidden = true; $("ch-box").hidden = true; $("ev-box").hidden = true;
   if (!isAddr(addr)) { setNote(out, "bad", "That isn't a wallet address. It starts with 0x and has 42 characters."); return; }
   if (!isAddr(CONFIG.contract)) { setNote(out, "", "Deposits haven't opened yet."); return; }
   setNote(out, "", "Checking…");
@@ -569,9 +599,12 @@ async function lookup() {
       if (phase !== PHASE.Open) { text = "No confirmed spot for this wallet."; }
       else if (sent) { kind = "warn"; text = `Deposit received. Waiting for the hosts to review your Luma registration.${sentLink}`; }
       else { text = "No deposit found from this wallet yet. Make sure you sent it on Arbitrum One from this exact wallet."; }
-    } else if (status === 1 && phase === PHASE.Listed) {
-      if (ch.state === 3) { kind = attended ? "good" : "bad"; text = attended ? "Challenge settled: on the attendance list." : `Kleros jurors ruled this spot a no-show.${kleros}`; }
-      else if (attended && ch.state !== 2) { kind = "good"; text = `On the attendance list. Payouts are released after the challenge window (until ${ist(windowEnd)}) once no Kleros case is pending.`; }
+    } else if (status === 1 && (phase === PHASE.Listed || (phase === PHASE.Finalized && ch.state >= 2))) {
+      if (ch.state === 3) {
+        kind = attended ? "good" : "bad"; text = attended ? "Challenge settled: on the attendance list." : `Kleros jurors ruled this spot a no-show.${kleros}`;
+        await offerAppealRewards(addr, out);
+      }
+      else if (attended && ch.state !== 2) { kind = "good"; text = `On the attendance list. Payouts are released after the challenge window (until ${ist(windowEnd)}) once no challenge is waiting for a match.`; }
       else if (ch.state === 0 && now <= windowEnd) {
         const fee = big(await call(c, SEL.challengeDeposit));
         kind = "warn";
@@ -580,26 +613,30 @@ async function lookup() {
       } else if (ch.state === 0) { kind = "bad"; text = `Not on the attendance list, and the challenge window closed at ${ist(windowEnd)}. This spot counts as a no-show.`; }
       else if (ch.state === 1 && now <= ch.matchEndsAt) {
         kind = "warn";
-        text = `Challenge open: this guest says they attended. If nobody matches the ${eth(ch.deposit)} deposit by ${ist(ch.matchEndsAt)}, they count as attended. If you know they were not there, you can dispute it: you send the same deposit and Kleros jurors decide (the winner gets the remaining ETH; payouts wait for the ruling, about 3 weeks).`;
+        text = `Challenge open: this guest says they attended. If nobody matches the ${eth(ch.deposit)} deposit by ${ist(ch.matchEndsAt)}, they count as attended. If you know they were not there, you can dispute it: you send the same deposit and Kleros jurors decide (the winner gets the remaining ETH; about 3 weeks, and this guest's share is set aside until the final ruling).`;
         showAction(`Dispute this claim (${eth(ch.deposit)})`, () => sendFrom(null, SEL.matchChallenge + pad(addr), ch.deposit, out, "Dispute created on Kleros. Add your evidence on the Kleros court site."));
       } else if (ch.state === 1) {
         kind = "good"; text = "Nobody matched the challenge in time, so this guest counts as attended. Anyone can settle it now (it also happens automatically at payout).";
         showAction("Settle challenge", () => sendFrom(null, SEL.resolveChallenge + pad(addr), 0n, out, "Settled: on the attendance list, and the ETH deposit went back."));
       } else if (ch.state === 2) {
-        kind = "warn"; text = `In a Kleros dispute.${kleros} Payouts wait for the final ruling.`;
+        kind = "warn"; text = `In a Kleros dispute.${kleros} ${phase === PHASE.Finalized ? "Everyone else has been paid; this guest's share is set aside until the final ruling." : "If payouts are released first, this guest's share is set aside until the final ruling."}`;
         const settle = () => sendFrom(null, SEL.resolveChallenge + pad(addr), 0n, out, "Settled according to the Kleros ruling.");
         let a = null;
-        try { a = await appealInfo(ch.caseId); } catch {}
+        try { a = await appealInfo(ch.caseId, addr); } catch {}
+        if (a && !a.ruled && a.period < 4 && isAddr(CONFIG.klerosEvidenceModule)) { evCase = a.id; $("ev-box").hidden = false; }
         if (!a) { text += " Once Kleros rules, anyone can settle it here."; showAction("Settle (after the ruling)", settle); }
         else if (a.ruled) { text += ` Final ruling: <b>${RULINGS[a.ruling]}</b>. Anyone can settle it now.`; showAction("Settle challenge", settle); }
         else if (a.period === 4 || (a.period === 3 && now >= a.end)) { text += ` Jurors ruled <b>${RULINGS[a.ruling]}</b> and the appeal window is over. Kleros delivers the final ruling shortly; then anyone can settle it here.`; }
         else if (a.period < 3) { text += ` Round ${a.round}: jurors are ${a.period === 0 ? "being drawn and evidence is open" : "voting"}.`; }
         else {
-          text += ` Round ${a.round}: jurors voted <b>${RULINGS[a.ruling]}</b>. Either side can appeal until ${ist(a.end)} (the side that lost this vote only until ${ist(a.loserEnd)}). An appeal needs both answers fully funded; anyone can chip in on the Kleros case page. Funders of the side that wins in the end get their ETH back plus a reward; money for a side that never gets fully funded is returned.`;
+          text += ` Round ${a.round}: jurors voted <b>${RULINGS[a.ruling]}</b>. Either side can appeal until ${ist(a.end)} (the side that lost this vote only until ${ist(a.loserEnd)}). An appeal needs both answers fully funded, and anyone can chip in. Funders of the side that wins in the end get their ETH back plus a reward, collected here once the case is settled; money for a side that never gets fully funded is returned.`;
+          for (const [s, o] of [[1, 2], [2, 1]])
+            if ((a.funded.includes(s) || a.paid[s] > 0n) && !a.funded.includes(o))
+              text += ` <b>⚠ "${RULINGS[s]}" is being funded. If "${RULINGS[o]}" is not fully funded by ${ist(a.ruling === o ? a.end : a.loserEnd)}, "${RULINGS[s]}" wins the case.</b>`;
           const opts = [1, 2].filter((s) => !a.funded.includes(s) && (a.ruling === s || now < a.loserEnd)).map((s) => {
             const missing = a.need[s] - a.paid[s];
             text += ` "${RULINGS[s]}": ${eth(a.paid[s])} of ${eth(a.need[s])} raised.`;
-            return [`Appeal: fund "${RULINGS[s]}" (${eth(missing)})`, () => sendFrom(null, KSEL.fundAppeal + word(a.id) + word(s), missing, out, "Appeal funding sent. Check back here to see if the other side is funded too.", a.kit)];
+            return [`Appeal: fund "${RULINGS[s]}" (${eth(missing)})`, () => sendFrom(null, SEL.fundAppeal + pad(addr) + word(s), missing, out, "Appeal funding sent. Check back here to see if the other side is funded too.")];
           });
           for (const s of a.funded) text += ` "${RULINGS[s]}": fully funded.`;
           if (opts.length) showAction(opts[0][0], opts[0][1], opts[1]?.[0], opts[1]?.[1]);
@@ -655,6 +692,7 @@ $("lookup").addEventListener("click", lookup);
 $("claim").addEventListener("click", claim);
 $("ch-action").addEventListener("click", () => chAction && chAction());
 $("ch-action2").addEventListener("click", () => chAction2 && chAction2());
+$("ev-send").addEventListener("click", sendEvidence);
 $("copy-contract").addEventListener("click", (e) => copy(CONFIG.contract, e.currentTarget));
 $("copy-tx").addEventListener("click", (e) => copy($("tx-link").textContent, e.currentTarget));
 $("copy-wallet").addEventListener("click", (e) => copy($("tx-wallet").textContent, e.currentTarget));

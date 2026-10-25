@@ -112,12 +112,21 @@ contract MockArbitrator {
     }
 }
 
-/// @dev Test stand-in for Kleros's DisputeKitClassic appeal crowdfunding (same rules: the side that
-/// lost the round pays the appeal cost + 2x and only during the first half of the appeal period; the
-/// side that won pays + 1x; when both sides are fully funded a new round starts).
+/// @dev Test stand-in for Kleros's DisputeKitClassic appeal crowdfunding, with the same rules and
+/// reward maths: the side that lost the round pays the appeal cost + 2x and only during the first
+/// half of the appeal period; the side that won pays + 1x; when both sides are fully funded a new
+/// round starts. After the final ruling, funders of the winning side share the round's fee rewards,
+/// sides never fully funded are reimbursed. `newStyle` switches to the newer 3-argument withdrawal.
 contract MockDisputeKit {
+    uint256 public constant WINNER_STAKE_MULTIPLIER = 10000;
+    uint256 public constant LOSER_STAKE_MULTIPLIER = 20000;
+    uint256 public constant LOSER_APPEAL_PERIOD_MULTIPLIER = 5000;
+
     MockArbitrator public immutable core;
+    bool public newStyle;
     mapping(uint256 => mapping(uint256 => mapping(uint256 => uint256))) public paidFees; // id => round => choice
+    mapping(uint256 => mapping(uint256 => mapping(uint256 => bool))) public hasPaid;
+    mapping(uint256 => mapping(uint256 => uint256)) public feeRewards;
     mapping(uint256 => mapping(uint256 => mapping(address => mapping(uint256 => uint256)))) public contributions;
     mapping(uint256 => mapping(uint256 => uint256[])) internal funded;
 
@@ -129,29 +138,38 @@ contract MockDisputeKit {
         core = c;
     }
 
+    function setNewStyle(bool v) external {
+        newStyle = v;
+    }
+
     function fundAppeal(uint256 id, uint256 choice) external payable {
         require(choice == 1 || choice == 2, "choice");
         (uint256 start, uint256 end) = core.appealPeriod(id);
         require(block.timestamp >= start && block.timestamp < end, "NotAppealPeriod");
         (uint256 ruling,,) = core.currentRuling(id);
-        uint256 multiplier = 10000;
+        uint256 multiplier = WINNER_STAKE_MULTIPLIER;
         if (ruling != choice) {
-            require(block.timestamp - start < (end - start) / 2, "NotAppealPeriodForLoser");
-            multiplier = 20000;
+            require(block.timestamp - start < ((end - start) * LOSER_APPEAL_PERIOD_MULTIPLIER) / 10000, "NotAppealPeriodForLoser");
+            multiplier = LOSER_STAKE_MULTIPLIER;
         }
         uint256 round = core.getNumberOfRounds(id) - 1;
+        require(!hasPaid[id][round][choice], "AppealFeeIsAlreadyPaid");
         uint256 appealCost = core.appealCost(id);
         uint256 total = appealCost + (appealCost * multiplier) / 10000;
         uint256 paid = paidFees[id][round][choice];
-        require(paid < total, "AppealFeeIsAlreadyPaid");
         uint256 contribution = msg.value < total - paid ? msg.value : total - paid;
         paidFees[id][round][choice] = paid + contribution;
         contributions[id][round][msg.sender][choice] += contribution;
         emit Contribution(id, round, choice, msg.sender, contribution);
         if (paid + contribution >= total) {
+            feeRewards[id][round] += total;
+            hasPaid[id][round][choice] = true;
             funded[id][round].push(choice);
             emit ChoiceFunded(id, round, choice);
-            if (funded[id][round].length > 1) core.appeal{value: appealCost}(id);
+            if (funded[id][round].length > 1) {
+                feeRewards[id][round] -= appealCost;
+                core.appeal{value: appealCost}(id);
+            }
         }
         if (msg.value > contribution) payable(msg.sender).transfer(msg.value - contribution);
     }
@@ -160,23 +178,57 @@ contract MockDisputeKit {
         return funded[id][core.getNumberOfRounds(id) - 1];
     }
 
-    /// @dev Simplified: returns the beneficiary's contribution for that round and choice.
+    /// @dev The version deployed on Arbitrum One: one round at a time.
     function withdrawFeesAndRewards(uint256 id, address payable beneficiary, uint256 round, uint256 choice)
         external
         returns (uint256 amount)
     {
-        (, , uint8 period, ,) = core.disputes(id);
+        require(!newStyle, "unknown function");
+        amount = _owed(id, beneficiary, round, choice);
+        _pay(id, round, choice, beneficiary, amount);
+    }
+
+    /// @dev The newer version: every round at once.
+    function withdrawFeesAndRewards(uint256 id, address payable beneficiary, uint256 choice) external returns (uint256 amount) {
+        require(newStyle, "unknown function");
+        uint256 rounds = core.getNumberOfRounds(id);
+        for (uint256 r; r < rounds; ++r) amount += _owed(id, beneficiary, r, choice);
+        _pay(id, 0, choice, beneficiary, amount);
+    }
+
+    function _owed(uint256 id, address beneficiary, uint256 round, uint256 choice) internal returns (uint256 amount) {
+        (,, uint8 period,,) = core.disputes(id);
         require(period == 4, "DisputeNotResolved");
-        amount = contributions[id][round][beneficiary][choice];
-        if (amount > address(this).balance) amount = address(this).balance;
-        contributions[id][round][beneficiary][choice] = 0;
-        if (amount > 0) {
-            emit Withdrawal(id, round, choice, beneficiary, amount);
-            beneficiary.transfer(amount);
+        (uint256 finalRuling,,) = core.currentRuling(id);
+        uint256 mine = contributions[id][round][beneficiary][choice];
+        if (!hasPaid[id][round][choice]) {
+            amount = mine; // never fully funded: reimbursed
+        } else if (choice == finalRuling) {
+            amount = (mine * feeRewards[id][round]) / paidFees[id][round][choice];
+        } else if (!hasPaid[id][round][finalRuling]) {
+            uint256[] storage f = funded[id][round];
+            uint256 both = paidFees[id][round][f[0]] + (f.length > 1 ? paidFees[id][round][f[1]] : 0);
+            amount = (mine * feeRewards[id][round]) / both;
         }
+        contributions[id][round][beneficiary][choice] = 0;
+    }
+
+    function _pay(uint256 id, uint256 round, uint256 choice, address payable to, uint256 amount) internal {
+        if (amount == 0) return;
+        emit Withdrawal(id, round, choice, to, amount);
+        to.transfer(amount);
     }
 
     receive() external payable {}
+}
+
+/// @dev Test stand-in for the Kleros v2 EvidenceModule.
+contract MockEvidenceModule {
+    event Evidence(uint256 indexed _externalDisputeID, address indexed _party, string _evidence);
+
+    function submitEvidence(uint256 id, string calldata evidence) external {
+        emit Evidence(id, msg.sender, evidence);
+    }
 }
 
 /// @dev Test stand-in for the Kleros DisputeResolver, with a hook to give rulings.

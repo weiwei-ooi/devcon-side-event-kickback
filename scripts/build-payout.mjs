@@ -12,7 +12,7 @@
 //   out/safe-post-attendance.json  Safe Transaction Builder batch for postAttendance()
 //
 // Posting the list opens a 1-day challenge window (Kleros). Payouts are released afterwards
-// with "Release payouts", once no challenge is pending.
+// with "Release payouts", once no challenge is waiting for a match (a share per open Kleros case is set aside).
 //
 // --extra-checkins: optional CSV with an `email` and/or `wallet` column for anyone the door
 // team checked in by hand (paper list, Luma app offline, etc.).
@@ -138,7 +138,7 @@ if (contractAddr && attendees.length) {
     { to: contractAddr, data: iface.encodeFunctionData("postAttendance", [attendees.map((x) => x.wallet), share]) },
   ]));
   console.log(`Next: click "Post attendance list" in the console (reads ${out}/payout-plan.json), or upload ${out}/safe-post-attendance.json in Safe.`);
-  console.log(`Then wait 1 day for challenges; click "Release payouts" once none is pending.`);
+  console.log(`Then wait 1 day for challenges; click "Release payouts" once none is waiting for a match.`);
 } else if (attendees.length) {
   // No contract: deposits sit in a Safe. Pay out with one batched Safe tx of USDC transfers.
   const erc20 = new ethers.Interface(["function transfer(address,uint256)"]);
