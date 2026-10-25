@@ -1,17 +1,182 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-/// @dev Test stand-in for KlerosCore: a fixed arbitration cost.
+/// @dev Test stand-in for KlerosCore: a fixed arbitration cost, plus the views and calls the console and
+/// guest page use for appeals (period, current ruling, appeal period and cost, dispute kit, executeRuling).
 contract MockArbitrator {
     uint256 public cost = 0.015 ether;
+    MockDisputeResolver public resolver;
+    MockDisputeKit public kit;
+
+    struct Core {
+        uint8 period; // 0 evidence, 1 commit, 2 vote, 3 appeal, 4 execution (like KlerosCore.Period)
+        bool ruled;
+        uint256 lastPeriodChange;
+        uint256 ruling; // current ruling of the latest round
+        uint256 appealStart;
+        uint256 appealEnd;
+        uint256 rounds;
+    }
+
+    mapping(uint256 => Core) internal core;
+
+    constructor() {
+        kit = new MockDisputeKit(this);
+    }
 
     function setCost(uint256 c) external {
         cost = c;
     }
 
+    function setResolver(MockDisputeResolver r) external {
+        resolver = r;
+    }
+
     function arbitrationCost(bytes calldata) external view returns (uint256) {
         return cost;
     }
+
+    /// @dev Called by the mock resolver when a dispute is created.
+    function opened(uint256 id) external {
+        core[id].rounds = 1;
+        core[id].lastPeriodChange = block.timestamp;
+    }
+
+    /// @dev Test hook: jurors voted `ruling`; the appeal period runs for `duration` seconds from now.
+    function startAppealPeriod(uint256 id, uint256 ruling, uint256 duration) external {
+        Core storage d = core[id];
+        d.period = 3;
+        d.ruling = ruling;
+        d.lastPeriodChange = block.timestamp;
+        d.appealStart = block.timestamp;
+        d.appealEnd = block.timestamp + duration;
+    }
+
+    /// @dev Called by the mock dispute kit when both sides are funded: a new round starts.
+    function appeal(uint256 id) external payable {
+        require(msg.sender == address(kit), "kit only");
+        Core storage d = core[id];
+        d.period = 0;
+        d.rounds += 1;
+        d.lastPeriodChange = block.timestamp;
+        d.appealStart = 0;
+        d.appealEnd = 0;
+    }
+
+    function passPeriod(uint256 id) external {
+        Core storage d = core[id];
+        require(d.period == 3 && block.timestamp >= d.appealEnd, "not yet");
+        d.period = 4;
+        d.lastPeriodChange = block.timestamp;
+        d.appealStart = 0;
+        d.appealEnd = 0;
+    }
+
+    function executeRuling(uint256 id) external {
+        Core storage d = core[id];
+        require(d.period == 4 && !d.ruled, "not executable");
+        d.ruled = true;
+        resolver.giveRuling(resolver.arbitratorDisputeIDToLocalID(id), d.ruling);
+    }
+
+    function disputes(uint256 id)
+        external
+        view
+        returns (uint96 courtID, address arbitrated, uint8 period, bool ruled, uint256 lastPeriodChange)
+    {
+        Core storage d = core[id];
+        return (1, address(resolver), d.period, d.ruled, d.lastPeriodChange);
+    }
+
+    function currentRuling(uint256 id) external view returns (uint256 ruling, bool tied, bool overridden) {
+        return (core[id].ruling, core[id].ruling == 0, false);
+    }
+
+    function appealPeriod(uint256 id) external view returns (uint256 start, uint256 end) {
+        return (core[id].appealStart, core[id].appealEnd);
+    }
+
+    /// @dev Like KlerosCore: the next round has 2n+1 jurors (3 → 7 → 15 …).
+    function appealCost(uint256 id) public view returns (uint256) {
+        uint256 jurors = 3;
+        for (uint256 i = 1; i < core[id].rounds; ++i) jurors = jurors * 2 + 1;
+        return (cost / 3) * (jurors * 2 + 1);
+    }
+
+    function getNumberOfRounds(uint256 id) external view returns (uint256) {
+        return core[id].rounds;
+    }
+
+    function disputeKits(uint256) external view returns (address) {
+        return address(kit);
+    }
+}
+
+/// @dev Test stand-in for Kleros's DisputeKitClassic appeal crowdfunding (same rules: the side that
+/// lost the round pays the appeal cost + 2x and only during the first half of the appeal period; the
+/// side that won pays + 1x; when both sides are fully funded a new round starts).
+contract MockDisputeKit {
+    MockArbitrator public immutable core;
+    mapping(uint256 => mapping(uint256 => mapping(uint256 => uint256))) public paidFees; // id => round => choice
+    mapping(uint256 => mapping(uint256 => mapping(address => mapping(uint256 => uint256)))) public contributions;
+    mapping(uint256 => mapping(uint256 => uint256[])) internal funded;
+
+    event Contribution(uint256 indexed _coreDisputeID, uint256 indexed _coreRoundID, uint256 _choice, address indexed _contributor, uint256 _amount);
+    event ChoiceFunded(uint256 indexed _coreDisputeID, uint256 indexed _coreRoundID, uint256 indexed _choice);
+    event Withdrawal(uint256 indexed _coreDisputeID, uint256 indexed _coreRoundID, uint256 _choice, address indexed _contributor, uint256 _amount);
+
+    constructor(MockArbitrator c) {
+        core = c;
+    }
+
+    function fundAppeal(uint256 id, uint256 choice) external payable {
+        require(choice == 1 || choice == 2, "choice");
+        (uint256 start, uint256 end) = core.appealPeriod(id);
+        require(block.timestamp >= start && block.timestamp < end, "NotAppealPeriod");
+        (uint256 ruling,,) = core.currentRuling(id);
+        uint256 multiplier = 10000;
+        if (ruling != choice) {
+            require(block.timestamp - start < (end - start) / 2, "NotAppealPeriodForLoser");
+            multiplier = 20000;
+        }
+        uint256 round = core.getNumberOfRounds(id) - 1;
+        uint256 appealCost = core.appealCost(id);
+        uint256 total = appealCost + (appealCost * multiplier) / 10000;
+        uint256 paid = paidFees[id][round][choice];
+        require(paid < total, "AppealFeeIsAlreadyPaid");
+        uint256 contribution = msg.value < total - paid ? msg.value : total - paid;
+        paidFees[id][round][choice] = paid + contribution;
+        contributions[id][round][msg.sender][choice] += contribution;
+        emit Contribution(id, round, choice, msg.sender, contribution);
+        if (paid + contribution >= total) {
+            funded[id][round].push(choice);
+            emit ChoiceFunded(id, round, choice);
+            if (funded[id][round].length > 1) core.appeal{value: appealCost}(id);
+        }
+        if (msg.value > contribution) payable(msg.sender).transfer(msg.value - contribution);
+    }
+
+    function getFundedChoices(uint256 id) external view returns (uint256[] memory) {
+        return funded[id][core.getNumberOfRounds(id) - 1];
+    }
+
+    /// @dev Simplified: returns the beneficiary's contribution for that round and choice.
+    function withdrawFeesAndRewards(uint256 id, address payable beneficiary, uint256 round, uint256 choice)
+        external
+        returns (uint256 amount)
+    {
+        (, , uint8 period, ,) = core.disputes(id);
+        require(period == 4, "DisputeNotResolved");
+        amount = contributions[id][round][beneficiary][choice];
+        if (amount > address(this).balance) amount = address(this).balance;
+        contributions[id][round][beneficiary][choice] = 0;
+        if (amount > 0) {
+            emit Withdrawal(id, round, choice, beneficiary, amount);
+            beneficiary.transfer(amount);
+        }
+    }
+
+    receive() external payable {}
 }
 
 /// @dev Test stand-in for the Kleros DisputeResolver, with a hook to give rulings.
@@ -45,8 +210,10 @@ contract MockDisputeResolver {
         id = 1000 + local; // arbitrator-side ids differ from local ids, like the real thing
         arbitratorDisputeIDToLocalID[id] = local;
         lastTemplate = template;
+        if (address(arbitrator.resolver()) == address(this)) arbitrator.opened(id);
     }
 
+    /// @dev Test hook (and what MockArbitrator.executeRuling calls): the final ruling arrives.
     function giveRuling(uint256 local, uint256 ruling) external {
         disputes[local].isRuled = true;
         disputes[local].ruling = ruling;

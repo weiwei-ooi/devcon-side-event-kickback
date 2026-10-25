@@ -24,7 +24,9 @@ const [owner, g1, g2, g3] = keys.map((k) => new ethers.NonceManager(new ethers.W
 const addr = (w) => w.getAddress();
 const dep = async (n, ...a) => (await new ethers.ContractFactory(load(n).abi, load(n).bytecode, owner).deploy(...a)).waitForDeployment();
 const usdc = await dep("MockUSDC");
-const resolver = await dep("MockDisputeResolver", (await dep("MockArbitrator")).target);
+const arbitrator = await dep("MockArbitrator");
+const resolver = await dep("MockDisputeResolver", arbitrator.target);
+await (await arbitrator.setResolver(resolver.target)).wait();
 for (const g of [g1, g2, g3]) await (await usdc.mint(await addr(g), U(100))).wait();
 const now = (await prov.getBlock("latest")).timestamp;
 
@@ -109,8 +111,34 @@ await skew(DAY + 60);
 await page.click("#refresh"); await page.waitForTimeout(800);
 check("release waits for the Kleros case", (await page.isDisabled("#release")) && /waiting for challenges/.test(await txt("release")), await txt("release"));
 
-// jurors: Cai attended → settle → release to 3 attendees (75 / 3 = 25 each)
-await (await resolver.giveRuling(0, 1)).wait();
+// (mock hooks get an explicit gas limit: ganache under-estimates them)
+// round 1: jurors say Cai did not attend. Cai's side appeals, the owner defends; both funded → round 2
+await (await arbitrator.startAppealPeriod(1000, 2, 3 * DAY, { gasLimit: 500000 })).wait();
+await page.click("#refresh"); await page.waitForTimeout(800);
+check("appeal window shown", /Round 1: jurors voted No, did not attend\. Appeal window until/.test(await txt("challenges")), await txt("challenges"));
+check("settle refused before the final ruling", await click("resolveOne", /has not ruled yet/), await logText());
+await page.selectOption("#apSide", "1");
+check("fund the losing side's appeal", await click("fundAppeal", /Appeal funding sent for "Yes, attended"/), await logText());
+await page.waitForTimeout(800);
+check("losing side shown fully funded", /Yes, attended: fully funded/.test(await txt("challenges")), await txt("challenges"));
+await page.selectOption("#apSide", "2");
+await page.fill("#apAmt", "0.01");
+check("chip in part of the other side", await click("fundAppeal", /Appeal funding sent for "No, did not attend"/), await logText());
+await page.waitForTimeout(800);
+check("partial funding shown", /No, did not attend: 0\.01 of 0\.07 ETH/.test(await txt("challenges")), await txt("challenges"));
+await (await page.locator("#log").evaluate((el) => (el.textContent = ""))); // fresh log for the next checks
+check("fund the rest of the other side", await click("fundAppeal", /Appeal funding sent for "No, did not attend"/), await logText());
+check("both funded: round 2", (await arbitrator.getNumberOfRounds(1000)) === 2n);
+await page.waitForTimeout(800);
+check("round 2 shown as in progress", /Round 2: evidence period/.test(await txt("challenges")), await txt("challenges"));
+// round 2: jurors say Cai attended; nobody appeals; anyone delivers the final ruling
+await (await arbitrator.startAppealPeriod(1000, 1, DAY, { gasLimit: 500000 })).wait();
+await skew(DAY + 60);
+await page.click("#refresh"); await page.waitForTimeout(800);
+check("appeal window over shown", /appeal window is over/.test(await txt("challenges")), await txt("challenges"));
+check("deliver the final ruling", await click("deliverRuling", /Final ruling delivered/), await logText());
+check("collect appeal money", await click("collectAppeal", /Appeal money collected/), await logText());
+// final: Cai attended → settle → release to 3 attendees (75 / 3 = 25 each)
 check("settle after ruling", await click("resolveOne", /settled/), await logText());
 const before = await Promise.all([g1, g2, g3].map(async (g) => usdc.balanceOf(await addr(g))));
 check("release payouts", await click("release", /Paid out/), await logText());

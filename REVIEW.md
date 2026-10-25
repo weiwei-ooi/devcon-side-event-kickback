@@ -2,7 +2,20 @@
 
 For Wei Wei and the developers reviewing the code before the live deployment.
 
-## What changed in v3 (please review this first)
+## Since v3: Kleros appeals (25 Oct, no contract change)
+
+The organiser noticed appeals were missing. In Kleros v2, appeals are not run by the arbitrable: `KlerosCore.appeal` can only be called by the dispute kit, and the kit (`DisputeKitClassic.fundAppeal`) crowdfunds both answers itself (losing answer cost + 2×, first half of the appeal period; winning answer cost + 1×; contributors are paid by `withdrawFeesAndRewards`). Our contract only reads `isRuled`/`ruling` from the DisputeResolver, which are set when KlerosCore executes the final ruling after the last appeal period, so it already waited through appeals. What was missing was everything around it:
+
+- **Owner console:** each disputed challenge shows its round, the jury's current vote, the appeal deadlines and how much each answer has raised (from `Contribution` events). New buttons: **Fund appeal** (either answer, any amount, defaults to what is missing; type APPEAL), **Deliver final ruling** (`passPeriod` + `executeRuling`, normally done by Kleros bots) and **Collect appeal rewards** (`withdrawFeesAndRewards`, with the 4-argument signature deployed on Arbitrum One and a fallback to the newer 3-argument one). Kleros errors are explained in plain words.
+- **Guest page:** the lookup of a disputed challenge shows the same status, with an **Appeal** button for each answer that can still be funded.
+- **Tests:** the Kleros mock now models KlerosCore's appeal views and a dispute kit with the same funding rules. A new contract test runs an appealed case (round 1 "absent", appeal funded by a crowd and the guest, round 2 "attended", final) and checks that nothing settles before the final ruling. Browser tests fund appeals from the console and the guest page and follow the case to the payout.
+- **Juror policy:** a short "Appeals" section (only the final ruling counts; appeal fees are separate from the challenge deposits). This changes the file, so it has to be pinned again and `kleros.policyURI` updated before the deploy.
+
+Tests now: 20 contract tests + the script end-to-end run (`npm test`, 21/21), 50 guest-page browser checks, 31 owner-console browser checks.
+
+Please check: the appeal funding maths in `appealInfo` (console and site) against DisputeKitClassic, and the addresses read at runtime (`DisputeResolver.arbitrator()` → `KlerosCore.disputeKits(1)`).
+
+## What changed in v3
 
 Requested by the organiser on 25 Oct:
 
@@ -21,7 +34,7 @@ Requested by the organiser on 25 Oct:
 
 Points we would like reviewers to look at in particular: the ETH accounting in `resolveChallenge` (2 × deposit − fee, rounding on the split), the `cost ≤ 2 × deposit` guard if the Kleros fee rises between challenge and match, the unbounded loop over `_challengers` in `releasePayouts` (bounded by the number of stakers, at most 150), and the template JSON (no user-controlled strings except the owner-set event name and policy path).
 
-**Tradeoffs the organiser accepted:** a fee of about 0.015 ETH per side; a matched challenge holds every payout for about 3 weeks (one Kleros round, longer with appeals); the juror policy (`docs/attendance-policy.md`, approved by the organiser) is pinned on IPFS at `/ipfs/Qmed2kuk17XbTeWG56UpWY8jThATEWzfWxgLAKqy5iLKsv` and set in `config.kleros.policyURI` (the live deploy refuses without one).
+**Tradeoffs the organiser accepted:** a fee of about 0.015 ETH per side; a matched challenge holds every payout for about 3 weeks (one Kleros round; each appeal adds another round, and everyone's payout waits for the final ruling); the juror policy (`docs/attendance-policy.md`, approved by the organiser) is pinned on IPFS at `/ipfs/Qmed2kuk17XbTeWG56UpWY8jThATEWzfWxgLAKqy5iLKsv` and set in `config.kleros.policyURI` (the live deploy refuses without one).
 
 Tests: 19 contract tests (including every challenge path against a mock DisputeResolver and an ETH-refusing wallet), the end-to-end script test (posts the list, an unmatched challenge, release), 43 browser checks on the guest page and 19 on the owner console (deploy with Kleros settings → register → post → challenge → dispute → ruling → settle → release).
 
@@ -66,5 +79,5 @@ Deploy, 25 USDC deposit, verify, decline + refund (`rejectAndRefund`, tx 0x4c738
 
 1. Short v3 rehearsal on Arbitrum One (`npm run console:rehearsal`, 500 USDC cap, throwaway contract), including one challenge left unmatched.
 2. Developer review of `contracts/GroundTruthKickback.sol` and `console/index.html`.
-3. Juror policy already pinned (`/ipfs/Qmed2kuk17XbTeWG56UpWY8jThATEWzfWxgLAKqy5iLKsv`, set in config.json); re-pin only if the file changes. Deploy the live contract from `npm run console`, verify the source on Arbiscan (`build/GroundTruthKickback.standard-input.json`, compiler 0.8.28), record `contract`, `receiver`, `deployBlock` and `depositOpensAt` in `config.json`, and put the address on Luma while the event stays Private.
+3. Juror policy: the "Appeals" section changed the file, so it must be pinned again and the new path set in config.json (the old pin `/ipfs/Qmed2kuk17XbTeWG56UpWY8jThATEWzfWxgLAKqy5iLKsv` is the version without it). Deploy the live contract from `npm run console`, verify the source on Arbiscan (`build/GroundTruthKickback.standard-input.json`, compiler 0.8.28), record `contract`, `receiver`, `deployBlock` and `depositOpensAt` in `config.json`, and put the address on Luma while the event stays Private.
 4. Go Public only when the organiser says so.

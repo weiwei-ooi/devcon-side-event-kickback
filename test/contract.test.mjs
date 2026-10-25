@@ -80,6 +80,7 @@ before(async () => {
   for (const g of guests) await send(usdc.mint(await addr(g), U(100)));
   arbitrator = await deploy("MockArbitrator", owner);
   resolver = await deploy("MockDisputeResolver", owner, arbitrator.target);
+  await send(arbitrator.setResolver(resolver.target));
 });
 after(async () => server && (await server.close()));
 
@@ -457,6 +458,44 @@ test("the organiser can add a forgotten guest during the window; a waiting chall
   await reverts(kick, "addAttendees", [[await addr(guests[154])]], "TooLate");
   await send(kick.releasePayouts());
   assert.equal(await bal(await kick.getAddress()), 0n);
+});
+
+test("appeals: payouts wait through every appeal round and only the final ruling counts", async () => {
+  const { kick, gs } = await listed([21, 25], 2);
+  const [g, m] = [gs[2], guests[156]];
+  await send(kick.connect(g).challenge({ value: FEE }));
+  await send(kick.connect(m).matchChallenge(await addr(g), { value: FEE }));
+  const c = await kick.challenges(await addr(g));
+  const id = c.arbitratorDisputeID;
+  const kit = new ethers.Contract(await arbitrator.kit(), load("MockDisputeKit").abi, prov);
+  await warp(DAY + 1);
+
+  // round 1: jurors say "did not attend"; the guest's side appeals (cost + 2x), the matcher's side defends (cost + 1x)
+  await send(arbitrator.startAppealPeriod(id, 2, 3 * DAY));
+  await reverts(kick, "resolveChallenge", [await addr(g)], "NotRuled"); // a round-1 vote is not final
+  await reverts(kick, "releasePayouts", [], "ChallengesPending");
+  const cost = await arbitrator.appealCost(id);
+  await send(kit.connect(guests[157]).fundAppeal(id, 1, { value: cost })); // crowdfunding: anyone can chip in
+  await send(kit.connect(g).fundAppeal(id, 1, { value: 3n * cost })); // the rest (any excess comes back)
+  assert.equal(await kit.paidFees(id, 0, 1), 3n * cost);
+  await send(kit.connect(m).fundAppeal(id, 2, { value: 2n * cost }));
+  assert.equal(await arbitrator.getNumberOfRounds(id), 2n); // both sides funded: a new, bigger jury
+  await reverts(kick, "resolveChallenge", [await addr(g)], "NotRuled");
+
+  // round 2: jurors say "attended"; nobody appeals; the ruling becomes final
+  await send(arbitrator.startAppealPeriod(id, 1, 3 * DAY));
+  await warp(3 * DAY + 1);
+  await reverts(kick, "resolveChallenge", [await addr(g)], "NotRuled");
+  await send(arbitrator.passPeriod(id));
+  await send(arbitrator.executeRuling(id));
+  const e0 = await ethBal(g);
+  await send(kick.connect(owner).resolveChallenge(await addr(g)));
+  assert.equal(await ethBal(g), e0 + FEE); // the final winner gets what is left of both deposits
+  assert.equal(await kick.attended(await addr(g)), true);
+  const u0 = await bal(g);
+  await send(kick.releasePayouts());
+  assert.equal(await bal(g), u0 + U(20)); // 60 over 3 attendees
+  assert.equal(await prov.getBalance(kick.target), 0n); // appeal money never passes through this contract
 });
 
 test("a wallet that refuses ETH can withdraw its challenge money later", async () => {

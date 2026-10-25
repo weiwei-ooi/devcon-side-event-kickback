@@ -31,10 +31,16 @@ This policy applies to disputes created by the Ground Truth deposit contract on 
 - If the organiser confirms in the case that the person attended, rule **Yes, attended**.
 - If neither side provides meaningful evidence, rule **No, did not attend** (the challenger has not shown attendance).
 
-## What happens after the ruling
+## Appeals
+
+- After each vote, either side can appeal during the Kleros appeal period. A new, larger jury then decides the same question under this same policy. Parties can add evidence for the new round.
+- Only the **final ruling** counts: the one in force when the last appeal period ends without a funded appeal. Earlier votes do not change the attendance list, the payouts or the challenge deposits.
+- Appeal fees are separate from the challenge deposits. They are crowdfunded on Kleros, and Kleros returns them or pays them out under its own appeal rules.
+
+## What happens after the final ruling
 
 - **Yes, attended:** the challenger is added to the attendance list and shares the pool. The challenger receives the remaining ETH deposits (both deposits minus the Kleros fee).
 - **No, did not attend:** the challenger stays off the list. The party who matched the challenge receives the remaining ETH deposits.
 - **Refused to arbitrate:** the challenger stays off the list and the remaining ETH is split equally between both parties.
 
-Payouts to all attendees are released only once every dispute has been ruled and settled.
+Payouts to all attendees are released only once every dispute has its final ruling and has been settled.

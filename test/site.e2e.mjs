@@ -30,6 +30,7 @@ const now = (await prov.getBlock("latest")).timestamp;
 const deployBlock = await prov.getBlockNumber();
 const arbitrator = await (await new ethers.ContractFactory(load("MockArbitrator").abi, load("MockArbitrator").bytecode, owner).deploy()).waitForDeployment();
 const resolver = await (await new ethers.ContractFactory(load("MockDisputeResolver").abi, load("MockDisputeResolver").bytecode, owner).deploy(arbitrator.target)).waitForDeployment();
+await (await arbitrator.setResolver(resolver.target)).wait();
 const kleros = [resolver.target, ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256", "uint256"], [1, 3, 1]), "/ipfs/QmE2E/policy.md"];
 const deploy = async (dep) => (await new ethers.ContractFactory(kabi, kbc, owner).deploy(await usdc.getAddress(), U(dep), "E2E", await addr(owner), now + 86400, now + 86400 * 9, kleros)).waitForDeployment();
 const kick = await deploy(25), bad = await deploy(15);
@@ -170,7 +171,21 @@ check("challenge open: dispute offered", /Challenge open/.test(await lookupAs(p,
 await p.click("#ch-action"); await p.waitForTimeout(1500);
 check("dispute created", /Dispute created on Kleros/.test(await waitText(p, "lookup-out", /Dispute created on Kleros|didn't go through|cancelled/)), await txt(p, "lookup-out"));
 check("in dispute: Kleros case link", /In a Kleros dispute/.test(await lookupAs(p, await addr(g3))) && /Kleros case #1000/.test(await txt(p, "lookup-out")), await txt(p, "lookup-out"));
-await (await resolver.connect(owner).giveRuling(0, 1)).wait(); // jurors: attended
+// round 1: jurors say g3 did not attend; anyone can fund an appeal from the page, one side at a time
+await (await arbitrator.startAppealPeriod(1000, 2, 3 * 86400, { gasLimit: 500000 })).wait();
+check("appeal window shown", /Round 1: jurors voted No, did not attend/.test(await lookupAs(p, await addr(g3))) && /Appeal: fund "Yes, attended" \(0\.105 ETH\)/.test(await txt(p, "ch-action")) && /Appeal: fund "No, did not attend" \(0\.07 ETH\)/.test(await txt(p, "ch-action2")), await txt(p, "lookup-out"));
+await p.click("#ch-action"); await p.waitForTimeout(1500);
+check("appeal funded (losing side)", /Appeal funding sent/.test(await waitText(p, "lookup-out", /Appeal funding sent|didn't go through|cancelled/)), await txt(p, "lookup-out"));
+check("losing side shown funded, other side offered", /"Yes, attended": fully funded/.test(await lookupAs(p, await addr(g3))) && /fund "No, did not attend"/.test(await txt(p, "ch-action")) && !(await vis(p, "ch-action2")), await txt(p, "lookup-out"));
+await p.click("#ch-action"); await p.waitForTimeout(1500);
+check("appeal funded (other side)", /Appeal funding sent/.test(await waitText(p, "lookup-out", /Appeal funding sent|didn't go through|cancelled/)), await txt(p, "lookup-out"));
+check("both funded: round 2 on Kleros", (await arbitrator.getNumberOfRounds(1000)) === 2n);
+check("round 2 shown", /Round 2: jurors are being drawn/.test(await lookupAs(p, await addr(g3))) && !(await vis(p, "ch-box")), await txt(p, "lookup-out"));
+// round 2: jurors say attended; nobody appeals; Kleros delivers the final ruling
+await (await arbitrator.startAppealPeriod(1000, 1, 86400, { gasLimit: 500000 })).wait();
+await prov.send("evm_increaseTime", [86400 + 10]); await prov.send("evm_mine", []);
+await (await arbitrator.passPeriod(1000)).wait(); await (await arbitrator.executeRuling(1000)).wait();
+check("final ruling shown", /Final ruling: Yes, attended/.test(await lookupAs(p, await addr(g3))), await txt(p, "lookup-out"));
 await p.click("#ch-action"); await p.waitForTimeout(1500);
 check("settled after ruling", /Settled according to the Kleros ruling/.test(await waitText(p, "lookup-out", /Settled according to the Kleros ruling|didn't go through|cancelled/)), await txt(p, "lookup-out"));
 check("challenger now on the list", /Challenge settled: on the attendance list/.test(await lookupAs(p, await addr(g3))), await txt(p, "lookup-out"));
