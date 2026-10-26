@@ -186,14 +186,15 @@ footer { color: var(--muted); font-size: 0.86rem; display: grid; gap: 6px; }
       </div>
     </li>
     <li class="step locked" id="s-luma">
-      <h2>Paste the link on Luma</h2>
+      <h2>Back to Luma to finish registering</h2>
       <div class="body">
-        <p class="muted">Register with the <strong>Committed Spot ($25 Deposit)</strong> ticket. Use this wallet as your ETH address and paste the transaction link into "Deposit tx link".</p>
+        <p class="muted">The button below copies your transaction link and takes you back to Luma. There, pick the <strong>Committed Spot ($25 Deposit)</strong> ticket, use this wallet as your ETH address and paste the link into "Deposit tx link".</p>
         <div id="luma-box" hidden class="kv">
           <dt>Transaction link</dt><dd><span class="mono" id="tx-link">–</span> <button class="ghost small" id="copy-tx" type="button">Copy</button></dd>
           <dt>Your wallet</dt><dd><span class="mono" id="tx-wallet">–</span> <button class="ghost small" id="copy-wallet" type="button">Copy</button></dd>
         </div>
-        <div class="row"><a id="luma-link" class="btn" href="https://luma.com/qewnqhas" target="_blank" rel="noopener">Open Luma registration</a></div>
+        <div class="row"><a id="luma-link" class="btn" href="https://luma.com/qewnqhas" rel="noopener">Copy link and go back to Luma</a></div>
+        <p class="muted">After you submit, Luma shows your registration as <strong>pending approval</strong>. The hosts check your deposit and confirm your spot by email. If they can't offer you a spot, your 25 USDC goes back to this wallet.</p>
       </div>
     </li>
   </ol>
@@ -696,6 +697,14 @@ $("ev-send").addEventListener("click", sendEvidence);
 $("copy-contract").addEventListener("click", (e) => copy(CONFIG.contract, e.currentTarget));
 $("copy-tx").addEventListener("click", (e) => copy($("tx-link").textContent, e.currentTarget));
 $("copy-wallet").addEventListener("click", (e) => copy($("tx-wallet").textContent, e.currentTarget));
+// copy the tx link first, then go back to Luma in the same tab (wallet in-app browsers handle new tabs badly)
+$("luma-link").addEventListener("click", async (e) => {
+  const link = $("tx-link").textContent;
+  if (!/^https:\/\//.test(link)) return;
+  e.preventDefault();
+  try { await navigator.clipboard.writeText(link); } catch {}
+  location.href = CONFIG.lumaUrl;
+});
 try {
   const saved = JSON.parse(localStorage.getItem("gt-last-tx") || "null");
   if (saved && saved.contract === CONFIG.contract && isAddr(saved.account)) $("lookup-addr").value = saved.account;
