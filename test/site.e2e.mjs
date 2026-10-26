@@ -71,6 +71,7 @@ async function open(site, wallet, startChain = 1337) {
 const txt = (p, id) => p.locator("#" + id).innerText();
 const vis = (p, id) => p.locator("#" + id).isVisible();
 const dis = (p, id) => p.locator("#" + id).isDisabled();
+const toStatus = async (p) => { await p.evaluate(() => { location.hash = "status"; }); await p.waitForTimeout(100); };
 
 // 1. preview
 let p = await open("preview", null);
@@ -110,7 +111,10 @@ await p.click("#connect"); await p.waitForTimeout(1200);
 check("revisit: warns already deposited", /already see a deposit/.test(await txt(p, "check-msg")), await txt(p, "check-msg"));
 check("revisit: send disabled", await dis(p, "send"));
 check("revisit: Luma link offered", await vis(p, "luma-box"));
-await p.fill("#lookup-addr", await addr(g1)); await p.click("#lookup"); await p.waitForTimeout(800);
+check("deposit page: no lookup or challenge tools", !(await vis(p, "lookup-addr")) && !(await vis(p, "fair-h")));
+await toStatus(p);
+check("status page: lookup shown, deposit steps hidden", (await vis(p, "lookup-addr")) && !(await vis(p, "send")) && !(await vis(p, "luma-box")) && (await vis(p, "connect")));
+await toStatus(p); await p.fill("#lookup-addr", await addr(g1)); await p.click("#lookup"); await p.waitForTimeout(800);
 check("lookup: deposit received, waiting review", /Waiting for the hosts/.test(await txt(p, "lookup-out")), await txt(p, "lookup-out"));
 await p.close();
 
@@ -130,11 +134,11 @@ p = await open("live", g1);
 await p.click("#connect"); await p.waitForTimeout(1000);
 check("registered: confirmed spot message", /confirmed spot/.test(await txt(p, "check-msg")), await txt(p, "check-msg"));
 check("registered: send disabled", await dis(p, "send"));
-await p.fill("#lookup-addr", await addr(g1)); await p.click("#lookup"); await p.waitForTimeout(800);
+await toStatus(p); await p.fill("#lookup-addr", await addr(g1)); await p.click("#lookup"); await p.waitForTimeout(800);
 check("lookup registered: spot confirmed", /Spot confirmed/.test(await txt(p, "lookup-out")), await txt(p, "lookup-out"));
-await p.fill("#lookup-addr", await addr(g2)); await p.click("#lookup"); await p.waitForTimeout(800);
+await toStatus(p); await p.fill("#lookup-addr", await addr(g2)); await p.click("#lookup"); await p.waitForTimeout(800);
 check("lookup rejected: refunded", /Refunded/.test(await txt(p, "lookup-out")), await txt(p, "lookup-out"));
-await p.fill("#lookup-addr", "0x123"); await p.click("#lookup"); await p.waitForTimeout(300);
+await toStatus(p); await p.fill("#lookup-addr", "0x123"); await p.click("#lookup"); await p.waitForTimeout(300);
 check("lookup bad address error", /isn't a wallet address/.test(await txt(p, "lookup-out")));
 check("stats count 1 spot", /1 spot confirmed/.test(await txt(p, "stats")), await txt(p, "stats"));
 await p.close();
@@ -155,7 +159,7 @@ await (await k.registerStakers([await addr(g3)])).wait();
 await prov.send("evm_increaseTime", [86400 + 10]); await prov.send("evm_mine", []);
 await (await k.postAttendance([await addr(g1)], U(50))).wait();
 const waitText = async (pg, id, re) => { for (let i = 0; i < 40 && !re.test(await txt(pg, id)); i++) await pg.waitForTimeout(250); return txt(pg, id); };
-const lookupAs = async (pg, who) => { await pg.fill("#lookup-addr", who); await pg.click("#lookup"); await pg.waitForTimeout(900); return txt(pg, "lookup-out"); };
+const lookupAs = async (pg, who) => { await toStatus(pg); await pg.fill("#lookup-addr", who); await pg.click("#lookup"); await pg.waitForTimeout(900); return txt(pg, "lookup-out"); };
 p = await open("live", g3);
 check("listed: checks say list published", /attendance list is published/.test(await txt(p, "checks")), await txt(p, "checks"));
 await p.click("#connect"); await p.waitForTimeout(1000);
@@ -165,7 +169,7 @@ check("challenge sent", /Challenge sent/.test(await waitText(p, "lookup-out", /C
 check("challenge recorded on-chain", Number((await kick.challenges(await addr(g3))).state) === 1);
 check("listed: attendee sees on the list", /On the attendance list/.test(await lookupAs(p, await addr(g1))), await txt(p, "lookup-out"));
 await p.close();
-p = await open("live", g2);
+p = await open("live", g2); await toStatus(p);
 check("open challenges list shows challenger", (await vis(p, "open-ch")) && (await txt(p, "open-ch-list")).toLowerCase().includes((await addr(g3)).toLowerCase()), await txt(p, "open-ch-list"));
 await p.click("#connect"); await p.waitForTimeout(1000);
 check("challenge open: dispute offered", /Challenge open/.test(await lookupAs(p, await addr(g3))) && /Dispute this claim/.test(await txt(p, "ch-action")), await txt(p, "lookup-out"));

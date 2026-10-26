@@ -123,6 +123,9 @@ input[type="text"] {
 .kv dt { color: var(--muted); }
 .kv dd { margin: 0; min-width: 0; font-variant-numeric: tabular-nums; }
 footer { color: var(--muted); font-size: 0.86rem; display: grid; gap: 6px; }
+/* two pages in one file: the deposit flow (default) and #status for after the event */
+body.status .deposit-only, body:not(.status) .status-only { display: none !important; }
+.pagelink { font-size: 0.92rem; }
 @media (prefers-reduced-motion: no-preference) { button { transition: filter .15s; } button:hover:not(:disabled) { filter: brightness(1.08); } }
 </style>
 </head>
@@ -134,7 +137,7 @@ footer { color: var(--muted); font-size: 0.86rem; display: grid; gap: 6px; }
     <div class="meta"><span>Wed 4 Nov 2026 · 18:00–22:00 IST</span><span>Hitchki, BKC, Mumbai</span><span>Kleros · Arkiv · Web3 Mumbai</span></div>
   </header>
 
-  <div class="network" role="note">
+  <div class="network deposit-only" role="note">
     <span class="tag">!</span>
     <div><strong>Arbitrum One only.</strong> Most wallets open on Ethereum mainnet. USDC sent on Ethereum or any other network can't be counted and may be lost. This page switches your wallet to Arbitrum One before you send.</div>
   </div>
@@ -170,14 +173,14 @@ footer { color: var(--muted); font-size: 0.86rem; display: grid; gap: 6px; }
         <div class="row"><button id="switch" type="button" disabled>Switch to Arbitrum One</button></div>
       </div>
     </li>
-    <li class="step locked" id="s-check">
+    <li class="step locked deposit-only" id="s-check">
       <h2>Check your balance</h2>
       <div class="body">
         <dl class="kv"><dt>USDC on Arbitrum One</dt><dd id="bal-usdc">–</dd><dt>ETH for the fee</dt><dd id="bal-eth">–</dd></dl>
         <div id="check-msg" class="note" hidden></div>
       </div>
     </li>
-    <li class="step locked" id="s-send">
+    <li class="step locked deposit-only" id="s-send">
       <h2>Send exactly 25 USDC</h2>
       <div class="body">
         <p id="send-summary" class="muted">You'll send 25 USDC on Arbitrum One to the deposit contract above. Your wallet asks you to confirm, and the fee is a few cents at most.</p>
@@ -185,7 +188,7 @@ footer { color: var(--muted); font-size: 0.86rem; display: grid; gap: 6px; }
         <div id="send-msg" class="note" hidden></div>
       </div>
     </li>
-    <li class="step locked" id="s-luma">
+    <li class="step locked deposit-only" id="s-luma">
       <h2>Back to Luma to finish registering</h2>
       <div class="body">
         <p class="muted">The button below copies your transaction link and takes you back to Luma. There, pick the <strong>Committed Spot ($25 Deposit)</strong> ticket, use this wallet as your ETH address and paste the link into "Deposit tx link".</p>
@@ -199,7 +202,10 @@ footer { color: var(--muted); font-size: 0.86rem; display: grid; gap: 6px; }
     </li>
   </ol>
 
-  <section class="panel" aria-labelledby="lookup-h">
+  <p class="pagelink deposit-only muted">Already registered, or the event is over? <a href="#status">Check your deposit, or challenge the attendance list</a>.</p>
+  <p class="pagelink status-only muted">Haven't deposited yet? <a href="#">Go to the deposit steps</a>.</p>
+
+  <section class="panel status-only" aria-labelledby="lookup-h">
     <h2 id="lookup-h">Check a deposit</h2>
     <p class="muted">See where a wallet stands: deposit received, spot confirmed, refunded or paid out.</p>
     <div class="row"><input type="text" id="lookup-addr" placeholder="0x… wallet address" autocomplete="off" spellcheck="false"><button id="lookup" type="button" class="ghost">Check</button></div>
@@ -227,7 +233,7 @@ footer { color: var(--muted); font-size: 0.86rem; display: grid; gap: 6px; }
     </div>
   </section>
 
-  <section class="panel" aria-labelledby="fair-h">
+  <section class="panel status-only" aria-labelledby="fair-h">
     <h2 id="fair-h">Missed at check-in? Challenge it on Kleros</h2>
     <p class="muted">After the event the hosts publish the attendance list on-chain. If you were there but are not on it, you have <b>1 day</b> to challenge from this page with a small ETH deposit (the Kleros arbitration fee, about 0.015 ETH). Anyone who disagrees has 1 day to match it. If nobody does, you count as attended and get your ETH back. If someone does, independent <a href="https://kleros.io" target="_blank" rel="noopener">Kleros</a> jurors decide from the evidence (photos, messages, anything that shows you were there), and the winner gets the remaining ETH. Either side can appeal a jury's vote: the case then goes to a larger jury, and anyone can help fund the appeal from this page. If one side funds an appeal and the other doesn't, the funded side wins, so keep an eye on your case until the final ruling. A Kleros case doesn't hold up everyone's payout: guests on the list are paid, and the challenger's share is set aside until the final ruling.</p>
   </section>
@@ -686,6 +692,9 @@ async function claim() {
 }
 
 // ---------------------------------------------------------------- wire up
+const applyMode = () => document.body.classList.toggle("status", location.hash === "#status");
+applyMode();
+addEventListener("hashchange", () => { applyMode(); scrollTo(0, 0); });
 $("connect").addEventListener("click", connect);
 $("switch").addEventListener("click", switchNetwork);
 $("send").addEventListener("click", send);
