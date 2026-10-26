@@ -1,5 +1,6 @@
-// Contract-level tests (v3): curation refunds, attendance list + Kleros challenges, payouts,
-// failed-transfer claims, emergency exit, two-step ownership and a 150-guest run.
+// Contract-level tests: curation refunds, attendance list + Kleros challenges, appeals funded on
+// Kleros directly, payouts with shares set aside for open Kleros cases (fair in any settlement
+// order), failed-transfer claims, emergency exit, two-step ownership and a 150-guest run.
 // Local in-memory chain (ganache) with stand-ins for the Kleros contracts.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -72,7 +73,8 @@ before(async () => {
     wallet: { accounts: keys.map((k) => ({ secretKey: k, balance: "0x56BC75E2D63100000" })) },
   });
   await server.listen(PORT);
-  prov = new ethers.JsonRpcProvider(`http://127.0.0.1:${PORT}`, 1337, { staticNetwork: true });
+  // cacheTimeout -1: ethers otherwise reuses an identical read (a balance) for 250 ms, which can predate a fast tx
+  prov = new ethers.JsonRpcProvider(`http://127.0.0.1:${PORT}`, 1337, { staticNetwork: true, cacheTimeout: -1 });
   prov.pollingInterval = 50; // local chain mines instantly; the 4 s default makes 450+ txs crawl
   const ws = keys.map((k) => new ethers.NonceManager(new ethers.Wallet(k, prov)));
   [owner, ...guests] = ws;
@@ -84,7 +86,7 @@ before(async () => {
 });
 after(async () => server && (await server.close()));
 
-test("constructor rejects a deadline before the event start", async () => {
+test("constructor rejects a deadline before the event start, a missing resolver and a zero deposit", async () => {
   const t = await now();
   const { abi, bytecode } = load("TruthPaysKickback");
   const f = new ethers.ContractFactory(abi, bytecode, owner);
@@ -94,6 +96,8 @@ test("constructor rejects a deadline before the event start", async () => {
     owner.reset(); // the refused deploy used up a nonce locally; resync with the chain
   }
   await assert.rejects(f.deploy(await usdc.getAddress(), U(15), "x", await addr(owner), t + 100, t + 100 + 7 * 86400, [ethers.ZeroAddress, EXTRA, POLICY]));
+  owner.reset();
+  await assert.rejects(f.deploy(await usdc.getAddress(), 0n, "x", await addr(owner), t + 100, t + 100 + 7 * 86400, arb()));
   owner.reset();
   const ok = await f.deploy(await usdc.getAddress(), U(15), "x", await addr(owner), t + 100, t + 100 + 7 * 86400, arb());
   await ok.waitForDeployment();
@@ -408,6 +412,7 @@ test("matched challenge opens a Kleros dispute; payouts go out anyway, with the 
   assert.equal(await bal(gs[0]), a0 + U(20));
   assert.equal(await bal(gs[1]), a1 + U(20));
   assert.equal(await kick.heldBack(), U(20));
+  assert.equal((await kick.challenges(await addr(g))).heldShare, U(20));
   assert.equal(await kick.reserved(), U(20));
   assert.equal(await kick.spare(), 0n);
   await send(resolver.giveRuling(c.localDisputeID, 1)); // jurors: attended
@@ -417,6 +422,7 @@ test("matched challenge opens a Kleros dispute; payouts go out anyway, with the 
   assert.equal(await bal(g), u0 + U(20)); // and the share set aside
   assert.equal(await kick.attended(await addr(g)), true);
   assert.equal(await kick.heldBack(), 0n);
+  assert.equal((await kick.challenges(await addr(g))).heldShare, 0n);
   assert.equal(await bal(await kick.getAddress()), 0n);
   await reverts(kick, "resolveChallenge", [await addr(g)], "WrongChallengeState");
 });
@@ -468,63 +474,23 @@ test("the organiser can add a forgotten guest during the window; a waiting chall
   assert.equal(await bal(await kick.getAddress()), 0n);
 });
 
-test("appeals: payouts wait through every appeal round and only the final ruling counts", async () => {
+// Kleros's dispute kit; the 4-argument withdrawal is the version deployed on Arbitrum One
+const kitOf = async () => new ethers.Contract(await arbitrator.kit(), load("MockDisputeKit").abi, prov);
+const W4 = "withdrawFeesAndRewards(uint256,address,uint256,uint256)";
+
+test("appeals are funded on Kleros from the funders' own wallets; Kleros pays them directly; only the final ruling counts", async () => {
   const { kick, gs } = await listed([21, 25], 2);
-  const [g, m] = [gs[2], guests[156]];
+  const [g, m, crowd, bot] = [gs[2], guests[156], guests[157], guests[151]];
   await send(kick.connect(g).challenge({ value: FEE }));
   await send(kick.connect(m).matchChallenge(await addr(g), { value: FEE }));
-  const c = await kick.challenges(await addr(g));
-  const id = c.arbitratorDisputeID;
-  const kit = new ethers.Contract(await arbitrator.kit(), load("MockDisputeKit").abi, prov);
+  const id = (await kick.challenges(await addr(g))).arbitratorDisputeID;
+  const kit = await kitOf();
   await warp(DAY + 1);
+  await reverts(kick, "appealStatus", [await addr(gs[3])], "NotAppealable");
 
   // round 1: jurors say "did not attend"; the guest's side appeals (cost + 2x), the matcher's side defends (cost + 1x)
   await send(arbitrator.startAppealPeriod(id, 2, 3 * DAY, { gasLimit: 500000 }));
   await reverts(kick, "resolveChallenge", [await addr(g)], "NotRuled"); // a round-1 vote is not final
-  const cost = await arbitrator.appealCost(id);
-  await send(kit.connect(guests[157]).fundAppeal(id, 1, { value: cost, gasLimit: 500000 })); // crowdfunding: anyone can chip in
-  await send(kit.connect(g).fundAppeal(id, 1, { value: 3n * cost, gasLimit: 500000 })); // the rest (any excess comes back)
-  assert.equal(await kit.paidFees(id, 0, 1), 3n * cost);
-  await send(kit.connect(m).fundAppeal(id, 2, { value: 2n * cost, gasLimit: 500000 }));
-  assert.equal(await arbitrator.getNumberOfRounds(id), 2n); // both sides funded: a new, bigger jury
-  await reverts(kick, "resolveChallenge", [await addr(g)], "NotRuled");
-
-  // round 2: jurors say "attended"; nobody appeals; the ruling becomes final
-  await send(arbitrator.startAppealPeriod(id, 1, 3 * DAY, { gasLimit: 500000 }));
-  await warp(3 * DAY + 1);
-  await reverts(kick, "resolveChallenge", [await addr(g)], "NotRuled");
-  await send(arbitrator.passPeriod(id, { gasLimit: 500000 }));
-  await send(arbitrator.executeRuling(id, { gasLimit: 500000 }));
-  const e0 = await ethBal(g);
-  await send(kick.connect(owner).resolveChallenge(await addr(g)));
-  assert.equal(await ethBal(g), e0 + FEE); // the final winner gets what is left of both deposits
-  assert.equal(await kick.attended(await addr(g)), true);
-  const u0 = await bal(g);
-  await send(kick.releasePayouts());
-  assert.equal(await bal(g), u0 + U(20)); // 60 over 3 attendees
-  assert.equal(await prov.getBalance(kick.target), 0n); // appeal money never passes through this contract
-});
-
-// an appealed case funded through the deposit contract: round 1 says absent, appealed, round 2 says attended
-async function appealedThroughContract(slice, crowd, m, { newStyle = false } = {}) {
-  const { kick, gs } = await listed(slice, 2);
-  const g = gs[2];
-  await send(kick.connect(g).challenge({ value: FEE }));
-  await send(kick.connect(m).matchChallenge(await addr(g), { value: FEE }));
-  const id = (await kick.challenges(await addr(g))).arbitratorDisputeID;
-  const kit = new ethers.Contract(await arbitrator.kit(), load("MockDisputeKit").abi, owner);
-  await send(kit.setNewStyle(newStyle, { gasLimit: 500000 }));
-  await send(arbitrator.startAppealPeriod(id, 2, 3 * DAY, { gasLimit: 500000 }));
-  return { kick, gs, g, id, kit };
-}
-
-test("appeals through the contract: status, crowdfunding, refunds of surplus, rewards shared by contribution", async () => {
-  const [crowd, m] = [guests[158], guests[156]];
-  const { kick, gs, g, id, kit } = await appealedThroughContract([25, 29], crowd, m);
-  await reverts(kick, "appealStatus", [await addr(gs[3])], "NotAppealable");
-  await reverts(kick, "fundAppeal", [await addr(gs[3]), 1, { value: 1n }], "NotAppealable");
-  await reverts(kick, "fundAppeal", [await addr(g), 3, { value: 1n }], "BadSide");
-  await reverts(kick, "claimAppealRewards", [await addr(g), await addr(g)], "WrongChallengeState");
   const cost = await arbitrator.appealCost(id);
   const st = await kick.appealStatus(await addr(g));
   assert.equal(st.round, 1n);
@@ -532,65 +498,179 @@ test("appeals through the contract: status, crowdfunding, refunds of surplus, re
   assert.equal(st.costAttended, 3n * cost); // lost the vote: cost + 2x
   assert.equal(st.costAbsent, 2n * cost); // won the vote: cost + 1x
   assert.equal(st.loserEnd, st.start + (st.end - st.start) / 2n);
-
   const part = ethers.parseEther("0.05");
-  await send(kick.connect(crowd).fundAppeal(await addr(g), 1, { value: part, gasLimit: 500000 }));
+  await send(kit.connect(crowd).fundAppeal(id, 1, { value: part, gasLimit: 500000 })); // crowdfunding: anyone can chip in
   const e0 = await ethBal(g);
-  const r = await send(kick.connect(g).fundAppeal(await addr(g), 1, { value: 3n * cost, gasLimit: 500000 }));
+  const r = await send(kit.connect(g).fundAppeal(id, 1, { value: 3n * cost, gasLimit: 500000 })); // more than missing
   const rest = 3n * cost - part;
-  assert.equal(await ethBal(g), e0 - rest - r.fee); // the surplus came back
-  assert.equal(await kick.appealPaid(await addr(g), 0, 1), 3n * cost);
-  assert.equal(await kick.appealContribution(await addr(g), 0, 1, await addr(crowd)), part);
-  await send(kick.connect(m).fundAppeal(await addr(g), 2, { value: 2n * cost, gasLimit: 500000 }));
-  assert.equal(await arbitrator.getNumberOfRounds(id), 2n); // both sides funded: round 2
-  assert.equal(await prov.getBalance(kick.target), FEE); // only what is left of the challenge deposits
+  assert.equal(await ethBal(g), e0 - rest - r.fee); // Kleros returned the surplus to the funder
+  assert.equal(await kit.contributions(id, 0, await addr(crowd), 1), part); // Kleros records the real funder
+  assert.equal(await kit.contributions(id, 0, kick.target, 1), 0n);
+  await send(kit.connect(m).fundAppeal(id, 2, { value: 2n * cost, gasLimit: 500000 }));
+  assert.equal(await arbitrator.getNumberOfRounds(id), 2n); // both sides funded: a new, bigger jury
   assert.equal((await kick.appealStatus(await addr(g))).end, 0n); // round 2 is not in its appeal period yet
+  assert.equal(await prov.getBalance(kick.target), FEE); // only what is left of the challenge deposits
+  await reverts(kick, "resolveChallenge", [await addr(g)], "NotRuled");
 
-  // round 2: attended, final
+  // round 2: jurors say "attended"; nobody appeals; the ruling becomes final
   await send(arbitrator.startAppealPeriod(id, 1, DAY, { gasLimit: 500000 }));
   await warp(DAY + 1);
+  await reverts(kick, "resolveChallenge", [await addr(g)], "NotRuled");
   await send(arbitrator.passPeriod(id, { gasLimit: 500000 }));
   await send(arbitrator.executeRuling(id, { gasLimit: 500000 }));
-  await reverts(kick, "collectAppealFunds", [await addr(g)], "WrongChallengeState"); // settle first
-  await send(kick.resolveChallenge(await addr(g)));
-  // round-1 fee rewards: both sides' funding minus the appeal cost, all to the "attended" funders
-  const rewards = 3n * cost + 2n * cost - cost;
-  const expCrowd = (part * rewards) / (3n * cost), expG = (rest * rewards) / (3n * cost);
-  assert.equal(await kick.appealRewardOf(await addr(g), await addr(crowd)), 0n); // not collected yet
-  const to = await addr(guests[150]);
-  const t0 = await prov.getBalance(to);
-  await send(kick.connect(crowd).claimAppealRewards(await addr(g), to)); // collects from Kleros first
-  assert.equal(await prov.getBalance(to), t0 + expCrowd);
-  assert.equal(await kick.appealRewardOf(await addr(g), await addr(g)), expG);
+  // Kleros's keeper bot (or anyone) pushes each funder's refunds and rewards: they land in the funder's wallet
+  const rewards = 3n * cost + 2n * cost - cost; // both sides' funding minus the appeal cost, to the "attended" funders
+  const c0 = await ethBal(crowd);
+  await send(kit.connect(bot)[W4](id, await addr(crowd), 0, 1, { gasLimit: 500000 }));
+  assert.equal(await ethBal(crowd), c0 + (part * rewards) / (3n * cost));
+  const g0 = await ethBal(g);
+  const r2 = await send(kit.connect(g)[W4](id, await addr(g), 0, 1, { gasLimit: 500000 }));
+  assert.equal(await ethBal(g), g0 + (rest * rewards) / (3n * cost) - r2.fee);
+  assert.equal(await kit.connect(bot)[W4].staticCall(id, await addr(m), 0, 2), 0n); // backed the losing side
+  assert.equal(await kit.connect(bot)[W4].staticCall(id, kick.target, 0, 1), 0n); // nothing is owed to the deposit contract
+  assert.equal(await prov.getBalance(kick.target), FEE);
+
+  // the deposit contract settles from the final ruling alone
   const e1 = await ethBal(g);
-  const r2 = await send(kick.connect(g).claimAppealRewards(await addr(g), await addr(g)));
-  assert.equal(await ethBal(g), e1 + expG - r2.fee);
-  await reverts(kick.connect(g), "claimAppealRewards", [await addr(g), await addr(g)], "NothingToClaim");
-  await reverts(kick.connect(m), "claimAppealRewards", [await addr(g), await addr(m)], "NothingToClaim"); // backed the losing side
-  await reverts(kick, "collectAppealFunds", [await addr(g)], "NothingToClaim"); // only once
-  assert.ok((await prov.getBalance(kick.target)) < 10n); // all paid out, rounding dust at most
+  await send(kick.connect(owner).resolveChallenge(await addr(g)));
+  assert.equal(await ethBal(g), e1 + FEE); // the final winner gets what is left of both deposits
+  assert.equal(await kick.attended(await addr(g)), true);
+  await reverts(kick, "appealStatus", [await addr(g)], "NotAppealable");
+  const u0 = await bal(g);
   await send(kick.releasePayouts());
-  assert.ok(await kick.attended(await addr(g)));
+  assert.equal(await bal(g), u0 + U(20)); // 60 over 3 attendees
+  assert.equal(await prov.getBalance(kick.target), 0n); // no appeal money ever passes through this contract
 });
 
-test("appeals through the contract: the losing side's deadline, a side never funded is refunded, newer Kleros kits", async () => {
-  const [crowd, m] = [guests[157], guests[155]];
-  const { kick, g, id, kit } = await appealedThroughContract([29, 33], crowd, m, { newStyle: true });
+test("an appeal funded by one side only wins the case (Kleros's override); the contract follows the final ruling", async () => {
+  const { kick, gs } = await listed([29, 33], 2); // 4 stakers x 15 = 60, 2 on the list
+  const [g, m, crowd] = [gs[2], guests[155], guests[158]];
+  await send(kick.connect(g).challenge({ value: FEE }));
+  await send(kick.connect(m).matchChallenge(await addr(g), { value: FEE }));
+  const c = await kick.challenges(await addr(g));
+  const id = c.arbitratorDisputeID;
+  const kit = await kitOf();
+  await warp(DAY + 1);
+  await send(kick.releasePayouts()); // 60 / (2 + 1) = 20 each; the challenger's 20 is set aside
+  assert.equal((await kick.challenges(await addr(g))).heldShare, U(20));
+
+  // round 1: jurors say "did not attend". The crowd and the guest fully fund "attended";
+  // the matcher's side raises only part of "did not attend" and nobody completes it
+  await send(arbitrator.startAppealPeriod(id, 2, 2 * DAY, { gasLimit: 500000 }));
   const cost = await arbitrator.appealCost(id);
-  // the guest's side raises only part of its appeal; nobody completes it
-  await send(kick.connect(crowd).fundAppeal(await addr(g), 1, { value: cost, gasLimit: 500000 }));
-  await warp(Math.floor(1.5 * DAY) + 10);
-  await assert.rejects(kick.connect(crowd).fundAppeal.staticCall(await addr(g), 1, { value: cost }), /NotAppealPeriodForLoser/);
-  await warp(2 * DAY);
+  await send(kit.connect(crowd).fundAppeal(id, 1, { value: cost, gasLimit: 500000 }));
+  await send(kit.connect(g).fundAppeal(id, 1, { value: 2n * cost, gasLimit: 500000 }));
+  await send(kit.connect(m).fundAppeal(id, 2, { value: cost, gasLimit: 500000 }));
+  await warp(Math.floor(1.5 * DAY)); // past the losing side's deadline (half the period)
+  await assert.rejects(kit.connect(crowd).fundAppeal.staticCall(id, 1, { value: 1n }), /NotAppealPeriodForLoser/);
+  await warp(DAY);
   await send(arbitrator.passPeriod(id, { gasLimit: 500000 }));
-  await send(arbitrator.executeRuling(id, { gasLimit: 500000 })); // round-1 vote stands: absent
+  await send(arbitrator.executeRuling(id, { gasLimit: 500000 }));
+  assert.equal(await arbitrator.getNumberOfRounds(id), 1n); // no new round
+  const d = await resolver.disputes(c.localDisputeID);
+  assert.equal(d.ruling, 1n); // jurors voted "absent", but only "attended" was funded: final ruling "attended"
+
+  const [e0, u0] = [await ethBal(g), await bal(g)];
   await send(kick.resolveChallenge(await addr(g)));
-  assert.equal(await kick.attended(await addr(g)), false);
-  const to = await addr(guests[154]);
-  const t0 = await prov.getBalance(to);
-  await send(kick.connect(crowd).claimAppealRewards(await addr(g), to)); // 3-argument withdrawal used
-  assert.equal(await prov.getBalance(to), t0 + cost); // reimbursed in full
-  await send(kit.setNewStyle(false, { gasLimit: 500000 }));
+  assert.equal(await kick.attended(await addr(g)), true);
+  assert.equal(await bal(g), u0 + U(20)); // the share set aside for the case
+  assert.equal(await ethBal(g), e0 + FEE); // and what is left of both challenge deposits
+  assert.equal(await kick.heldBack(), 0n);
+  // no appeal took place, so Kleros reimburses every funder in full, directly
+  for (const [w, side, paid] of [[crowd, 1, cost], [m, 2, cost]]) {
+    const b0 = await ethBal(w);
+    await send(kit.connect(guests[151])[W4](id, await addr(w), 0, side, { gasLimit: 500000 }));
+    assert.equal(await ethBal(w), b0 + paid);
+  }
+  assert.equal(await prov.getBalance(kick.target), 0n);
+  assert.equal(await bal(kick.target), 0n);
+});
+
+test("plain ETH sent to the contract is refused, so a guest's mistaken ETH stays in their wallet", async () => {
+  const kick = await freshKick();
+  const g = guests[60];
+  const from = await addr(g);
+  const value = ethers.parseEther("0.01");
+  await assert.rejects(prov.estimateGas({ from, to: kick.target, value })); // wallets show the send as failing
+  await assert.rejects(prov.call({ from, to: kick.target, value, data: "0x12345678" })); // no fallback either
+  const e0 = await ethBal(g);
+  const tx = await g.sendTransaction({ to: kick.target, value, gasLimit: 100000 }); // forced through anyway
+  const err = await tx.wait().then(() => null, (e) => e);
+  assert.equal(err?.code, "CALL_EXCEPTION"); // mined, but reverted
+  assert.equal(await ethBal(g), e0 - err.receipt.fee); // only the gas is spent
+  assert.equal(await prov.getBalance(kick.target), 0n);
+});
+
+// Several Kleros cases open at payout. Stakers: the first `listedCount` are on the list, then one
+// matched challenger per entry of `rulings`, the rest are no-shows. Settles the cases in `order` and
+// checks after every step that heldBack is the sum of the open cases' set-aside amounts, that the
+// balance covers reserved(), and that every attendee so far has received what each open case holds.
+async function heldCases(slice, listedCount, rulings, order) {
+  const kick = await freshKick({ startIn: 1 });
+  const gs = guests.slice(...slice);
+  const all = await Promise.all(gs.map(addr));
+  for (const a of all) await send(usdc.mint(a, U(15)));
+  await Promise.all(gs.map((g) => send(usdc.connect(g).transfer(kick.target, U(15))))); // different senders: in parallel
+  await send(kick.registerStakers(all));
+  await warp(2);
+  await send(kick.postAttendance(all.slice(0, listedCount), (U(15) * BigInt(gs.length)) / BigInt(listedCount)));
+  const chs = all.slice(listedCount, listedCount + rulings.length);
+  // explicit gas limits: ganache's gas estimation of the dispute-template call takes seconds
+  for (const [i, c] of chs.entries()) {
+    await send(kick.connect(gs[listedCount + i]).challenge({ value: FEE, gasLimit: 500000 }));
+    await send(kick.matchChallenge(c, { value: FEE, gasLimit: 3_000_000 }));
+  }
+  await warp(DAY + 1);
+  const start = await Promise.all(all.map(bal));
+  const received = async () => new Map(await Promise.all(all.map(async (a, i) => [a, (await bal(a)) - start[i]])));
+  const check = async () => {
+    const held = await Promise.all(chs.map(async (c) => (await kick.challenges(c)).heldShare));
+    assert.equal(await kick.heldBack(), held.reduce((x, y) => x + y, 0n));
+    assert.ok((await bal(kick.target)) >= (await kick.reserved()));
+    const got = await received();
+    const paid = [...new Set((await kick.attendees()).map((a) => got.get(a)))];
+    assert.equal(paid.length, 1, `attendees received different totals: ${paid}`);
+    for (const h of held) if (h > 0n) assert.equal(h, paid[0]); // a later winner gets exactly what attendees got
+  };
+  await send(kick.releasePayouts({ gasLimit: 3_000_000 }));
+  await check();
+  for (const i of order) {
+    await send(resolver.giveRuling((await kick.challenges(chs[i])).localDisputeID, rulings[i], { gasLimit: 500000 }));
+    await send(kick.resolveChallenge(chs[i], { gasLimit: 3_000_000 }));
+    await check();
+  }
+  assert.equal(await kick.heldBack(), 0n);
+  assert.equal(await kick.reserved(), 0n);
+  const got = await received();
+  const atts = await kick.attendees();
+  assert.equal(atts.length, listedCount + rulings.filter((r) => r === 1).length);
+  const total = got.get(atts[0]);
+  const pool = U(15) * BigInt(gs.length);
+  const dust = await bal(kick.target);
+  assert.equal(total * BigInt(atts.length) + dust, pool); // nothing lost: the pool is paid out, dust aside
+  assert.ok(dust < BigInt(atts.length) * 3n, `dust ${dust}`);
+  for (const c of chs) if (!atts.includes(c)) assert.equal(got.get(c), 0n); // lost cases get nothing
+  await send(kick.sweep(await addr(owner))); // only the rounding dust is spare
+  return { total, got };
+}
+
+test("two Kleros cases open at payout (one won, one lost): every final attendee gets the same, in either settlement order", async () => {
+  // 8 stakers x 15 = 120; 5 on the list; A wins, B loses; 1 no-show. 120 / 7 leaves rounding dust
+  const won = await heldCases([0, 8], 5, [1, 2], [0, 1]);
+  const lost = await heldCases([0, 8], 5, [1, 2], [1, 0]);
+  assert.equal(won.total, lost.total);
+  assert.equal(won.total, U("19.999999")); // 120 / 6 = 20, less a millionth of rounding dust
+});
+
+test("three Kleros cases open at payout: every final attendee gets the same total whether the winner settles first, between or last", async () => {
+  // 10 stakers x 15 = 150; 4 on the list; A wins, B is ruled absent, C gets a refusal to arbitrate (0); 3 no-shows
+  const totals = [];
+  for (const order of [[0, 1, 2], [1, 0, 2], [2, 1, 0]]) {
+    totals.push((await heldCases([8, 18], 4, [1, 2, 0], order)).total);
+  }
+  const [lo, hi] = [totals.reduce((a, b) => (a < b ? a : b)), totals.reduce((a, b) => (a > b ? a : b))];
+  assert.ok(hi - lo <= 2n, `totals differ by more than rounding dust: ${totals}`);
+  assert.ok(hi <= U(30) && U(30) - lo <= 5n, `${totals}`); // 150 / 5, less a few millionths of rounding dust
 });
 
 test("a lost case's set-aside share is split among the attendees; a challenge waiting for a match still holds the payout", async () => {
