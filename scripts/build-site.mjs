@@ -17,9 +17,16 @@ if (!isAddr(cfg.contract) && !a.preview) {
   console.error('No live "contract" in the config yet. Deploy first, or pass --preview for a page without an address.');
   process.exit(1);
 }
+// The page reads each guest's earlier deposits from this block on. Without it, it would search the whole chain,
+// which public RPCs refuse, and the page would block every deposit with "couldn't check for an earlier deposit".
+const deployBlock = Number(cfg.deployBlock || 0);
+if (!a.preview && !(Number.isInteger(deployBlock) && deployBlock > 0)) {
+  console.error('No "deployBlock" in the config. Set it to the block number of the deploy transaction (shown on Arbiscan), then build again.');
+  process.exit(1);
+}
 const site = {
   contract: a.preview ? "" : cfg.contract,
-  deployBlock: Number(cfg.deployBlock || 0),
+  deployBlock: a.preview ? 0 : deployBlock,
   chainId: Number(cfg.chainId),
   chainName: cfg.chainId === 42161 ? "Arbitrum One" : cfg.chain || "custom network",
   rpc: cfg.rpcUrl,
