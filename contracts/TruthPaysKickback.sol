@@ -21,6 +21,8 @@ interface IArbitratorV2 {
 /// appeal from the dispute kit). The side that lost the round pays the appeal cost plus
 /// LOSER_STAKE_MULTIPLIER and only during the first part of the appeal period; the side that won
 /// pays the cost plus WINNER_STAKE_MULTIPLIER. Once both sides are fully funded, a new round starts.
+/// Funders call `fundAppeal` from their own wallets, so Kleros records each of them and pays their
+/// refunds and rewards straight back to them. This contract never calls it; it only reads the multipliers.
 interface IDisputeKitClassic {
     function fundAppeal(uint256 coreDisputeID, uint256 choice) external payable;
     function WINNER_STAKE_MULTIPLIER() external view returns (uint256);
@@ -63,17 +65,21 @@ interface IDisputeResolver {
 ///  5. Match window (1 day from each challenge): anyone (usually the organiser) who disagrees
 ///     calls `matchChallenge` with the same deposit, which opens a Kleros dispute. If nobody
 ///     matches, the challenger counts as having attended and gets their deposit back.
-///  5b. Appeals: after each Kleros vote, either side can appeal. Anyone can chip in with
-///     `fundAppeal(staker, side)`; the money goes to Kleros's dispute kit and this contract keeps
-///     track of who paid what. Once the case has its final ruling and is settled, each funder
-///     takes their part of what Kleros returns (refunds and rewards) with `claimAppealRewards`.
-///     Only the final ruling counts: the DisputeResolver records it after the last appeal period.
+///  5b. Appeals: after each Kleros vote, either side can appeal. Funders pay Kleros's dispute kit
+///     directly from their own wallets (`DisputeKitClassic.fundAppeal(arbitratorDisputeID, side)`),
+///     so Kleros records each funder and pays their refunds and rewards straight back to them: no
+///     appeal money passes through this contract. `appealStatus` shows the round, deadlines and
+///     amounts. Only the final ruling counts: the DisputeResolver records it after the last appeal
+///     period, including Kleros's override when only one side funded an appeal.
 ///  6. Once the challenge window is over and no challenge is still waiting for a match, anyone
 ///     can call `releasePayouts`. The staked pool (deposit x stakers) is split into equal shares,
 ///     one per attendee plus one per challenger still in a Kleros case: attendees are paid at
 ///     once and one share is set aside per open case, so a dispute (or an appeal) cannot hold
-///     everyone's money. When the case is settled, the set-aside share goes to the challenger if
-///     Kleros rules they attended, otherwise it is split among the attendees.
+///     everyone's money. When a case is settled, its set-aside amount goes to the challenger if
+///     Kleros rules they attended. Otherwise it is split into equal parts, one per attendee and
+///     one per case still open: attendees are paid their part and each open case's set-aside
+///     amount grows by one part. Everyone who ends up on the list therefore receives the same
+///     total, whatever order the cases settle in.
 ///     A transfer that fails (e.g. a USDC-blocklisted wallet) does not block the
 ///     others: that share is kept for the attendee to `claim` later, to any address they choose.
 ///  7. Anything not owed to anyone (rounding dust, stray or excess transfers) can be refunded
@@ -86,6 +92,9 @@ interface IDisputeResolver {
 ///    possible up to `claimDeadline`, so the two can never race. Once the list is posted the
 ///    payout is permissionless, so the organiser cannot hold it back.
 ///  - Ownership changes need the new owner to accept, so a typo cannot lock the contract.
+///  - There is no `receive` or `fallback`: plain ETH sent to the contract is refused, so ETH a
+///    guest sends by mistake stays in their wallet. ETH only comes in with `challenge` and
+///    `matchChallenge`, and every wei of it is tracked.
 contract TruthPaysKickback {
     // ------------------------------------------------------------------ errors
     error NotOwner();
@@ -117,9 +126,8 @@ contract TruthPaysKickback {
     error ChallengesPending(uint256 count);
     error OnlyNumberedRulings();
     error InDispute(address staker);
-    error BadSide(uint256 side);
     error NotAppealable(address staker);
-    error AppealWithdrawFailed();
+    error ZeroDeposit();
 
     // ------------------------------------------------------------------ events
     event StakerRegistered(address indexed staker);
@@ -134,15 +142,12 @@ contract TruthPaysKickback {
     event Claimed(address indexed attendee, address indexed to, uint256 amount);
     event Finalized(uint256 stakers, uint256 attendees, uint256 pool, uint256 share);
     event ShareHeldBack(address indexed staker, uint256 amount);
-    event HeldShareSplit(address indexed staker, uint256 attendees, uint256 each);
+    event HeldShareSplit(address indexed staker, uint256 attendees, uint256 openCases, uint256 each);
     event Cancelled(uint256 stakers, uint256 refundedEach);
     event EmergencyWithdrawn(address indexed staker, uint256 amount);
     event Refunded(address indexed to, uint256 amount);
     event Swept(address indexed to, uint256 amount);
     event EthOwed(address indexed to, uint256 amount);
-    event AppealFunded(address indexed staker, address indexed funder, uint256 round, uint256 side, uint256 amount);
-    event AppealFundsCollected(address indexed staker, uint256 amount);
-    event AppealRewardClaimed(address indexed staker, address indexed funder, address to, uint256 amount);
     event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
@@ -176,7 +181,9 @@ contract TruthPaysKickback {
         uint256 arbitratorDisputeID;
         uint256 localDisputeID; // id inside the DisputeResolver
         uint256 arbitrationPaid; // ETH spent on the Kleros fee
-        bool shareHeld; // still in a Kleros case at payout: one share is set aside for it
+        // USDC set aside because the case was still open at payout (0 if none): one share, plus one
+        // part of every case lost since. Always > 0 while set aside (a share is at least `deposit`).
+        uint256 heldShare;
     }
 
     /// @notice Kleros settings, passed to the constructor as one struct.
@@ -221,9 +228,10 @@ contract TruthPaysKickback {
     mapping(address => Challenge) public challenges;
     address[] private _challengers;
     uint256 public pendingChallenges; // waiting for a match, or in a Kleros dispute
-    /// @notice The per-attendee payout, set by `releasePayouts`.
+    /// @notice The per-attendee payout, set by `releasePayouts`. A part of every Kleros case lost
+    /// after payout is paid on top (see `_settleHeldShare`).
     uint256 public payoutShare;
-    /// @notice USDC set aside at payout for challengers still in a Kleros case (one share each).
+    /// @notice USDC set aside for challengers still in a Kleros case: the sum of their `heldShare`.
     uint256 public heldBack;
 
     /// @notice USDC payouts that could not be delivered and are waiting for `claim`.
@@ -232,17 +240,8 @@ contract TruthPaysKickback {
     /// @notice ETH (challenge deposits) that could not be sent and is waiting for `withdrawEth`.
     mapping(address => uint256) public ethOwed;
 
-    /// @notice Appeal money paid to Kleros through this contract, per challenged staker, round and side.
-    mapping(address staker => mapping(uint256 round => mapping(uint256 side => uint256))) public appealPaid;
-    /// @notice Each funder's part of `appealPaid`.
-    mapping(address staker => mapping(uint256 round => mapping(uint256 side => mapping(address funder => uint256))))
-        public appealContribution;
-    /// @notice What Kleros paid back (refunds + rewards) for that round and side, once collected.
-    mapping(address staker => mapping(uint256 round => mapping(uint256 side => uint256))) public appealReturned;
-    /// @notice Number of rounds (from the first) that may hold appeal money paid through this contract.
-    mapping(address staker => uint256) public appealRounds;
-    mapping(address staker => bool) public appealFundsCollected;
     /// @notice The dispute kit used for disputes (from the arbitrator extra data: courtID, minJurors, disputeKitID).
+    /// Appeal funders find the kit at `disputeResolver.arbitrator().disputeKits(disputeKitID)`.
     uint256 public immutable disputeKitID;
 
     uint256 private _locked = 1;
@@ -258,6 +257,7 @@ contract TruthPaysKickback {
         Arbitration memory arbitration_
     ) {
         require(address(token_) != address(0), ZeroAddress());
+        require(deposit_ > 0, ZeroDeposit());
         require(owner_ != address(0), ZeroAddress());
         require(address(arbitration_.disputeResolver) != address(0), ZeroAddress());
         require(claimDeadline_ >= eventStart_ + MIN_SETTLEMENT_WINDOW, BadTimes());
@@ -348,7 +348,8 @@ contract TruthPaysKickback {
         return disputeResolver.arbitrator().arbitrationCost(arbitratorExtraData);
     }
 
-    /// @notice Where the Kleros case on `staker`'s challenge stands, for an appeal.
+    /// @notice Where the Kleros case on `staker`'s challenge stands, for an appeal. Funders pay the
+    /// dispute kit directly (`fundAppeal(challenges(staker).arbitratorDisputeID, side)`), from their own wallet.
     /// @return round Current round (1 = first jury).
     /// @return ruling The jury's current vote (0 none/tied, 1 attended, 2 absent).
     /// @return start Start of the appeal period (0 if the case is not in its appeal period).
@@ -376,17 +377,6 @@ contract TruthPaysKickback {
         uint256 loser = cost + (cost * kit.LOSER_STAKE_MULTIPLIER()) / 10_000;
         costAttended = ruling == RULING_ATTENDED ? winner : loser;
         costAbsent = ruling == RULING_ABSENT ? winner : loser;
-    }
-
-    /// @notice ETH `funder` can claim with `claimAppealRewards` once the case is settled (0 before Kleros paid back).
-    function appealRewardOf(address staker, address funder) public view returns (uint256 amount) {
-        uint256 rounds = appealRounds[staker];
-        for (uint256 r; r < rounds; ++r) {
-            for (uint256 side = RULING_ATTENDED; side <= RULING_ABSENT; ++side) {
-                uint256 mine = appealContribution[staker][r][side][funder];
-                if (mine > 0) amount += (mine * appealReturned[staker][r][side]) / appealPaid[staker][r][side];
-            }
-        }
     }
 
     // ------------------------------------------------------------------ curation (organiser)
@@ -526,7 +516,10 @@ contract TruthPaysKickback {
     }
 
     /// @notice Settle a challenge once it can be: unmatched after its match window (counts as
-    /// attended), or ruled by Kleros. Anyone can call it.
+    /// attended), or ruled by Kleros. Only the final ruling counts: the one the DisputeResolver
+    /// records after the last appeal period. A refusal to arbitrate (0) keeps the guest off the
+    /// list, like "did not attend", and splits what is left of the challenge deposits in half.
+    /// Anyone can call it.
     function resolveChallenge(address staker) external nonReentrant {
         Challenge storage c = challenges[staker];
         require(c.state != ChallengeState.None, NoChallenge(staker));
@@ -544,7 +537,7 @@ contract TruthPaysKickback {
             bool won = ruling == RULING_ATTENDED;
             if (won && !attended[staker] && phase == Phase.Listed) _addAttendee(staker);
             emit ChallengeResolved(staker, won, ruling);
-            if (c.shareHeld) _settleHeldShare(staker, won);
+            if (c.heldShare > 0) _settleHeldShare(staker, c, won);
 
             uint256 remaining = 2 * c.deposit - c.arbitrationPaid;
             if (won) {
@@ -559,68 +552,12 @@ contract TruthPaysKickback {
         }
     }
 
-    // ------------------------------------------------------------------ appeals (Kleros)
-
-    /// @notice Appeal the Kleros vote on `staker`'s challenge, or defend it: fund one side
-    /// (1 = attended, 2 = did not attend) with any amount. The ETH goes to Kleros's dispute kit,
-    /// which keeps what is still missing for that side and returns the rest (sent back to you).
-    /// Kleros's own rules apply: see `appealStatus` for the deadlines and amounts.
-    function fundAppeal(address staker, uint256 side) external payable nonReentrant {
-        Challenge storage c = challenges[staker];
-        require(c.state == ChallengeState.Disputed, NotAppealable(staker));
-        require(side == RULING_ATTENDED || side == RULING_ABSENT, BadSide(side));
-        require(msg.value > 0, WrongDeposit(1, 0));
-        IArbitratorV2 core = disputeResolver.arbitrator();
-        uint256 id = c.arbitratorDisputeID;
-        uint256 round = core.getNumberOfRounds(id) - 1;
-
-        // the kit refunds any surplus to this contract; what it kept is the contribution
-        uint256 before = address(this).balance;
-        _disputeKit(core).fundAppeal{value: msg.value}(id, side);
-        uint256 spent = before - address(this).balance;
-
-        appealPaid[staker][round][side] += spent;
-        appealContribution[staker][round][side][msg.sender] += spent;
-        if (appealRounds[staker] <= round) appealRounds[staker] = round + 1;
-        emit AppealFunded(staker, msg.sender, round, side, spent);
-        _sendEth(msg.sender, msg.value - spent);
-    }
-
-    /// @notice After the final ruling and `resolveChallenge`, collect from Kleros the appeal money
-    /// paid through this contract (refunds for sides never fully funded, rewards for the winning side).
-    /// Anyone can call it; `claimAppealRewards` also does it when needed.
-    function collectAppealFunds(address staker) external nonReentrant {
-        _collectAppealFunds(staker);
-    }
-
-    /// @notice Take your part of what Kleros returned for the appeals you funded on `staker`'s case.
-    function claimAppealRewards(address staker, address payable to) external nonReentrant {
-        require(to != address(0) && to != address(this), ZeroAddress());
-        if (!appealFundsCollected[staker]) _collectAppealFunds(staker);
-        uint256 amount = appealRewardOf(staker, msg.sender);
-        uint256 rounds = appealRounds[staker];
-        bool funded;
-        for (uint256 r; r < rounds; ++r) {
-            for (uint256 side = RULING_ATTENDED; side <= RULING_ABSENT; ++side) {
-                if (appealContribution[staker][r][side][msg.sender] == 0) continue;
-                funded = true;
-                appealContribution[staker][r][side][msg.sender] = 0;
-            }
-        }
-        require(funded && amount > 0, NothingToClaim());
-        (bool ok,) = to.call{value: amount}("");
-        require(ok, TransferFailed(to, amount));
-        emit AppealRewardClaimed(staker, msg.sender, to, amount);
-    }
-
-    /// @dev Kleros's dispute kit sends refunds and rewards here as plain ETH transfers.
-    receive() external payable {}
-
     // ------------------------------------------------------------------ settlement
 
     /// @notice Split the staked pool equally between the attendees. Anyone can call it once the
-    /// challenge window is over and no challenge is pending. Challenges whose match window ran
-    /// out without a match are accepted here automatically.
+    /// challenge window is over and no challenge is waiting for a match. Challenges whose match
+    /// window ran out without a match are accepted here automatically; each challenge still in a
+    /// Kleros case gets one share set aside until it is settled.
     function releasePayouts() external whenListed nonReentrant {
         require(block.timestamp > challengeEndsAt, TooEarly());
         uint256 len = _challengers.length;
@@ -632,28 +569,29 @@ contract TruthPaysKickback {
         // challenges still in a Kleros case get one share set aside each; nothing may wait for a match
         uint256 open;
         for (uint256 i; i < len; ++i) {
-            Challenge storage c = challenges[_challengers[i]];
-            if (c.state == ChallengeState.Disputed) {
-                c.shareHeld = true;
-                ++open;
-            }
+            if (challenges[_challengers[i]].state == ChallengeState.Disputed) ++open;
         }
         require(pendingChallenges == open, ChallengesPending(pendingChallenges - open));
 
+        // attendees and open cases are different registered stakers, so share >= deposit > 0
         uint256 pool = deposit * stakerCount;
         uint256 n = attendeeCount;
         uint256 share = pool / (n + open);
         payoutShare = share;
         heldBack = share * open;
         phase = Phase.Finalized;
+        for (uint256 i; i < len; ++i) {
+            address s = _challengers[i];
+            Challenge storage c = challenges[s];
+            if (c.state == ChallengeState.Disputed) {
+                c.heldShare = share;
+                emit ShareHeldBack(s, share);
+            }
+        }
         for (uint256 i; i < _attendees.length; ++i) {
             address a = _attendees[i];
             status[a] = Status.Paid;
             _payOrOwe(a, share);
-        }
-        for (uint256 i; i < len; ++i) {
-            address s = _challengers[i];
-            if (challenges[s].shareHeld) emit ShareHeldBack(s, share);
         }
         emit Finalized(stakerCount, n, pool, share);
     }
@@ -745,24 +683,43 @@ contract TruthPaysKickback {
         emit AttendeeAdded(a);
     }
 
-    /// @dev A case still open at payout is settled: its set-aside share goes to the challenger if
-    /// Kleros ruled they attended, otherwise it is split equally among everyone on the list.
-    function _settleHeldShare(address staker, bool won) private {
-        uint256 share = payoutShare;
-        heldBack -= share;
-        challenges[staker].shareHeld = false;
+    /// @dev A case still open at payout is settled. If Kleros ruled the challenger attended, they get
+    /// the case's whole set-aside amount. Otherwise that amount is split into equal parts, one per
+    /// attendee and one per case still open: each attendee is paid one part and each open case's
+    /// set-aside amount grows by one part. At every step each attendee has received, and each open
+    /// case holds, the same total, so a later winner gets exactly what every attendee got, whatever
+    /// order the cases settle in (up to rounding dust, which stays as spare).
+    function _settleHeldShare(address staker, Challenge storage c, bool won) private {
+        uint256 amount = c.heldShare;
+        c.heldShare = 0;
+        heldBack -= amount;
         if (won) {
             attended[staker] = true;
             _attendees.push(staker);
             attendeeCount += 1;
             status[staker] = Status.Paid;
             emit AttendeeAdded(staker);
-            _payOrOwe(staker, share);
+            _payOrOwe(staker, amount);
             return;
         }
         uint256 n = _attendees.length;
-        uint256 each = share / n; // the rounding dust stays as spare
-        emit HeldShareSplit(staker, n, each);
+        // after payout no challenge can wait for a match, so every pending challenge is an open case
+        // with a share set aside (this one is already resolved and no longer counted)
+        uint256 open = pendingChallenges;
+        uint256 each = amount / (n + open); // n >= 1: the posted list is never empty
+        emit HeldShareSplit(staker, n, open, each);
+        if (open > 0) {
+            uint256 grown;
+            uint256 len = _challengers.length;
+            for (uint256 i; i < len; ++i) {
+                Challenge storage o = challenges[_challengers[i]];
+                if (o.heldShare > 0) {
+                    o.heldShare += each;
+                    ++grown;
+                }
+            }
+            heldBack += each * grown; // stays the sum of the open cases' heldShare
+        }
         for (uint256 i; i < n; ++i) _payOrOwe(_attendees[i], each);
     }
 
@@ -777,42 +734,6 @@ contract TruthPaysKickback {
 
     function _disputeKit(IArbitratorV2 core) private view returns (IDisputeKitClassic) {
         return IDisputeKitClassic(core.disputeKits(disputeKitID));
-    }
-
-    /// @dev Withdraws from the dispute kit, per round and side, what Kleros owes this contract.
-    /// The kit deployed on Arbitrum One takes a round argument; newer versions take none and pay
-    /// every round at once, in which case the amount is spread over the rounds by what was paid.
-    function _collectAppealFunds(address staker) private {
-        Challenge storage c = challenges[staker];
-        require(c.state == ChallengeState.Resolved && c.matcher != address(0), WrongChallengeState(staker));
-        require(!appealFundsCollected[staker], NothingToClaim());
-        appealFundsCollected[staker] = true;
-        address kit = address(_disputeKit(disputeResolver.arbitrator()));
-        uint256 id = c.arbitratorDisputeID;
-        uint256 rounds = appealRounds[staker];
-        uint256 total;
-        for (uint256 side = RULING_ATTENDED; side <= RULING_ABSENT; ++side) {
-            for (uint256 r; r < rounds; ++r) {
-                if (appealPaid[staker][r][side] == 0) continue;
-                uint256 before = address(this).balance;
-                (bool ok,) = kit.call(abi.encodeWithSignature("withdrawFeesAndRewards(uint256,address,uint256,uint256)", id, address(this), r, side));
-                if (ok) {
-                    uint256 got = address(this).balance - before;
-                    appealReturned[staker][r][side] = got;
-                    total += got;
-                    continue;
-                }
-                (ok,) = kit.call(abi.encodeWithSignature("withdrawFeesAndRewards(uint256,address,uint256)", id, address(this), side));
-                require(ok, AppealWithdrawFailed());
-                uint256 lump = address(this).balance - before;
-                total += lump;
-                uint256 paidAll;
-                for (uint256 q = r; q < rounds; ++q) paidAll += appealPaid[staker][q][side];
-                for (uint256 q = r; q < rounds; ++q) appealReturned[staker][q][side] = (lump * appealPaid[staker][q][side]) / paidAll;
-                break;
-            }
-        }
-        emit AppealFundsCollected(staker, total);
     }
 
     /// @dev The Kleros dispute template (JSON). Only `eventName` and `policyURI` come from the

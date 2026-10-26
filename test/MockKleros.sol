@@ -76,7 +76,8 @@ contract MockArbitrator {
         Core storage d = core[id];
         require(d.period == 4 && !d.ruled, "not executable");
         d.ruled = true;
-        resolver.giveRuling(resolver.arbitratorDisputeIDToLocalID(id), d.ruling);
+        (uint256 ruling,,) = currentRuling(id);
+        resolver.giveRuling(resolver.arbitratorDisputeIDToLocalID(id), ruling);
     }
 
     function disputes(uint256 id)
@@ -88,8 +89,15 @@ contract MockArbitrator {
         return (1, address(resolver), d.period, d.ruled, d.lastPeriodChange);
     }
 
-    function currentRuling(uint256 id) external view returns (uint256 ruling, bool tied, bool overridden) {
-        return (core[id].ruling, core[id].ruling == 0, false);
+    /// @dev Like DisputeKitClassic.currentRuling: once the appeal period is over (execution), if only
+    /// one side funded an appeal in the last round, that side wins whatever the jurors voted.
+    function currentRuling(uint256 id) public view returns (uint256 ruling, bool tied, bool overridden) {
+        Core storage d = core[id];
+        if (d.period == 4) {
+            uint256[] memory f = kit.getFundedChoices(id);
+            if (f.length == 1) return (f[0], false, true);
+        }
+        return (d.ruling, d.ruling == 0, false);
     }
 
     function appealPeriod(uint256 id) external view returns (uint256 start, uint256 end) {
