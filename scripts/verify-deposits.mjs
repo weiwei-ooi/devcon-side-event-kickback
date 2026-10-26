@@ -27,7 +27,7 @@ import path from "node:path";
 import { ethers } from "ethers";
 import {
   args, loadConfig, provider, readCsv, writeCsv, writeJson, verifyRegistrations, resolveClaims,
-  pairReturns, getLogsChunked, incomingTransfers, depKey, isContractCode, safeBatch, loadAbi, fmt, STATUS,
+  pairReturns, getLogsChunked, incomingTransfers, depKey, isContractCode, safeBatch, loadAbi, fmt, STATUS, MONEY_CODES,
 } from "./lib.mjs";
 
 const a = args();
@@ -132,6 +132,8 @@ if (c) {
     });
   }
 }
+// A registered staker can only be refunded while the event is open (before the attendance list).
+const listOpen = c ? Number(await c.phase({ blockTag: snapshotBlock })) === 0 : true;
 const dep = cfg.depositUnits;
 const { byDeposit, unbacked, unpaired } = pairReturns(deposits, events, {
   deposit: dep,
@@ -221,7 +223,11 @@ for (const r of kept) {
       used = free;
       break;
     case "registered":
-      if (r.decision === "declined") refunds.push(r); // rejectAndRefund sends the staked deposit back
+      if (!listOpen) {
+        // after the list is posted rejectAndRefund refuses stakers (and would revert the whole batch)
+        if (r.decision !== "approved")
+          issues.push({ ...r, code: "DECLINED_AFTER_LIST", note: "Registered, and no longer approved on Luma, but the attendance list is already posted: the deposit stays in the pool. They are paid only if they are on the list. Nothing to do on-chain." });
+      } else if (r.decision === "declined") refunds.push(r); // rejectAndRefund sends the staked deposit back
       else if (r.decision !== "approved")
         issues.push({ ...r, code: "REGISTERED_NOT_APPROVED", note: "Registered on-chain but no longer approved on Luma. Approve again, or decline to refund." });
       break;
@@ -248,17 +254,29 @@ if (new Set(listed).size !== listed.length || listed.includes(ethers.ZeroAddress
 // Deposits nobody's Luma row points at
 let unmatched = null;
 if (incoming) {
-  const claimedTx = new Set(results.map((r) => String(r.tx).toLowerCase()));
+  // A deposit is claimed by a row whose own wallet sent it. A row whose tx came from someone else
+  // (WRONG_SENDER, UNUSUAL_SENDER, AMBIGUOUS_SENDER) claims nothing, so that money is still listed
+  // here; only a row we could not check (RPC_ERROR) keeps its whole tx out until the next run.
+  const claimedDep = new Set(results.filter((r) => MONEY_CODES.has(r.code)).map((r) => depKey(r.tx, r.wallet)));
+  const unchecked = new Set(results.filter((r) => r.code === "RPC_ERROR").map((r) => String(r.tx).toLowerCase()));
+  const pastedBy = new Map(); // tx → the rows with a sender problem that pasted it
+  for (const r of results) if (/_SENDER$/.test(r.code)) {
+    const k = String(r.tx).toLowerCase();
+    pastedBy.set(k, [...(pastedBy.get(k) ?? []), r]);
+  }
   unmatched = [];
-  for (const t of incoming.filter((x) => !claimedTx.has(x.tx))) {
+  for (const t of incoming.filter((x) => !claimedDep.has(depKey(x.tx, x.from)) && !unchecked.has(x.tx))) {
     const d = byDeposit.get(depKey(t.tx, t.from));
     const free = d.remaining - (d.staked ? dep : 0n);
     let status = "open";
     let note = "";
+    const pasted = pastedBy.get(t.tx);
     if (free <= 0n) status = d.staked ? "held for a registered staker" : `already refunded (${[...new Set(d.returnedBy)].join(" ")})`;
     else if (t.from === ethers.ZeroAddress) note = "Minted straight to the contract (a bridge?): don't return it to this address; find out whose it is.";
     else if (isContractCode(await prov.getCode(t.from))) note = "Sent by a contract (bridge, exchange or smart wallet?): check where it should go before returning it.";
     else if (free < t.amount) note = `Partly returned already (${[...new Set(d.returnedBy)].join(" ")}).`;
+    if (free > 0n && pasted) note = [`Pasted on Luma by ${pasted.map((r) => `${r.email || r.name} (${r.code})`).join(", ")}: sort that out with the guest first ` +
+      `(if the sender is their own wallet, they put it as their ETH address on Luma and it verifies). Return it only once that's agreed.`, note].filter(Boolean).join(" ");
     unmatched.push({ status, from: t.from, amount: fmt(t.amount, cfg.decimals), to_return: fmt(free > 0n ? free : 0n, cfg.decimals), units: free > 0n ? free : 0n, block: t.block, tx: t.tx, explorer: `${cfg.explorer}/tx/${t.tx}`, note });
   }
 }

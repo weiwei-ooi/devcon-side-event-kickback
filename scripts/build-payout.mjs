@@ -36,6 +36,10 @@ if (!a.checkins) {
 }
 const cfg = loadConfig(a.config ?? "config.json");
 const out = a.out ?? "out";
+// A run that stops half-way must never leave the previous plan behind for "Post attendance list".
+const OUTPUTS = ["attendees.json", "payout-plan.json", "payout.csv", "payout-summary.md",
+  "safe-post-attendance.json", "safe-payout-transfers.json"];
+for (const f of OUTPUTS) fs.rmSync(path.join(out, f), { force: true });
 const verifiedFile = a.verified ?? `${out}/verified.csv`;
 const verified = readCsv(verifiedFile);
 // every registration that verified a wallet's deposit, including ones flagged as duplicates

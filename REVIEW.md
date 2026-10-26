@@ -24,6 +24,8 @@ Two independent reviews ran on v4 (`423497f`): a multi-agent audit (8 reviewers,
 
 **Docs**: juror policy says an appeal funded by only one side wins, and that a refusal to arbitrate counts like "No". Re-pinned at `/ipfs/QmZMDkYNHVH5bZNPwNnav1ZoziRgL57zE6pTmwo5dqGGGg`. README runbook: cancel steps for unregistered payers, returns list, appeals.
 
+**Final cross-check after merging (no contract change):** a read-only pass over the seams between the four parts found 6 small issues, all fixed: the console and `owner.mjs` linked a challenge settled without a match to "Kleros case #0"; after the list is posted, a declined staker went into `refunds.json` and made the whole "Refund declined guests" batch revert (now reported as `DECLINED_AFTER_LIST`); `build-payout.mjs` left an old `payout-plan.json` behind when a re-run failed (outputs are now deleted first); a deposit pasted by a guest whose wallet did not send it (`WRONG_SENDER` / `UNUSUAL_SENDER` / `AMBIGUOUS_SENDER`) appeared in no list of money to give back (now in `unmatched.csv`, naming the guest); README issue table now covers `TX_FAILED`, `AMBIGUOUS_SENDER`, `RPC_ERROR`, and says only the console offers "Deliver final ruling".
+
 **Tests (v5, all on the merged code):** `npm test` 31/31 (25 contract tests + 6 script tests, including the full flow verify → curate → register/refund → check-ins → post list → challenge → release), guest page 100/100 and owner console 70/70 browser checks (`npm run test:site`, `npm run test:console`). The Kleros mock now follows Kleros's one-side-funded override in `currentRuling`.
 
 **Still to check live:** evidence showing on the Kleros court page for a real DisputeResolver case, and Zerion accepting transactions with a `chainId` field (both in the rehearsal).

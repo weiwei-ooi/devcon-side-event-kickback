@@ -525,7 +525,7 @@ async function refresh() {
   for (const ch of state.challenges) {
     let v = CH_STATES[ch.state];
     if (ch.state === 1) v += `, match by ${when(ch.matchEndsAt)}`;
-    if (ch.state >= 2 && k) v = [v + ", ", link(`${k.courtUrl}/#/cases/${ch.disputeID}/overview`, `Kleros case #${ch.disputeID} ↗`)];
+    if (ch.state >= 2 && ch.matched && k) v = [v + ", ", link(`${k.courtUrl}/#/cases/${ch.disputeID}/overview`, `Kleros case #${ch.disputeID} ↗`)];
     if (ch.state === 2) {
       ch.appeal = await appealInfo(ch.disputeID, ch.wallet).catch(() => null);
       v = [v].flat().concat(". " + describeAppeal(ch.appeal));

@@ -225,6 +225,13 @@ test("full flow: verify → curate on Luma → register / refund declined → ch
   await reverts(kick, "postAttendance", [plan.attendees, U(15)], "ShareMismatch");
   await (await kick.postAttendance(plan.attendees, BigInt(plan.share))).wait();
   await reverts(kick, "releasePayouts", [], "TooEarly");
+  // Once the list is posted a declined staker can't be refunded: reported, never put in refunds.json
+  // (rejectAndRefund would refuse the whole batch)
+  await writeGuests("guests5.csv", { ana: "declined", ben: "declined" });
+  await run("verify-deposits.mjs", "--guests", "guests5.csv");
+  assert.deepEqual(wallets("refunds.json"), []);
+  assert.match(readOut("issues.csv"), /DECLINED_AFTER_LIST,Ana,/);
+  assert.doesNotMatch(readOut("issues.csv"), /REGISTERED_NOT_APPROVED/);
 
   // Pat says they were there but was not scanned: challenges with the Kleros fee; nobody matches
   const fee = await kick.challengeDeposit();
@@ -486,6 +493,10 @@ test("late payers, unusual senders, free guests and formula cells", async () => 
   // the unclaimed bridge mint is open, with a warning not to send it back to 0x0
   assert.equal(s.umRow(txStrayMint).status, "open");
   assert.match(s.umRow(txStrayMint).note, /Minted straight/);
+  // the bridged and relayed deposits can't hold a spot, so they are listed too, naming the guest
+  assert.match(s.umRow(txMint).note, /Pasted on Luma by min@x\.io \(UNUSUAL_SENDER\).*Minted straight/);
+  assert.match(s.umRow(txRelay).note, /Pasted on Luma by con@x\.io \(UNUSUAL_SENDER\).*Sent by a contract/);
+  assert.equal(s.umRow(txRelay).to_return, "25.0");
   // formula cells are neutralised in every CSV we write
   for (const f of ["verified.csv", "issues.csv", "returns.csv", "claims.csv", "to-review.csv"]) {
     assert.doesNotMatch(s.readOut(f), /(^|,)"?[=+@-]/m, `${f} has a cell starting with a formula character`);
@@ -552,6 +563,7 @@ test("a copied tx link never knocks out the real guest, and build-payout still p
   const err = await s.fails("build-payout.mjs", ["--out", "out", "--checkins", "after2.csv", "--verified", "empty.csv", "--claims", "empty.csv"]);
   assert.match(err, /--allow-missing would count every one of them as a no-show/);
   assert.match(err, /only use it after checking each of them by hand/);
+  assert.ok(!fs.existsSync(s.outFile("payout-plan.json")), "a failed run leaves no payout plan behind");
 
   // A tx whose stated owner did not send it (an exchange withdrawal?) is "used" by that row: a
   // blank-address row pasting it can't take the seat while that row is not declined
@@ -565,6 +577,10 @@ test("a copied tx link never knocks out the real guest, and build-payout still p
   await s.verify(lines.map((l) => (l.startsWith("Ali") ? l.replace("pending_approval", "declined") : l)));
   assert.deepEqual(s.wallets("new-stakers.json"), [zed]);
   assert.match(s.readOut("verified.csv"), /^Bob,.*wallet taken from the transaction sender/m);
+  // with only Ali's row, nobody's own wallet claims it: listed to give back, naming her
+  await s.verify([lines[0], ...lines.slice(2)]);
+  assert.equal(s.umRow(txZed).status, "open");
+  assert.match(s.umRow(txZed).note, /Pasted on Luma by ali@x\.io \(WRONG_SENDER\)/);
 });
 
 test("live mode needs the deploy block; a stopped run leaves no stale lists behind", async () => {

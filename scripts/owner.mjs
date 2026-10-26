@@ -121,7 +121,7 @@ switch (cmd) {
       const ch = await c.challenges(w);
       console.log(`${w}: ${CHALLENGE_STATES[Number(ch.state)]}, deposit ${ethers.formatEther(ch.deposit)} ETH` +
         (Number(ch.state) === 1 ? `, match by ${new Date(Number(ch.matchEndsAt) * 1000).toISOString()}` : "") +
-        (Number(ch.state) >= 2 ? `, Kleros case #${ch.arbitratorDisputeID}` : ""));
+        (Number(ch.state) >= 2 && ch.matcher !== ethers.ZeroAddress ? `, Kleros case #${ch.arbitratorDisputeID}` : ""));
     }
     break;
   }
