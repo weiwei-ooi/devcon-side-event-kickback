@@ -28,7 +28,10 @@ const signer = process.env.PRIVATE_KEY ? new ethers.Wallet(process.env.PRIVATE_K
 const { abi } = loadAbi("TruthPaysKickback");
 const c = new ethers.Contract(cfg.contract, abi, signer ?? prov);
 const readJson = (f) => JSON.parse(fs.readFileSync(f, "utf8"));
-// verify-deposits writes { contract, chainId, items: [{ wallet, … }] }; plain arrays also work
+// The chain the RPC is really on (provider() pins cfg.chainId without asking the node).
+const liveChainId = async () => Number(await prov.send("eth_chainId", []));
+
+// For add-attendees: a plain array of wallets, or a stamped list for this contract
 function walletsOf(file) {
   const d = readJson(file);
   if (!Array.isArray(d) && d.contract && d.contract.toLowerCase() !== cfg.contract.toLowerCase())
@@ -36,8 +39,28 @@ function walletsOf(file) {
   return (Array.isArray(d) ? d : d.items).map((r) => (typeof r === "string" ? r : r.wallet));
 }
 
+// new-stakers.json / refunds.json from verify-deposits: { contract, chainId, items: [{ wallet, status, … }] }.
+// Like the console, refuse a list made for another contract or network, or one where any guest's
+// on-chain status changed since it was made (re-run verify-deposits instead).
+async function checkedList(file) {
+  const d = readJson(file);
+  if (Array.isArray(d) || !d.contract || !Array.isArray(d.items))
+    throw new Error(`${file} is not a list made by verify-deposits (contract, chainId, items). Re-run verify-deposits.`);
+  if (d.contract.toLowerCase() !== cfg.contract.toLowerCase()) throw new Error(`${file} was made for contract ${d.contract}, not ${cfg.contract}`);
+  const chainId = await liveChainId();
+  if (Number(d.chainId) !== chainId || (cfg.chainId && Number(cfg.chainId) !== chainId))
+    throw new Error(`${file} was made for chain ${d.chainId} (config: ${cfg.chainId}), but the RPC is on chain ${chainId}. Stopped.`);
+  const now = await Promise.all(d.items.map((i) => c.status(i.wallet)));
+  const changed = d.items.filter((i, k) => Number(now[k]) !== Number(i.status));
+  if (changed.length)
+    throw new Error(`${file} is out of date: ${changed.length} guest(s) changed on-chain since it was made (e.g. ${changed[0].name || changed[0].wallet}). Re-run verify-deposits.`);
+  return d.items.map((i) => i.wallet);
+}
+
 async function send(fn, ...params) {
   if (!signer) throw new Error("Set PRIVATE_KEY of the owner wallet");
+  const chainId = await liveChainId();
+  if (cfg.chainId && chainId !== Number(cfg.chainId)) throw new Error(`The RPC is on chain ${chainId}, the config says ${cfg.chainId}. Stopped.`);
   await c[fn].staticCall(...params); // surfaces the contract's reason before paying gas
   const tx = await c[fn](...params);
   console.log(`${fn} → ${cfg.explorer}/tx/${tx.hash}`);
@@ -66,12 +89,14 @@ switch (cmd) {
     break;
   }
   case "register": {
-    const list = walletsOf(a.file ?? "out/new-stakers.json");
+    const list = await checkedList(a.file ?? "out/new-stakers.json");
+    if (!list.length) console.log("Nobody to register.");
     for (let i = 0; i < list.length; i += BATCH) await send("registerStakers", list.slice(i, i + BATCH));
     break;
   }
   case "refund-declined": {
-    const list = walletsOf(a.file ?? "out/refunds.json");
+    const list = await checkedList(a.file ?? "out/refunds.json");
+    if (!list.length) console.log("Nobody to refund.");
     for (let i = 0; i < list.length; i += BATCH) await send("rejectAndRefund", list.slice(i, i + BATCH));
     break;
   }
