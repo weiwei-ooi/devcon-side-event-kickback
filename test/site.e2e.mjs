@@ -331,7 +331,7 @@ check("Release payouts offered once the challenge window is over", await vis(p, 
 const g1Usdc = await usdc.balanceOf(await addr(g1));
 await p.click("#release");
 check("payouts released from the guest page", /Payouts released/.test(await waitText(p, "release-msg", /Payouts released|didn't go through|cancelled|would fail/)) && Number(await kick.phase()) === 2
-  && (await usdc.balanceOf(await addr(g1))) === g1Usdc + U(25) && (await kick.challenges(await addr(g3))).shareHeld, await txt(p, "release-msg"));
+  && (await usdc.balanceOf(await addr(g1))) === g1Usdc + U(25) && (await kick.challenges(await addr(g3))).heldShare > 0n, await txt(p, "release-msg"));
 check("Release payouts gone once released", !(await vis(p, "release-box")));
 await (await arbitrator.passPeriod(1000)).wait(); await (await arbitrator.executeRuling(1000)).wait();
 out = await lookupAs(p, await addr(g3));

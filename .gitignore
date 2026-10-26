@@ -6,3 +6,5 @@ out-*/
 *.csv
 site/dist/
 build/
+# developer lists for owner.mjs (wallet addresses)
+wallets*.json

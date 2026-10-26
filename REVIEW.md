@@ -1,15 +1,43 @@
-# Truth Pays Kickback v4: review summary (25 Oct 2026, deposit 25 USDC on Arbitrum One)
+# Truth Pays Kickback v5: review summary (26 Oct 2026, deposit 25 USDC on Arbitrum One)
 
 For Wei Wei and the developers reviewing the code before the live deployment.
 
-## Since v4 (26 Oct, no contract logic change)
+## v5: second review round (26 Oct, please review this first)
+
+Two independent reviews ran on v4 (`423497f`): a multi-agent audit (8 reviewers, each finding re-checked) and a separate read-only review. Nothing critical. The confirmed findings and their fixes:
+
+**Contract (`contracts/TruthPaysKickback.sol`)**
+- **Appeal money no longer passes through the contract (high).** Kleros's own keeper bot (`kleros-v2/contracts/scripts/keeperBot.ts`, `withdrawAppealContribution`) calls `DisputeKitClassic.withdrawFeesAndRewards` for every contributor once a case is ruled. With v4's wrapper the contract was the contributor, so the bot (or anyone) pushed the refunds and rewards into the empty `receive()` before `collectAppealFunds` ran; the balance-delta accounting then saw 0 and every funder's ETH was stuck for good. Removed `fundAppeal`, `collectAppealFunds`, `claimAppealRewards`, `appealRewardOf`, their storage, events and errors, and `receive()`. Funders call `DisputeKitClassic.fundAppeal(arbitratorDisputeID, side)` from their own wallets (console and guest page do this), so Kleros pays them directly. `appealStatus` stays. This also removes the 3-argument split issue and the "stray ETH is lost" issue: plain ETH sent to the contract now reverts.
+- **Fair held shares (low).** With several Kleros cases open at payout, a lost case's share used to go only to the attendees listed at that moment, so a challenger who won later got less than everyone else. `Challenge.shareHeld` (bool) is now `heldShare` (uint256, still the last field): a lost case's amount is split over attendees + cases still open, and each open case's `heldShare` grows by one part. Every final attendee gets the same total whatever order the cases settle in (tested with 2 and 3 cases in every order).
+- Constructor requires `deposit_ > 0` (`ZeroDeposit`). Runtime bytecode 19,763 bytes (was 23,441).
+
+**Evidence ID (medium, console and guest page).** The deployed DisputeResolverNeo emits `DisputeRequest(arbitrator, arbitratorDisputeID, localDisputeID, …)`; the court subgraph stores that third value as `dispute.externalDisputeId`, and the court app reads evidence by it. v4 filed evidence under the core dispute ID, so jurors would not have seen it. Both frontends now call `EvidenceModule.submitEvidence(challenges(staker).localDisputeID, …)` (checked against kleros-v2 `master`: `deployments/arbitrum/DisputeResolverNeo.json`, `subgraph/core/src/entities/Dispute.ts`, `web/src/pages/Cases/CaseDetails/Evidence`).
+
+**Verify script (`scripts/verify-deposits.mjs`, `lib.mjs`, `build-payout.mjs`)**
+- **Deposits returned with `refund()` were still treated as held (medium).** A stray returned with "Return a stray transfer" and later pasted on Luma could be registered with no money behind it (the contract only checks the total). Deposits are now paired with `Rejected` and `Refunded` events per wallet, by amount, oldest first; a returned deposit becomes `RETURNED_EARLIER` and is never listed again. `PAID_AGAIN_DECLINED` clears once returned.
+- **A copied tx link could knock out the real guest (medium).** The wallet that sent the deposit (or is registered) now keeps it; a declined copy never wins; build-payout matches check-ins through `out/claims.csv`.
+- Inferred wallets: 0x0 or contract senders become `UNUSUAL_SENDER`. Money to give back that used to fall through (short, overpaid, late, paid twice) is listed in `out/returns.csv`, net of returns already made; declined late payers go to `refunds.json`. All log scans are chunked; the script refuses to run on a real network without a deploy block and deletes stale outputs first. CSV formula injection neutralised. Free guests answering "N/A" are no longer flagged. `owner.mjs` checks chain id and live status.
+
+**Guest page (`site/index.html`)**: appeals funded and collected directly on the kit (offered whenever the case is over, including when the challenger won and was paid); evidence under the local ID; every transaction pinned with `chainId` and the network re-read right before sending; the earlier-deposit check fails closed and is re-run before sending (build refuses a live page without `deployBlock`); returned deposits no longer block a new deposit; "Copy link and go back to Luma" only leaves after a successful copy; account switch clears the old tx; undeliverable USDC can be claimed for every status; a "Release payouts" button for anyone once it would succeed; error strings escaped.
+
+**Owner console (`console/index.html`)**: appeals funded from her wallet straight to the kit, rewards collected only where something is due; evidence under the local ID; deploy re-checks the config on disk, shows name/policy/dates/mode, and asks to type SECOND before a second deploy; "Remove and refund" only for registered stakers; "Return a stray transfer" shows earlier returns to that address; leftover and cancel warnings; every transaction carries `chainId`.
+
+**Docs**: juror policy says an appeal funded by only one side wins, and that a refusal to arbitrate counts like "No". Re-pinned at `/ipfs/QmZMDkYNHVH5bZNPwNnav1ZoziRgL57zE6pTmwo5dqGGGg`. README runbook: cancel steps for unregistered payers, returns list, appeals.
+
+**Tests (v5, all on the merged code):** `npm test` 31/31 (25 contract tests + 6 script tests, including the full flow verify → curate → register/refund → check-ins → post list → challenge → release), guest page 100/100 and owner console 70/70 browser checks (`npm run test:site`, `npm run test:console`). The Kleros mock now follows Kleros's one-side-funded override in `currentRuling`.
+
+**Still to check live:** evidence showing on the Kleros court page for a real DisputeResolver case, and Zerion accepting transactions with a `chainId` field (both in the rehearsal).
+
+Please look at: `_settleHeldShare` and `releasePayouts` (held shares), `resolveChallenge`, the removed appeal surface, and `pairReturns` / `resolveClaims` in `scripts/lib.mjs`.
+
+## Rename (26 Oct, no contract logic change)
 
 - **New event name, Truth Pays.** The contract is renamed `GroundTruthKickback` → `TruthPaysKickback` (file, NatSpec and build artifacts; bytecode logic unchanged), `eventName` in the configs is now "Truth Pays: …", and the console, guest page, scripts and docs use the new name.
-- **Juror policy** updated with the new event name and re-pinned at `/ipfs/QmZMDkYNHVH5bZNPwNnav1ZoziRgL57zE6pTmwo5dqGGGg` (byte-identical, checked via cdn.kleros.link); `kleros.policyURI` updated in config.json and config.rehearsal.json.
+- **Juror policy** updated with the new event name and re-pinned (byte-identical, checked via cdn.kleros.link); `kleros.policyURI` updated in config.json and config.rehearsal.json. The current pin, after the v5 appeals wording, is `/ipfs/QmZMDkYNHVH5bZNPwNnav1ZoziRgL57zE6pTmwo5dqGGGg`.
 - **Guest page (`site/index.html`) has two modes.** The default page only does the deposit: connect, switch to Arbitrum One, send 25 USDC, then "Copy link and go back to Luma" (copies the Arbiscan tx link and returns to the Luma event, where the guest picks the Committed Spot ticket and pastes it; Luma then shows the registration as pending approval). After-event tools (deposit lookup, Kleros challenge, evidence, appeals) moved to `#status` on the same file.
 - **v4 rehearsal on Arbitrum One** (throwaway contract `0xc49531098132c0aa1E5eA4d061eA1B6C68076c5C`): deploy, deposit, register, refund, deposit again, register, post attendance list all passed; release payouts is due after the challenge window.
 
-## What changed in v4 (25 Oct, please review this first)
+## What changed in v4 (25 Oct; the appeal wrapper below was removed in v5)
 
 Requested by the organiser ("it is missing appeals: the whole A to Z, contract, frontend, full Kleros dispute protocol"), plus every fix from the developer review of v3 (`/mnt/project-files/reviews/dev-review-2026-10-25.md`, findings F1 to F12).
 

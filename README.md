@@ -88,7 +88,11 @@ node scripts/verify-deposits.mjs --guests ~/Downloads/luma-guests.csv --scan-fro
 - `out/new-stakers.json`: approved and verified, not yet registered (console: **Register stakers**).
 - `out/refunds.json`: declined payers whose deposit is still held (console: **Refund declined guests**).
 - `out/issues.csv`: email these guests. The codes are explained below.
-- `out/unmatched.csv`: deposits that arrived but that no registration claims.
+- `out/unmatched.csv`: deposits that arrived but that no registration claims (amount still to return, net of returns already made).
+- `out/returns.csv`: every other amount to give back with **Return a stray transfer**: short payments, overpaid excess, late payers not declined, a second deposit from the same wallet, paid-again declines, partly returned deposits. Net of what was already returned, so nothing is asked twice.
+- `out/claims.csv`: every Luma row that verified a wallet (duplicates included); `build-payout.mjs` uses it to match check-ins.
+
+All output files are deleted at the start of each run, so a failed run never leaves stale lists. On a real network (`mode` set in the config) the script refuses to run without `deployBlock` or `--scan-from-block`. Deposits already returned (declined, or **Return a stray transfer**) are never listed for registration or refund again (`RETURNED_EARLIER`).
 - `out/safe-register.json`: upload this in Safe → Apps → Transaction Builder, or run `node scripts/owner.mjs register`.
 
 **After the event:**
@@ -122,7 +126,8 @@ node scripts/build-payout.mjs --checkins ~/Downloads/luma-guests-after.csv [--ex
 | `WRONG_SENDER` | The USDC came from a different wallet than the one they entered | Often an exchange withdrawal. Check by hand: the payout goes to their stated wallet. |
 | `AMOUNT_TOO_LOW` | They sent less than 25 | Return it (listed in `out/returns.csv`) and ask for one new transfer of exactly 25 USDC. A top-up in a second transaction can't be verified. |
 | `OUTSIDE_WINDOW` | Sent before deposits opened or after the deadline | Decide case by case |
-| `DUPLICATE_TX` / `DUPLICATE_WALLET` | The tx or wallet is already used by another guest | Likely a copy-paste or someone gaming the system |
+| `DUPLICATE_TX` / `DUPLICATE_WALLET` | The tx or wallet is already used by another guest | Likely a copy-paste or someone gaming the system. The row whose wallet sent the deposit (or is already registered) keeps it; a declined copy never wins. No on-chain action for the copy. |
+| `DUPLICATE_CLAIM` | Several rows that aren't declined claim the same deposit and the script can't tell which is real | Decide by hand: decline the copy on Luma and re-run verify |
 | `REFUNDED_EARLIER` / `RETURNED_EARLIER` | This deposit was already refunded (declined) or returned with **Return a stray transfer** | Never registered or refunded again. They need to send a new deposit. |
 | `UNUSUAL_SENDER` | No wallet given, and the USDC came from a contract or bridge | Ask the guest for their own wallet; nothing is sent to that sender |
 | `OVERPAID` | They sent more than 25 | Registered normally; the excess is listed in `out/returns.csv` |

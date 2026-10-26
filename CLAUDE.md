@@ -26,13 +26,14 @@
 - Deposit: **25 USDC** (raised from 15 on 23 Oct 2026, her decision). Network: **Arbitrum One mainnet**, native USDC `0xaf88d065e77c8cC2239327C5EDb3A432268e5831`.
 - Owner: a **dedicated wallet with its own recovery phrase** (her Zerion wallet `0x259a…a5d6`), kept separate from her personal wallet, funded with a little ETH on Arbitrum One. No Safe (her decision).
 
-## Status (as of 25 Oct 2026)
+## Status (as of 26 Oct 2026)
 - [x] Contract v2 (after two code reviews), scripts and tests: `npm test` passes on a local chain (contract tests + end-to-end with the scripts). The console was also driven end to end in a browser against a local chain.
 - [x] Owner wallet set up (Zerion, funded on Arbitrum One). Rehearsal of v1 passed on Arbitrum One with a throwaway contract (`0x1F044c041D873CC906E614c558B7b877E88F620f`, never put on Luma).
 - [x] v3 (25 Oct): Kleros challenges + require style. Contract tests, script e2e, guest page and console browser tests pass. Needs dev re-review and a short rehearsal including one challenge.
 - [x] v4 (25 Oct, her request "the whole A to Z" + all 12 dev-review findings, `/mnt/project-files/reviews/dev-review-2026-10-25.md`): appeals through the contract (`fundAppeal`, `claimAppealRewards`, `appealStatus`), evidence to Kleros's EvidenceModule from console and guest page, and F7: a Kleros case no longer freezes payouts (pay now, one share set aside per open case). Tests: contract + scripts 24/24, console 40/40, guest page 55/55. Needs dev re-review of v4.
-- [x] Juror policy v4 (Appeals section + review wording; re-pinned 26 Oct after the rename to Truth Pays) pinned via Kleros's upload service (Chrome tab on kleros-api.netlify.app; the container and her device VM are blocked): `/ipfs/QmZMDkYNHVH5bZNPwNnav1ZoziRgL57zE6pTmwo5dqGGGg`, byte-identical (sha256 checked via cdn.kleros.link). Set as `kleros.policyURI` in config.json and config.rehearsal.json. If the file changes, re-upload and update the path.
+- [x] Juror policy v5 (Appeals section: an appeal funded by only one side wins, funders pay on Kleros; refusal counts like "No"; re-pinned 26 Oct) pinned via Kleros's upload service (Chrome tab on kleros-api.netlify.app; the container and her device VM are blocked): `/ipfs/QmZMDkYNHVH5bZNPwNnav1ZoziRgL57zE6pTmwo5dqGGGg`, byte-identical (sha256 checked via cdn.kleros.link). Set as `kleros.policyURI` in config.json and config.rehearsal.json. If the file changes, re-upload and update the path.
 - [x] Renamed to **Truth Pays** (26 Oct): contract `TruthPaysKickback`, configs, console, guest page, docs. Luma title/description updated the same day.
+- [x] v5 (26 Oct, second review round: multi-agent audit + a separate review, every confirmed finding fixed; REVIEW.md top section): appeals are funded directly on Kleros's DisputeKitClassic from each funder's own wallet (the contract's `fundAppeal`/`claimAppealRewards` and `receive()` are gone, so Kleros's keeper bot can't trap appeal money), evidence filed under `challenges(staker).localDisputeID`, fair held shares (`heldShare`), returned deposits paired in the verify script (`RETURNED_EARLIER`, `out/returns.csv`, `out/claims.csv`), `chainId` on every transaction. Tests: `npm test` 31/31, console 70/70, guest page 100/100. Clément asked to review (26 Oct). Still to check in a rehearsal: evidence visible on the court page, Zerion accepting `chainId`.
 - [ ] Short v3 rehearsal on Arbitrum One (`npm run console:rehearsal`, 500 USDC safety cap): deploy, deposit 25, register, refund-declined, deposit again, pay out.
 - [ ] Her developers review the code. Zero open issues before going public.
 - [ ] Deploy the live contract with `npm run console` (config.json), set `receiver`, `contract`, `deployBlock` and `depositOpensAt` (deploy time), verify the source on Arbiscan (0.8.28, optimizer 200, EVM paris), and put the address on Luma (event stays **Private**).
@@ -49,7 +50,7 @@ npm run console:rehearsal           # throwaway contract on Arbitrum One, 500 US
 ```bash
 node scripts/verify-deposits.mjs --guests <file>.csv --scan-from-block <deploy block>
 ```
-It sorts verified payers by her Luma decision: `out/to-review.csv` (waiting for her), `out/new-stakers.json` (approved → she clicks **Register stakers**), `out/refunds.json` (declined → she clicks **Refund declined guests**). `out/issues.csv` has plain-language codes for guests to email; `out/unmatched.csv` lists deposits nobody claimed (refund with **Return a stray transfer**).
+It sorts verified payers by her Luma decision: `out/to-review.csv` (waiting for her), `out/new-stakers.json` (approved → she clicks **Register stakers**), `out/refunds.json` (declined → she clicks **Refund declined guests**). `out/issues.csv` has plain-language codes for guests to email; `out/unmatched.csv` lists deposits nobody claimed and `out/returns.csv` every other amount to give back (short, overpaid, late, paid twice), both net of returns already made: she returns them with **Return a stray transfer**. The script refuses to run on a real network without a deploy block.
 
 **After the event:** export the CSV again (`checked_in_at` is filled at the door) and run:
 ```bash
