@@ -197,6 +197,7 @@ body.status .deposit-only, body:not(.status) .status-only { display: none !impor
           <dt>Your wallet</dt><dd><span class="mono" id="tx-wallet">–</span> <button class="ghost small" id="copy-wallet" type="button">Copy</button></dd>
         </div>
         <div class="row"><a id="luma-link" class="btn" href="https://luma.com/qewnqhas" rel="noopener">Copy link and go back to Luma</a></div>
+        <div id="luma-msg" class="note" hidden></div>
         <p class="muted">After you submit, Luma shows your registration as <strong>pending approval</strong>. The hosts check your deposit and confirm your spot by email. If they can't offer you a spot, your 25 USDC goes back to this wallet.</p>
       </div>
     </li>
@@ -221,25 +222,39 @@ body.status .deposit-only, body:not(.status) .status-only { display: none !impor
       <input type="text" id="ev-link" placeholder="Link to a photo or file (optional, https:// or ipfs://)" autocomplete="off" spellcheck="false">
       <div class="row"><button id="ev-send" type="button" class="ghost">Send evidence</button></div>
     </div>
+    <div id="reward-box" hidden class="body">
+      <p id="reward-text" class="muted"></p>
+      <div class="row"><button id="collect" type="button" class="ghost" hidden>Collect my appeal rewards</button></div>
+    </div>
     <div id="claim-box" hidden class="body">
       <label for="claim-to" class="muted">Send it to this address instead:</label>
       <input type="text" id="claim-to" placeholder="0x… address that can receive it" autocomplete="off" spellcheck="false">
-      <div class="row"><button id="claim" type="button">Claim</button></div>
+      <div class="row">
+        <button id="claim-usdc" type="button" hidden>Claim USDC</button>
+        <button id="claim-emergency" type="button" hidden>Withdraw my deposit</button>
+        <button id="claim-eth" type="button" hidden>Withdraw ETH</button>
+      </div>
     </div>
     <div id="open-ch" hidden>
       <h3>Open challenges</h3>
       <p class="muted">Guests left off the attendance list who say they were there. Check one above to see its details, or to dispute it if you know they did not attend.</p>
       <ul class="checks" id="open-ch-list"></ul>
     </div>
+    <div id="release-box" hidden class="body">
+      <h3>Payouts</h3>
+      <p class="muted">Anyone can trigger the payout once the challenge window is over, and it is over now. This sends every guest on the attendance list their share. You only pay the network fee (a few cents).</p>
+      <div class="row"><button id="release" type="button">Release payouts</button></div>
+    </div>
+    <div id="release-msg" class="note" hidden></div>
   </section>
 
   <section class="panel status-only" aria-labelledby="fair-h">
     <h2 id="fair-h">Missed at check-in? Challenge it on Kleros</h2>
-    <p class="muted">After the event the hosts publish the attendance list on-chain. If you were there but are not on it, you have <b>1 day</b> to challenge from this page with a small ETH deposit (the Kleros arbitration fee, about 0.015 ETH). Anyone who disagrees has 1 day to match it. If nobody does, you count as attended and get your ETH back. If someone does, independent <a href="https://kleros.io" target="_blank" rel="noopener">Kleros</a> jurors decide from the evidence (photos, messages, anything that shows you were there), and the winner gets the remaining ETH. Either side can appeal a jury's vote: the case then goes to a larger jury, and anyone can help fund the appeal from this page. If one side funds an appeal and the other doesn't, the funded side wins, so keep an eye on your case until the final ruling. A Kleros case doesn't hold up everyone's payout: guests on the list are paid, and the challenger's share is set aside until the final ruling.</p>
+    <p class="muted">After the event the hosts publish the attendance list on-chain. If you were there but are not on it, you have <b>1 day</b> to challenge from this page with a small ETH deposit (the Kleros arbitration fee, about 0.015 ETH). Anyone who disagrees has 1 day to match it. If nobody does, you count as attended and get your ETH back. If someone does, independent <a href="https://kleros.io" target="_blank" rel="noopener">Kleros</a> jurors decide from the evidence (photos, messages, anything that shows you were there), and the winner gets the remaining ETH. Either side can appeal a jury's vote: the case then goes to a larger jury, and anyone can help fund the appeal from this page. Appeal money goes straight from your wallet to Kleros, and Kleros pays any refund or reward back to that wallet. If one side funds an appeal and the other doesn't, the funded side wins, so keep an eye on your case until the final ruling. A Kleros case doesn't hold up everyone's payout: once the challenge window is over, anyone can trigger the payout, guests on the list are paid, and the challenger's share is set aside until the final ruling.</p>
   </section>
 
   <footer>
-    <p>The deposit address shown here is the same one on the Luma event page. Hosts never ask for your recovery phrase or private key. The contract can't pay anything out before the event starts, a guest left off the attendance list can challenge it on Kleros, and if the hosts never settle, every confirmed guest can withdraw their own deposit after the claim deadline.</p>
+    <p>The deposit address shown here is the same one on the Luma event page. Hosts never ask for your recovery phrase or private key. The contract can't pay anything out before the event starts, and a guest left off the attendance list can challenge it on Kleros. If the hosts never publish the attendance list by <span id="deadline">the claim deadline</span>, every confirmed guest can withdraw their own deposit. Once the list is published, anyone can trigger the payout after the challenge window.</p>
     <p>Show up and check in: you get your 25 USDC back plus an equal share of the no-shows' deposits. If the event is cancelled, every deposit is refunded.</p>
   </footer>
 </main>
@@ -267,17 +282,35 @@ const SEL = { token: "0xfc0c546a", deposit: "0xd0e30db0", eventStart: "0x202887e
   stakerCount: "0xdff69787", status: "0x645b8b1b", owed: "0xdf18e047", balanceOf: "0x70a08231", transfer: "0xa9059cbb", claim: "0x1e83409a", emergencyWithdraw: "0x6ff1c9bc",
   attended: "0x48c17fb6", challengeEndsAt: "0x765be13f", challenges: "0x08b43a19", challengeDeposit: "0x0d13fd7b", challengers: "0x8f59ca25",
   challenge: "0xd2ef7398", matchChallenge: "0x6d6df455", resolveChallenge: "0x32064dac", ethOwed: "0x680686b7", withdrawEth: "0x25e16063",
-  disputeResolver: "0xf5a3f4af", fundAppeal: "0x503fc58f", claimAppealRewards: "0x4e6186db", appealStatus: "0x17e411d5" };
-const TOPIC_APPEAL_FUNDED = "0x7c337b5f3c9a6ecbce111fd88231af5a4403a5f801357f9ac98cbe1df8790d9b";
-// Kleros v2 (KlerosCore and its DisputeKitClassic): appeals are crowdfunded there, not in the deposit contract.
+  disputeResolver: "0xf5a3f4af", appealStatus: "0x17e411d5", releasePayouts: "0x766f8426" };
+// Kleros v2 (KlerosCore and its DisputeKitClassic). Appeals are crowdfunded on the dispute kit straight from the funder's
+// wallet, never through the deposit contract, so Kleros pays refunds and rewards back to the wallet that sent the money.
 const KSEL = { arbitrator: "0x6cc6cde1", disputes: "0x564a565d", currentRuling: "0x1c3db16d", appealPeriod: "0xafe15cfb", appealCost: "0x59ec827e",
-  getNumberOfRounds: "0xfc6f8f16", disputeKits: "0xacdbf51d", getFundedChoices: "0x65540b96", submitEvidence: "0xa6a7f0eb" };
+  getNumberOfRounds: "0xfc6f8f16", disputeKits: "0xacdbf51d", getFundedChoices: "0x65540b96", submitEvidence: "0xa6a7f0eb",
+  fundAppeal: "0x4b2f0ea0", // fundAppeal(uint256 coreDisputeID, uint256 choice)
+  withdraw4: "0x362c3479", // withdrawFeesAndRewards(uint256 coreDisputeID, address beneficiary, uint256 round, uint256 choice): the kit on Arbitrum One
+  withdraw3: "0x223e2757" }; // withdrawFeesAndRewards(uint256 coreDisputeID, address beneficiary, uint256 choice): newer kits, every round at once
+// Contribution(uint256 indexed coreDisputeID, uint256 indexed coreRoundID, uint256 choice, address indexed contributor, uint256 amount)
 const TOPIC_CONTRIBUTION = "0xcae597f39a3ad75c2e10d46b031f023c5c2babcd58ca0491b122acda3968d4c0";
-const RULINGS = ["no ruling", "Yes, attended", "No, did not attend"];
-const PHASE = { Open: 0, Listed: 1, Finalized: 2, Cancelled: 3 };
 const TOPIC_TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+// Plain words for the refusals a guest is most likely to hit (errors of the deposit contract and of the Kleros dispute kit).
+const ERRORS = {
+  "0x085de625": "it's too early for this", "0xecdd1c29": "it's too late for this",
+  "0x305bfeea": "a challenge is still waiting for a match", "0x665c1c57": "the attendance list isn't open for this (not published yet, or payouts were already released)",
+  "0x969bf728": "there's nothing to claim", "0x05897f09": "the ETH amount needed has changed. Check again",
+  "0xa9814a53": "this wallet has already challenged", "0xe4337d42": "this wallet is already on the attendance list",
+  "0x5bded889": "this wallet has no confirmed spot", "0x1b7d90d9": "the challenge has moved on. Check again",
+  "0xe2ab0c61": "Kleros hasn't delivered the final ruling yet", "0x8a7dc9ee": "the Kleros case has no final ruling yet",
+  "0x13e72a50": "the appeal period is over", "0x508aa06c": "the appeal period for the side that lost the vote is over",
+  "0xbcdf54db": "this answer is already fully funded", "0x88226c22": "Kleros is paused for now",
+};
+const RULINGS = ["no ruling", "Yes, attended", "No, did not attend"];
+const ruling = (r) => RULINGS[r] || `ruling ${Number(r)}`;
+const PHASE = { Open: 0, Listed: 1, Finalized: 2, Cancelled: 3 };
 const NETWORKS = { 1: "Ethereum mainnet", 10: "Optimism", 56: "BNB Chain", 137: "Polygon", 324: "zkSync", 8453: "Base", 42161: "Arbitrum One", 42170: "Arbitrum Nova", 59144: "Linea", 11155111: "Sepolia testnet" };
+const CHAIN_HEX = "0x" + Number(CONFIG.chainId).toString(16);
 const isAddr = (a) => /^0x[0-9a-fA-F]{40}$/.test(a || "");
+const isHash = (h) => /^0x[0-9a-fA-F]{64}$/.test(h || "");
 const pad = (hex) => hex.replace(/^0x/, "").toLowerCase().padStart(64, "0");
 const word = (n) => BigInt(n).toString(16).padStart(64, "0");
 const big = (hex) => (!hex || hex === "0x" ? 0n : BigInt(hex));
@@ -286,8 +319,13 @@ const DEPOSIT = BigInt(Math.round(Number(CONFIG.deposit) * 1e6)) * UNIT / 100000
 const short = (a) => a.slice(0, 6) + "…" + a.slice(-4);
 const txUrl = (h) => `${CONFIG.explorer}/tx/${h}`;
 const eth = (wei) => { const s = (Number(wei) / 1e18).toFixed(4).replace(/0+$/, "").replace(/\.$/, ""); return `${s} ETH`; };
-const words = (hex) => (hex || "0x").slice(2).match(/.{64}/g) || [];
-const caseUrl = (id) => `${CONFIG.klerosCourt}/#/cases/${id}/overview`;
+// 32-byte words of an ABI answer. Anything that isn't plain hex gives no words, so nothing else can reach the page.
+const words = (hex) => (typeof hex === "string" && /^0x[0-9a-fA-F]*$/.test(hex) ? hex.slice(2).match(/[0-9a-f]{64}/gi) : null) || [];
+// Text from the network, a wallet or the chain only reaches the page escaped (or through textContent).
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const txA = (h, label) => (isHash(h) ? `<a href="${esc(txUrl(h))}" target="_blank" rel="noopener">${esc(label || short(h))}</a>` : "");
+const caseUrl = (id) => `${CONFIG.klerosCourt}/#/cases/${BigInt(id)}/overview`;
+const caseA = (id) => `<a href="${esc(caseUrl(id))}" target="_blank" rel="noopener">Kleros case #${BigInt(id)}</a>`;
 function usd(n) {
   const whole = n / UNIT, frac = (n % UNIT).toString().padStart(CONFIG.decimals, "0").slice(0, 2);
   return `${whole.toLocaleString("en-US")}${frac === "00" ? "" : "." + frac} USDC`;
@@ -297,30 +335,107 @@ function ist(ts) {
 }
 
 // Reads go to the public Arbitrum RPC, so they work before a wallet is connected and whatever network the wallet is on.
+// If the RPC fails, the wallet's own connection is tried. A revert is the chain's answer, not a network problem: it is
+// never retried, and its data is kept so the page can say why.
 let rpcId = 0;
+function rpcError(err) {
+  const e = new Error(String((err && err.message) || "RPC error"));
+  const inner = err && err.data && typeof err.data === "object" ? err.data : {};
+  const data = [err && err.data, inner.data, inner.result, inner.originalError && inner.originalError.data, err && err.error && err.error.data]
+    .find((d) => typeof d === "string" && /^0x[0-9a-fA-F]*$/.test(d));
+  e.code = err && err.code;
+  e.revert = data !== undefined || (err && err.code === 3) || inner.code === 3 || [e.message, inner.message].some((m) => /revert/i.test(String(m || "")));
+  e.data = data || "0x";
+  return e;
+}
 async function rpc(method, params) {
   try {
     const r = await fetch(CONFIG.rpc, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }) });
     const j = await r.json();
-    if (j.error) throw new Error(j.error.message || "RPC error");
+    if (j.error) throw rpcError(j.error);
     return j.result;
   } catch (e) {
-    if (window.ethereum && state.account && state.chainId === CONFIG.chainId) return window.ethereum.request({ method, params });
+    if (e.revert) throw e;
+    if (window.ethereum && state.account && state.chainId === CONFIG.chainId) {
+      try { return await window.ethereum.request({ method, params }); } catch (w) { throw rpcError(w); }
+    }
     throw e;
   }
 }
-const call = (to, data) => rpc("eth_call", [{ to, data }, "latest"]);
+const call = (to, data, extra) => rpc("eth_call", [{ to, data, ...extra }, "latest"]);
+// Why a call reverted, in plain words (escape before showing: a reason string comes from the chain).
+function explain(data) {
+  if (!data || data === "0x") return "no reason given";
+  const sel = data.slice(0, 10).toLowerCase();
+  if (sel === "0x08c379a0") { // Error(string)
+    const w = words("0x" + data.slice(10));
+    const len = Math.min(Number(big("0x" + (w[1] || "0"))), 200);
+    const bytes = (data.slice(138, 138 + len * 2).match(/../g) || []).map((h) => parseInt(h, 16));
+    const text = new TextDecoder().decode(new Uint8Array(bytes)).trim();
+    return text || "the contract refused";
+  }
+  return ERRORS[sel] || `the contract refused (error ${sel})`;
+}
 
-const state = { account: null, chainId: null, info: null, usdc: null, eth: null, prior: null, status: null, sending: false, lastTx: null };
+// Logs since the deploy block, oldest first. Some RPCs refuse long block ranges, so a refused range is split in two
+// and retried (up to 400 requests).
+async function getLogs(filter) {
+  const latest = Number(big(await rpc("eth_blockNumber", [])));
+  const hex = (n) => "0x" + n.toString(16);
+  const out = [];
+  let calls = 0;
+  async function range(a, b) {
+    if (++calls > 400) throw new Error("too many requests for the transaction history");
+    let logs;
+    try { logs = await rpc("eth_getLogs", [{ ...filter, fromBlock: hex(a), toBlock: hex(b) }]); }
+    catch (e) {
+      if (a >= b) throw e;
+      const m = Math.floor((a + b) / 2);
+      await range(a, m); await range(m + 1, b);
+      return;
+    }
+    if (!Array.isArray(logs)) throw new Error("unexpected answer from the network");
+    out.push(...logs);
+  }
+  await range(Number(CONFIG.deployBlock) || 0, latest);
+  const pos = (l) => Number(big(l.blockNumber)) * 1e5 + Number(big(l.logIndex));
+  return out.sort((x, y) => pos(x) - pos(y));
+}
 
+// A wallet's deposits: every USDC transfer between it and the contract, oldest first. Money the contract sent back to it
+// (a declined guest's refund, a returned stray transfer) cancels the oldest deposits it covers. A deposit "counts" while at
+// least a full deposit of it is still in the contract. Throws if the history can't be read: the caller treats that as unknown.
+async function depositHistory(addr) {
+  const me = "0x" + pad(addr), it = "0x" + pad(CONFIG.contract);
+  const logs = await getLogs({ address: CONFIG.usdc, topics: [TOPIC_TRANSFER, [me, it], [it, me]] });
+  const deposits = [];
+  for (const l of logs) {
+    const from = String((l.topics || [])[1]).toLowerCase(), to = String((l.topics || [])[2]).toLowerCase(), amount = big(l.data);
+    if (from === me && to === it) { if (isHash(l.transactionHash)) deposits.push({ tx: l.transactionHash, amount, left: amount }); }
+    else if (from === it && to === me) {
+      let back = amount;
+      for (const d of deposits) { const take = d.left < back ? d.left : back; d.left -= take; back -= take; if (!back) break; }
+    }
+  }
+  return { live: deposits.filter((d) => d.left >= DEPOSIT), returned: deposits.some((d) => d.left < d.amount) };
+}
+
+// prior: undefined = not checked yet, null = couldn't check, else the wallet's deposit history
+const state = { account: null, chainId: null, info: null, usdc: null, eth: null, prior: undefined, status: null, owed: null, sending: false, lastTx: null };
+
+// `html` is markup built by this page; anything dynamic in it has gone through esc() or txA().
 function setNote(el, kind, html) {
   el.className = "note" + (kind ? " " + kind : "");
   el.innerHTML = html;
   el.hidden = !html;
 }
+function selectText(el) {
+  const r = document.createRange(); r.selectNodeContents(el);
+  const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+}
 async function copy(text, btn) {
   try { await navigator.clipboard.writeText(text); btn.textContent = "Copied"; }
-  catch { const r = document.createRange(); const el = btn.previousElementSibling; if (el) { r.selectNodeContents(el); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } btn.textContent = "Selected"; }
+  catch { const el = btn.previousElementSibling; if (el) selectText(el); btn.textContent = "Selected"; }
   setTimeout(() => (btn.textContent = "Copy"), 1500);
 }
 
@@ -338,7 +453,7 @@ async function loadContract() {
     ]);
     const now = Math.floor(Date.now() / 1000);
     const info = {
-      code: code && code !== "0x", token: "0x" + (token || "").slice(-40), deposit: big(dep), start: Number(big(start)), deadline: Number(big(deadline)),
+      code: !!code && code !== "0x", token: "0x" + (words(token)[0] || "").slice(-40), deposit: big(dep), start: Number(big(start)), deadline: Number(big(deadline)),
       phase: Number(big(phase)), count: big(count), pool: big(pool),
     };
     info.tokenOk = info.token.toLowerCase() === CONFIG.usdc.toLowerCase();
@@ -348,7 +463,9 @@ async function loadContract() {
     state.info = info;
     renderChecks(info);
     $("stats").innerHTML = `<span>${info.count} spot${info.count === 1n ? "" : "s"} confirmed</span><span>${usd(info.pool)} held in the contract</span>`;
-    if (info.phase === PHASE.Listed) loadOpenChallenges().catch(() => {});
+    $("deadline").textContent = `the claim deadline (${ist(info.deadline)})`;
+    if (info.phase === PHASE.Listed) { loadOpenChallenges().catch(() => {}); checkRelease(); }
+    else $("release-box").hidden = true;
   } catch (e) {
     state.info = null;
     renderChecks({ error: e.message });
@@ -357,9 +474,9 @@ async function loadContract() {
 }
 function renderChecks(info) {
   const rows = [];
-  const add = (ok, text) => rows.push(`<li><span class="mark ${ok === true ? "ok" : ok === false ? "no" : ""}">${ok === true ? "✓" : ok === false ? "✕" : "·"}</span><span>${text}</span></li>`);
+  const add = (ok, html) => rows.push(`<li><span class="mark ${ok === true ? "ok" : ok === false ? "no" : ""}">${ok === true ? "✓" : ok === false ? "✕" : "·"}</span><span>${html}</span></li>`);
   if (!info) { add(null, "Waiting for the live contract"); }
-  else if (info.error) { add(false, `Couldn't reach Arbitrum One to check the contract (${info.error}). Reload the page in a minute.`); }
+  else if (info.error) { add(false, `Couldn't reach Arbitrum One to check the contract (${esc(info.error)}). Reload the page in a minute.`); }
   else {
     add(info.code, info.code ? "The deposit address is a live contract on Arbitrum One" : "No contract found at this address on Arbitrum One. Don't send anything.");
     add(info.tokenOk, info.tokenOk ? "It takes native USDC on Arbitrum One" : "It is set up for a different token. Don't send anything.");
@@ -376,51 +493,81 @@ async function connect() {
   if (!window.ethereum) { $("no-wallet").hidden = false; return; }
   try {
     const accts = await window.ethereum.request({ method: "eth_requestAccounts" });
-    state.account = accts && accts[0] ? accts[0] : null;
+    state.account = accts && isAddr(accts[0]) ? accts[0] : null;
     state.chainId = Number(await window.ethereum.request({ method: "eth_chainId" }));
-  } catch (e) { setNote($("no-wallet"), "bad", `The wallet didn't connect: ${e.message || e}`); return; }
+  } catch (e) { setNote($("no-wallet"), "bad", `The wallet didn't connect: ${esc(e.message || e)}`); return; }
   if (window.ethereum.on) {
-    window.ethereum.on("accountsChanged", (a) => { state.account = a && a[0] ? a[0] : null; state.prior = null; state.status = null; afterWalletChange(); });
+    window.ethereum.on("accountsChanged", (a) => {
+      const before = state.account;
+      state.account = a && isAddr(a[0]) ? a[0] : null;
+      // nothing carries over from the previous account: balances, deposits, or the link of a deposit it just sent
+      Object.assign(state, { usdc: null, eth: null, prior: undefined, status: null, owed: null, lastTx: null });
+      setNote($("send-msg"), "", ""); setNote($("luma-msg"), "", "");
+      if (before && $("lookup-addr").value.trim().toLowerCase() === before.toLowerCase()) $("lookup-addr").value = state.account || "";
+      afterWalletChange();
+    });
     window.ethereum.on("chainChanged", (id) => { state.chainId = Number(id); afterWalletChange(); });
   }
   afterWalletChange();
 }
 async function switchNetwork() {
-  const hex = "0x" + CONFIG.chainId.toString(16);
   try {
-    await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: hex }] });
+    await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: CHAIN_HEX }] });
   } catch (e) {
     if (e && (e.code === 4902 || /unrecognized|not added|unknown chain/i.test(e.message || ""))) {
-      await window.ethereum.request({ method: "wallet_addEthereumChain", params: [{ chainId: hex, chainName: CONFIG.chainName, rpcUrls: [CONFIG.rpc], nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, blockExplorerUrls: [CONFIG.explorer] }] });
-    } else { setNote($("net-wrong"), "bad", `The wallet didn't switch: ${e.message || e}. Switch to Arbitrum One in your wallet's network menu.`); return; }
+      await window.ethereum.request({ method: "wallet_addEthereumChain", params: [{ chainId: CHAIN_HEX, chainName: CONFIG.chainName, rpcUrls: [CONFIG.rpc], nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, blockExplorerUrls: [CONFIG.explorer] }] });
+    } else { setNote($("net-wrong"), "bad", `The wallet didn't switch: ${esc(e.message || e)}. Switch to Arbitrum One in your wallet's network menu.`); return; }
   }
   state.chainId = Number(await window.ethereum.request({ method: "eth_chainId" }));
   afterWalletChange();
 }
 async function afterWalletChange() {
-  if (state.account) {
-    $("lookup-addr").value = $("lookup-addr").value || state.account;
-    try {
-      const [u, e] = await Promise.all([call(CONFIG.usdc, SEL.balanceOf + pad(state.account)), rpc("eth_getBalance", [state.account, "latest"])]);
-      state.usdc = big(u); state.eth = big(e);
-    } catch { state.usdc = null; state.eth = null; }
-    if (isAddr(CONFIG.contract)) await loadHistory(state.account);
+  const acct = state.account;
+  if (acct) {
+    $("lookup-addr").value = $("lookup-addr").value || acct;
+    let u = null, e = null;
+    try { [u, e] = await Promise.all([call(CONFIG.usdc, SEL.balanceOf + pad(acct)), rpc("eth_getBalance", [acct, "latest"])]); } catch {}
+    if (state.account !== acct) return; // the wallet switched accounts meanwhile: that change refreshes the page
+    state.usdc = u === null ? null : big(u); state.eth = e === null ? null : big(e);
+    if (isAddr(CONFIG.contract)) await loadHistory(acct);
   }
   refresh();
 }
-// Has this wallet already sent a deposit, and what does the contract say about it?
+// Has this wallet already sent a deposit that is still in the contract, and what does the contract say about it?
 async function loadHistory(addr) {
   const c = CONFIG.contract;
-  try { state.status = Number(big(await call(c, SEL.status + pad(addr)))); } catch { state.status = null; }
+  let st = null, ow = null, hist = null;
   try {
-    const logs = await rpc("eth_getLogs", [{ address: CONFIG.usdc, fromBlock: "0x" + Number(CONFIG.deployBlock || 0).toString(16), toBlock: "latest", topics: [TOPIC_TRANSFER, "0x" + pad(addr), "0x" + pad(c)] }]);
-    state.prior = (logs || []).map((l) => ({ tx: l.transactionHash, amount: big(l.data), block: Number(big(l.blockNumber)) }));
-  } catch { state.prior = null; }
+    [st, ow, hist] = await Promise.all([call(c, SEL.status + pad(addr)), call(c, SEL.owed + pad(addr)), depositHistory(addr)]);
+  } catch { st = ow = hist = null; }
+  if (state.account !== addr) return;
+  // a history we couldn't read is unknown, never "no deposit": sending stays blocked until it can be checked
+  state.status = st === null ? null : Number(big(st)); state.owed = ow === null ? null : big(ow); state.prior = hist;
 }
 
 // ---------------------------------------------------------------- render
+// What step 3 says about the connected wallet, and whether step 4 may send.
+function verdict() {
+  const ready = !!state.account && state.chainId === CONFIG.chainId;
+  if (!ready) return { kind: "", text: "", send: false };
+  const st = state.status, p = state.prior, lastTx = (state.lastTx || "").toLowerCase();
+  if (p === undefined) return { kind: "", text: "Checking this wallet's earlier deposits…", send: false };
+  if (st === 1) return { kind: "good", text: "This wallet already has a confirmed spot. You don't need to send anything else.", send: false };
+  if (st === 2) return { kind: "warn", text: `This wallet's deposit has already been settled. <a href="#status">Look it up</a>.`, send: false };
+  if (state.lastTx) return { kind: "good", text: "Deposit sent from this wallet. Now finish registering on Luma (step 5).", send: false };
+  if (p === null || st === null) return { kind: "bad", text: "Couldn't check for an earlier deposit. Reload the page.", send: false };
+  if (st === 3 && state.owed > 0n) return { kind: "warn", text: `The hosts declined this registration, and the ${usd(state.owed)} refund couldn't be delivered to this wallet. <a href="#status">Claim it on the status page</a>.`, send: false };
+  const deps = p.live.filter((d) => d.tx.toLowerCase() !== lastTx);
+  if (deps.length) return { kind: "warn", text: `We already see a deposit from this wallet: ${txA(deps[deps.length - 1].tx)}. Don't send it twice. Paste that link on Luma (shown in step 5).`, send: false };
+  if (state.usdc !== null && state.usdc < DEPOSIT) return { kind: "bad", send: false, text: `You need ${usd(DEPOSIT)} on Arbitrum One. If your USDC is on Ethereum, bridge it first (for example at <a href="https://bridge.arbitrum.io" target="_blank" rel="noopener">bridge.arbitrum.io</a>), or withdraw from your exchange choosing the Arbitrum One network.` };
+  if (state.eth !== null && state.eth === 0n) return { kind: "bad", text: "You need a little ETH on Arbitrum One to pay the network fee (a few cents).", send: false };
+  if (state.usdc === null || state.eth === null) return { kind: "bad", text: "Couldn't read this wallet's balance. Reload the page.", send: false };
+  const send = !!(state.info && state.info.ok);
+  if (st === 3) return { kind: "warn", text: "This wallet was refunded before. Only send again if the hosts asked you to.", send };
+  if (p.returned) return { kind: "good", text: "All set. An earlier deposit from this wallet was sent back to it, so send a new one and paste the new link on Luma.", send };
+  return { kind: "good", text: "All set. You have enough USDC and ETH on Arbitrum One.", send };
+}
 function refresh() {
-  const info = state.info, live = !!(info && info.ok);
   const connected = !!state.account, onArb = state.chainId === CONFIG.chainId;
   $("connect").disabled = connected || !isAddr(CONFIG.contract);
   $("who").textContent = connected ? state.account : "";
@@ -432,67 +579,63 @@ function refresh() {
   $("net-pill").textContent = net;
   $("net-pill").className = "pill" + (connected ? (onArb ? " ok" : " no") : "");
   $("switch").disabled = !connected || onArb;
-  setNote($("net-wrong"), "bad", connected && !onArb ? `You're on <strong>${net}</strong>. Don't send from here: USDC on ${net} can't be counted. Switch to Arbitrum One first.` : "");
+  setNote($("net-wrong"), "bad", connected && !onArb ? `You're on <strong>${esc(net)}</strong>. Don't send from here: USDC on ${esc(net)} can't be counted. Switch to Arbitrum One first.` : "");
 
   const checkReady = connected && onArb;
   $("s-check").classList.toggle("locked", !checkReady);
   $("bal-usdc").textContent = checkReady && state.usdc !== null ? usd(state.usdc) : "–";
   $("bal-eth").textContent = checkReady && state.eth !== null ? (Number(state.eth) / 1e18).toFixed(5) + " ETH" : "–";
-  let problem = "", kind = "";
-  const prior = (state.prior || []).filter((p) => !state.lastTx || p.tx.toLowerCase() !== state.lastTx.toLowerCase());
-  if (checkReady) {
-    if (state.status === 1) { problem = "This wallet already has a confirmed spot. You don't need to send anything else."; kind = "good"; }
-    else if (state.status === 2) { problem = "This wallet's deposit has already been settled. Look it up below."; kind = "warn"; }
-    else if (state.status !== 3 && prior.length) {
-      problem = `We already see a deposit from this wallet: <a href="${txUrl(prior[0].tx)}" target="_blank" rel="noopener">${short(prior[0].tx)}</a>. Don't send it twice. Paste that link on Luma (shown in step 5).`; kind = "warn";
-    } else if (state.usdc !== null && state.usdc < DEPOSIT) {
-      problem = `You need ${usd(DEPOSIT)} on Arbitrum One. If your USDC is on Ethereum, bridge it first (for example at <a href="https://bridge.arbitrum.io" target="_blank" rel="noopener">bridge.arbitrum.io</a>), or withdraw from your exchange choosing the Arbitrum One network.`; kind = "bad";
-    } else if (state.eth !== null && state.eth === 0n) {
-      problem = "You need a little ETH on Arbitrum One to pay the network fee (a few cents)."; kind = "bad";
-    } else if (state.status === 3) {
-      problem = "This wallet was refunded before. Only send again if the hosts asked you to."; kind = "warn";
-    } else if (state.usdc !== null) { problem = "All set. You have enough USDC and ETH on Arbitrum One."; kind = "good"; }
-  }
-  setNote($("check-msg"), kind, problem);
-  const balanceOk = checkReady && kind === "good" && state.status !== 1;
-  $("s-check").classList.toggle("done", balanceOk || (checkReady && state.status === 3 && state.usdc >= DEPOSIT && state.eth > 0n));
-  const sendable = live && checkReady && state.usdc !== null && state.usdc >= DEPOSIT && state.eth > 0n && state.status !== 1 && state.status !== 2 && !(state.status !== 3 && prior.length) && !state.lastTx;
-  $("s-send").classList.toggle("locked", !sendable && !state.lastTx);
+  const v = verdict();
+  setNote($("check-msg"), v.kind, v.text);
+  $("s-check").classList.toggle("done", checkReady && (v.send || !!state.lastTx || (v.kind === "good" && state.status !== 1)));
+  $("s-send").classList.toggle("locked", !v.send && !state.lastTx);
   $("s-send").classList.toggle("done", !!state.lastTx);
-  $("send").disabled = !sendable || state.sending;
-  if (isAddr(CONFIG.contract)) $("send-summary").innerHTML = `You'll send <strong>${usd(DEPOSIT)}</strong> on <strong>Arbitrum One</strong> to the deposit contract <span class="mono">${short(CONFIG.contract)}</span>. Your wallet asks you to confirm, and the fee is a few cents at most.`;
+  $("send").disabled = !v.send || state.sending;
+  if (isAddr(CONFIG.contract)) $("send-summary").innerHTML = `You'll send <strong>${usd(DEPOSIT)}</strong> on <strong>Arbitrum One</strong> to the deposit contract <span class="mono">${esc(short(CONFIG.contract))}</span>. Your wallet asks you to confirm, and the fee is a few cents at most.`;
 
-  const linkTx = state.lastTx || (state.status !== 3 && prior[0] && prior[0].tx);
+  // the link for Luma: the deposit just sent, or else the latest deposit still in the contract
+  const live = state.prior ? state.prior.live : [];
+  const linkTx = state.lastTx || (connected && state.status !== 2 && live.length ? live[live.length - 1].tx : null);
   $("s-luma").classList.toggle("locked", !linkTx);
   $("luma-box").hidden = !linkTx;
   if (linkTx) { $("tx-link").textContent = txUrl(linkTx); $("tx-wallet").textContent = state.account; }
+  else setNote($("luma-msg"), "", "");
   $("luma-link").href = CONFIG.lumaUrl;
 }
 
 // ---------------------------------------------------------------- send
 async function send() {
   if (state.sending) return;
+  const account = state.account;
   state.sending = true; refresh();
   const msg = $("send-msg");
   try {
-    // re-check everything right before asking the wallet: network, contract, balance
-    state.chainId = Number(await window.ethereum.request({ method: "eth_chainId" }));
-    if (state.chainId !== CONFIG.chainId) throw new Error("Your wallet is no longer on Arbitrum One. Switch back and try again.");
+    // re-check everything right before asking the wallet: the contract, balances, earlier deposits (another tab may have
+    // just sent one), and last of all the network
     await loadContract();
     if (!state.info || !state.info.ok) throw new Error("The contract checks above didn't pass, so nothing was sent.");
+    await afterWalletChange();
+    if (!account || state.account !== account) throw new Error("Your wallet switched accounts, so nothing was sent. Check the steps above and try again.");
+    const v = verdict();
+    if (!v.send) throw Object.assign(new Error(""), { html: `${v.text} Nothing was sent.` });
     const data = SEL.transfer + pad(CONFIG.contract) + word(DEPOSIT);
     setNote(msg, "", "Confirm the transfer in your wallet: 25 USDC on Arbitrum One.");
-    const hash = await window.ethereum.request({ method: "eth_sendTransaction", params: [{ from: state.account, to: CONFIG.usdc, data, value: "0x0" }] });
-    setNote(msg, "", `Sent. Waiting for Arbitrum One to confirm it… <a href="${txUrl(hash)}" target="_blank" rel="noopener">${short(hash)}</a>`);
+    // the network is read last, right before the wallet prompt, and pinned in the request so the wallet refuses any other one
+    state.chainId = Number(await window.ethereum.request({ method: "eth_chainId" }));
+    if (state.chainId !== CONFIG.chainId) throw new Error("Your wallet is no longer on Arbitrum One. Switch back and try again.");
+    const hash = await window.ethereum.request({ method: "eth_sendTransaction", params: [{ from: account, to: CONFIG.usdc, data, value: "0x0", chainId: CHAIN_HEX }] });
+    if (!isHash(hash)) throw new Error("The wallet didn't return a transaction link. Check your wallet's activity before sending again.");
+    setNote(msg, "", `Sent. Waiting for Arbitrum One to confirm it… ${txA(hash)}`);
     const receipt = await waitReceipt(hash);
-    if (!receipt) { setNote(msg, "warn", `Still waiting for confirmation. You can already copy the link below and check it on <a href="${txUrl(hash)}" target="_blank" rel="noopener">Arbiscan</a>.`); state.lastTx = hash; }
-    else if (receipt.status !== "0x1") throw new Error(`The transfer failed on-chain, so no USDC moved. <a href="${txUrl(hash)}" target="_blank" rel="noopener">See it on Arbiscan</a>.`);
-    else { state.lastTx = hash; setNote(msg, "good", `Done. 25 USDC received by the deposit contract. Now paste the link on Luma.`); }
-    try { localStorage.setItem("gt-last-tx", JSON.stringify({ hash, account: state.account, contract: CONFIG.contract })); } catch {}
-    afterWalletChange();
+    if (receipt && receipt.status !== "0x1") throw Object.assign(new Error(""), { html: `The transfer failed on-chain, so no USDC moved. ${txA(hash, "See it on Arbiscan")}.` });
+    if (state.account !== account) return; // the guest switched accounts meanwhile: this link belongs to the old one
+    state.lastTx = hash;
+    if (!receipt) setNote(msg, "warn", `Still waiting for confirmation. You can already copy the link below and check it on ${txA(hash, "Arbiscan")}.`);
+    else setNote(msg, "good", "Done. 25 USDC received by the deposit contract. Now paste the link on Luma.");
+    try { localStorage.setItem("gt-last-tx", JSON.stringify({ hash, account, contract: CONFIG.contract })); } catch {}
+    await afterWalletChange();
   } catch (e) {
-    const text = e && e.code === 4001 ? "You cancelled in your wallet. Nothing was sent." : (e.message || String(e));
-    setNote(msg, "bad", text);
+    setNote(msg, "bad", e && e.code === 4001 ? "You cancelled in your wallet. Nothing was sent." : (e && e.html) || esc((e && e.message) || String(e)));
   } finally { state.sending = false; refresh(); }
 }
 async function waitReceipt(hash) {
@@ -503,6 +646,36 @@ async function waitReceipt(hash) {
   return null;
 }
 
+// Sends a transaction from the connected wallet and says how it went in `out`. Resolves true once it is confirmed.
+// onlyFrom: the wallet that must be connected (null: anyone). `done` is this page's own markup.
+async function sendTx({ onlyFrom = null, to = CONFIG.contract, data, value = 0n, out, done }) {
+  const from = state.account;
+  if (!from) { setNote(out, "bad", "Connect your wallet first (step 1)."); return false; }
+  if (onlyFrom && from.toLowerCase() !== onlyFrom.toLowerCase()) { setNote(out, "bad", `Connect the wallet ${esc(short(onlyFrom))} first (step 1). Only that wallet can do this.`); return false; }
+  if (state.chainId !== CONFIG.chainId) { setNote(out, "bad", "Switch your wallet to Arbitrum One first (step 2)."); return false; }
+  const tx = { from, to, data, value: "0x" + value.toString(16) };
+  try {
+    // a dry run first, so a refusal is explained in plain words instead of a wallet error
+    try { await call(to, data, { from, value: tx.value }); }
+    catch (e) { if (e.revert) { setNote(out, "bad", `This would fail, so nothing was sent: ${esc(explain(e.data))}.`); return false; } }
+    // the network is read last, right before the wallet prompt, and pinned in the request so the wallet refuses any other one
+    state.chainId = Number(await window.ethereum.request({ method: "eth_chainId" }));
+    if (state.chainId !== CONFIG.chainId) { refresh(); setNote(out, "bad", "Your wallet is no longer on Arbitrum One. Switch back (step 2) and try again."); return false; }
+    const hash = await window.ethereum.request({ method: "eth_sendTransaction", params: [{ ...tx, chainId: CHAIN_HEX }] });
+    if (!isHash(hash)) throw new Error("The wallet didn't return a transaction link. Check your wallet's activity.");
+    setNote(out, "", `Sent. Waiting for confirmation… ${txA(hash)}`);
+    for (const id of ["ch-box", "claim-box", "reward-box", "release-box"]) $(id).hidden = true;
+    const r = await waitReceipt(hash);
+    if (!r) { setNote(out, "warn", `Still waiting for confirmation. Check it on ${txA(hash, "Arbiscan")}.`); return false; }
+    const ok = r.status === "0x1";
+    setNote(out, ok ? "good" : "bad", ok ? `${done} ${txA(hash, "See it on Arbiscan")}.` : `It didn't go through. ${txA(hash, "See it on Arbiscan")}.`);
+    return ok;
+  } catch (e) {
+    setNote(out, "bad", e && e.code === 4001 ? "You cancelled in your wallet." : esc((e && e.message) || String(e)));
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------- lookup + claim + challenges
 async function loadOpenChallenges() {
   const c = CONFIG.contract;
@@ -511,35 +684,41 @@ async function loadOpenChallenges() {
   const rows = [];
   for (const a of list) {
     const ch = words(await call(c, SEL.challenges + pad(a)));
-    const st = Number(big("0x" + ch[0]));
-    if (st === 1) rows.push(`<li><span class="mark">·</span><span class="mono">${a}</span><span>&nbsp;waiting for a match until ${ist(big("0x" + ch[2]))}</span></li>`);
-    if (st === 2) rows.push(`<li><span class="mark">·</span><span class="mono">${a}</span><span>&nbsp;<a href="${caseUrl(big("0x" + ch[4]))}" target="_blank" rel="noopener">Kleros case #${big("0x" + ch[4])}</a></span></li>`);
+    const st = Number(big("0x" + (ch[0] || "0")));
+    if (st === 1) rows.push(`<li><span class="mark">·</span><span class="mono">${esc(a)}</span><span>&nbsp;waiting for a match until ${ist(big("0x" + ch[2]))}</span></li>`);
+    if (st === 2) rows.push(`<li><span class="mark">·</span><span class="mono">${esc(a)}</span><span>&nbsp;${caseA(big("0x" + ch[4]))}</span></li>`);
   }
   $("open-ch-list").innerHTML = rows.join("");
   $("open-ch").hidden = !rows.length;
 }
 
-// Someone who funded an appeal on this case through the deposit contract collects their part here.
-async function offerAppealRewards(staker, out) {
-  if (!state.account) return;
-  let logs = [];
-  try { logs = await rpc("eth_getLogs", [{ address: CONFIG.contract, fromBlock: "0x" + Number(CONFIG.deployBlock || 0).toString(16), toBlock: "latest", topics: [TOPIC_APPEAL_FUNDED, "0x" + pad(staker), "0x" + pad(state.account)] }]); } catch {}
-  if (!logs.length) return;
-  showAction("Collect my appeal rewards", () => sendFrom(null, SEL.claimAppealRewards + pad(staker) + pad(state.account), 0n, out, "Appeal money collected."));
+// Once the challenge window is over and no challenge waits for a match, anyone can release the payouts (in case the
+// hosts don't). The button only shows when a dry run of releasePayouts() says it would go through.
+async function checkRelease() {
+  let ok = false;
+  try { await call(CONFIG.contract, SEL.releasePayouts, state.account ? { from: state.account } : {}); ok = true; } catch {}
+  $("release-box").hidden = !ok;
+}
+async function releasePayouts() {
+  const ok = await sendTx({ data: SEL.releasePayouts, out: $("release-msg"), done: "Payouts released: everyone on the attendance list has been paid." });
+  if (ok) loadContract();
 }
 
-let evCase = null;
+let evCase = null; // { local, core }: evidence goes under the DisputeResolver's own dispute ID; the court links use the core ID
 async function sendEvidence() {
   const out = $("lookup-out");
   const name = $("ev-title").value.trim(), description = $("ev-text").value.trim(), link = $("ev-link").value.trim();
+  if (!evCase) return;
   if (!name || !description) { setNote(out, "bad", "Write a title and what the evidence shows."); return; }
   if (link && !/^(https:\/\/|ipfs:\/\/|\/ipfs\/)\S+$/.test(link)) { setNote(out, "bad", "The link should start with https:// or ipfs://."); return; }
   const json = JSON.stringify(link ? { name, description, fileURI: link } : { name, description });
   const bytes = new TextEncoder().encode(json);
   const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-  const data = KSEL.submitEvidence + word(evCase) + word(64) + word(bytes.length) + hex.padEnd(Math.ceil(hex.length / 64) * 64, "0");
-  await sendFrom(null, data, 0n, out, `Evidence sent to Kleros case #${evCase}.`, CONFIG.klerosEvidenceModule);
-  for (const id of ["ev-title", "ev-text", "ev-link"]) $(id).value = "";
+  // EvidenceModule.submitEvidence(externalDisputeID, evidence): Kleros groups a case's evidence under the ID the
+  // DisputeResolver announced for it (its local dispute ID), not the KlerosCore dispute ID
+  const data = KSEL.submitEvidence + word(evCase.local) + word(64) + word(bytes.length) + hex.padEnd(Math.ceil(hex.length / 64) * 64, "0");
+  if (await sendTx({ to: CONFIG.klerosEvidenceModule, data, out, done: `Evidence sent to Kleros case #${evCase.core}.` }))
+    for (const id of ["ev-title", "ev-text", "ev-link"]) $(id).value = "";
 }
 
 let chAction = null, chAction2 = null;
@@ -557,6 +736,7 @@ async function klerosContracts() {
   if (klerosAt) return klerosAt;
   const resolver = "0x" + words(await call(CONFIG.contract, SEL.disputeResolver))[0].slice(24);
   const core = "0x" + words(await call(resolver, KSEL.arbitrator))[0].slice(24);
+  // the DisputeKitClassic proxy (0x70B4…5421 on Arbitrum One), as KlerosCore lists it
   const kit = "0x" + words(await call(core, KSEL.disputeKits + word(CONFIG.klerosDisputeKit || 1)))[0].slice(24);
   return (klerosAt = { core, kit });
 }
@@ -574,16 +754,84 @@ async function appealInfo(id, staker) {
   a.need = { 1: sw[5], 2: sw[6] };
   a.paid = { 1: 0n, 2: 0n };
   try {
-    const logs = await rpc("eth_getLogs", [{ address: kit, fromBlock: "0x" + Number(CONFIG.deployBlock || 0).toString(16), toBlock: "latest", topics: [TOPIC_CONTRIBUTION, "0x" + word(id), "0x" + word(a.round - 1)] }]);
-    for (const l of logs) { const w = words(l.data); a.paid[Number(big("0x" + w[0]))] += big("0x" + w[1]); }
+    const logs = await getLogs({ address: kit, topics: [TOPIC_CONTRIBUTION, "0x" + word(id), "0x" + word(a.round - 1)] });
+    for (const l of logs) { const w = words(l.data); const s = Number(big("0x" + (w[0] || "0"))); if (s in a.paid) a.paid[s] += big("0x" + (w[1] || "0")); }
   } catch {}
   for (const s of a.funded) a.paid[s] = a.need[s];
   return a;
 }
 
+// What Kleros still owes the connected wallet for appeals it funded on case `id`: a dry run of the dispute kit's
+// withdrawFeesAndRewards for each (round, answer) it funded, keeping only what pays something.
+// null: this wallet never funded an appeal on this case.
+async function appealMoneyDue(id) {
+  const { kit } = await klerosContracts();
+  const me = state.account;
+  const logs = await getLogs({ address: kit, topics: [TOPIC_CONTRIBUTION, "0x" + word(id), null, "0x" + pad(me)] });
+  const pairs = new Map();
+  for (const l of logs) {
+    const round = big((l.topics || [])[2]), choice = big("0x" + (words(l.data)[0] || "0"));
+    pairs.set(`${round}:${choice}`, { round, choice });
+  }
+  if (!pairs.size) return null;
+  // the answer is the amount Kleros would pay (empty means the kit doesn't say: send it anyway)
+  const dry = async (data) => { const r = await call(kit, data, { from: me }); return r === "0x" ? null : big(r); };
+  const due = [];
+  try {
+    for (const { round, choice } of pairs.values()) {
+      const data = KSEL.withdraw4 + word(id) + pad(me) + word(round) + word(choice);
+      const amount = await dry(data);
+      if (amount !== 0n) due.push({ kit, data, amount });
+    }
+    return due;
+  } catch (e) {
+    // an empty revert means the kit has no 4-argument version: a newer kit pays every round of an answer at once
+    if (!e.revert || (e.data && e.data !== "0x")) throw e;
+  }
+  due.length = 0;
+  for (const choice of new Set([...pairs.values()].map((p) => p.choice))) {
+    const data = KSEL.withdraw3 + word(id) + pad(me) + word(choice);
+    const amount = await dry(data);
+    if (amount !== 0n) due.push({ kit, data, amount });
+  }
+  return due;
+}
+// Appeal money is paid by Kleros to whoever funded it, whatever the guest's status, once the case has its final ruling.
+let rewardCase = null;
+async function offerAppealRewards(id) {
+  rewardCase = id;
+  const show = (html, label) => {
+    $("reward-text").innerHTML = html;
+    $("collect").hidden = !label;
+    if (label) $("collect").textContent = label;
+    $("reward-box").hidden = false;
+  };
+  if (!state.account) return show("Funded an appeal on this case? Kleros pays appeal money straight back to the wallet that sent it, and its bot usually does this automatically. To check for anything still waiting, connect that wallet (step 1) and check again.");
+  let due;
+  try { due = await appealMoneyDue(id); }
+  catch (e) { return show(`Couldn't check this wallet's appeal money on Kleros: ${esc(e.revert ? explain(e.data) : e.message)}.`); }
+  if (!due) { $("reward-box").hidden = true; return; }
+  if (!due.length) return show("This wallet funded an appeal on this case and has nothing left to collect: Kleros has already paid it out (its bot usually does this automatically), or that answer lost.");
+  const known = due.every((d) => d.amount !== null), total = due.reduce((s, d) => s + (d.amount || 0n), 0n);
+  show(`Kleros owes this wallet appeal money for this case. Its bot usually pays it out automatically; if it hasn't yet, collect it here${due.length > 1 ? ` (${due.length} transactions)` : ""}.`,
+    `Collect my appeal rewards${known ? ` (${eth(total)})` : ""}`);
+}
+async function collectAppealRewards() {
+  const out = $("lookup-out");
+  let due;
+  try { due = await appealMoneyDue(rewardCase); }
+  catch (e) { setNote(out, "bad", `Couldn't check this wallet's appeal money on Kleros: ${esc(e.revert ? explain(e.data) : e.message)}.`); return; }
+  if (!due || !due.length) { $("reward-box").hidden = true; setNote(out, "", "Nothing left to collect for this wallet: Kleros has already paid it out."); return; }
+  for (let i = 0; i < due.length; i++) {
+    const last = i === due.length - 1;
+    const ok = await sendTx({ to: due[i].kit, data: due[i].data, out, done: last ? "Appeal money collected." : `Appeal money: ${i + 1} of ${due.length} collected. Confirm the next one in your wallet.` });
+    if (!ok) return;
+  }
+}
+
 async function lookup() {
   const addr = $("lookup-addr").value.trim(), out = $("lookup-out");
-  $("claim-box").hidden = true; $("ch-box").hidden = true; $("ev-box").hidden = true;
+  for (const id of ["claim-box", "ch-box", "ev-box", "reward-box", "claim-usdc", "claim-emergency", "claim-eth"]) $(id).hidden = true;
   if (!isAddr(addr)) { setNote(out, "bad", "That isn't a wallet address. It starts with 0x and has 42 characters."); return; }
   if (!isAddr(CONFIG.contract)) { setNote(out, "", "Deposits haven't opened yet."); return; }
   setNote(out, "", "Checking…");
@@ -593,102 +841,100 @@ async function lookup() {
       call(c, SEL.attended + pad(addr)), call(c, SEL.challengeEndsAt), call(c, SEL.challenges + pad(addr)), call(c, SEL.ethOwed + pad(addr))]);
     const status = Number(big(st)), owed = big(ow), phase = Number(big(ph)), deadline = Number(big(dl));
     const attended = big(att) === 1n, windowEnd = Number(big(we)), ethOwed = big(eo);
-    const chw = words(chRaw);
-    const ch = { state: Number(big("0x" + (chw[0] || "0"))), matchEndsAt: Number(big("0x" + (chw[2] || "0"))), deposit: big("0x" + (chw[3] || "0")), caseId: big("0x" + (chw[4] || "0")) };
-    let logs = null;
-    try { logs = await rpc("eth_getLogs", [{ address: CONFIG.usdc, fromBlock: "0x" + Number(CONFIG.deployBlock || 0).toString(16), toBlock: "latest", topics: [TOPIC_TRANSFER, "0x" + pad(addr), "0x" + pad(c)] }]); } catch {}
-    const sent = logs && logs.length ? logs[logs.length - 1].transactionHash : null;
-    const sentLink = sent ? ` Deposit: <a href="${txUrl(sent)}" target="_blank" rel="noopener">${short(sent)}</a>.` : "";
+    const chw = words(chRaw), cw = (i) => big("0x" + (chw[i] || "0"));
+    // challenges(staker): state, matcher, matchEndsAt, deposit, arbitratorDisputeID (KlerosCore), localDisputeID (DisputeResolver), …
+    const ch = { state: Number(cw(0)), matched: cw(1) !== 0n, matchEndsAt: Number(cw(2)), deposit: cw(3), caseId: cw(4), localId: cw(5) };
+    let hist = null;
+    try { hist = await depositHistory(addr); } catch {}
+    const latest = hist && hist.live.length ? hist.live[hist.live.length - 1].tx : null;
+    const sentLink = latest ? ` Deposit: ${txA(latest)}.` : "";
     const now = Math.floor(Date.now() / 1000);
-    const kleros = ch.state >= 2 ? ` <a href="${caseUrl(ch.caseId)}" target="_blank" rel="noopener">Kleros case #${ch.caseId}</a> (evidence goes there).` : "";
-    let kind = "", text = "";
+    const kleros = ch.state >= 2 ? ` ${caseA(ch.caseId)} (evidence goes there).` : "";
+    let kind = "", text = "", ruled = false;
     if (status === 0) {
       if (phase !== PHASE.Open) { text = "No confirmed spot for this wallet."; }
-      else if (sent) { kind = "warn"; text = `Deposit received. Waiting for the hosts to review your Luma registration.${sentLink}`; }
+      else if (latest) { kind = "warn"; text = `Deposit received. Waiting for the hosts to review your Luma registration.${sentLink}`; }
+      else if (!hist) { kind = "warn"; text = "Couldn't check this wallet's deposits right now, so we can't tell whether one arrived. Reload the page and try again before sending anything."; }
+      else if (hist.returned) { text = "No deposit waiting: an earlier deposit from this wallet was sent back to it."; }
       else { text = "No deposit found from this wallet yet. Make sure you sent it on Arbitrum One from this exact wallet."; }
     } else if (status === 1 && (phase === PHASE.Listed || (phase === PHASE.Finalized && ch.state >= 2))) {
       if (ch.state === 3) {
-        kind = attended ? "good" : "bad"; text = attended ? "Challenge settled: on the attendance list." : `Kleros jurors ruled this spot a no-show.${kleros}`;
-        await offerAppealRewards(addr, out);
+        kind = attended ? "good" : "bad";
+        text = attended ? `Challenge settled: on the attendance list.${ch.matched ? " Kleros jurors ruled that this guest attended." : ""}` : `Kleros jurors ruled this spot a no-show.${kleros}`;
       }
       else if (attended && ch.state !== 2) { kind = "good"; text = `On the attendance list. Payouts are released after the challenge window (until ${ist(windowEnd)}) once no challenge is waiting for a match.`; }
       else if (ch.state === 0 && now <= windowEnd) {
         const fee = big(await call(c, SEL.challengeDeposit));
         kind = "warn";
         text = `Not on the attendance list. If you were at the event, you can challenge until ${ist(windowEnd)} with a deposit of ${eth(fee)} (the Kleros fee). If nobody matches it within 1 day, you count as attended and get the ETH back. If someone does, Kleros jurors decide.`;
-        showAction(`Challenge (${eth(fee)})`, () => sendFrom(addr, SEL.challenge, fee, out, "Challenge sent. Check back here: if nobody matches it within 1 day, you count as attended."));
+        showAction(`Challenge (${eth(fee)})`, () => sendTx({ onlyFrom: addr, data: SEL.challenge, value: fee, out, done: "Challenge sent. Check back here: if nobody matches it within 1 day, you count as attended." }));
       } else if (ch.state === 0) { kind = "bad"; text = `Not on the attendance list, and the challenge window closed at ${ist(windowEnd)}. This spot counts as a no-show.`; }
       else if (ch.state === 1 && now <= ch.matchEndsAt) {
         kind = "warn";
         text = `Challenge open: this guest says they attended. If nobody matches the ${eth(ch.deposit)} deposit by ${ist(ch.matchEndsAt)}, they count as attended. If you know they were not there, you can dispute it: you send the same deposit and Kleros jurors decide (the winner gets the remaining ETH; about 3 weeks, and this guest's share is set aside until the final ruling).`;
-        showAction(`Dispute this claim (${eth(ch.deposit)})`, () => sendFrom(null, SEL.matchChallenge + pad(addr), ch.deposit, out, "Dispute created on Kleros. Add your evidence on the Kleros court site."));
+        showAction(`Dispute this claim (${eth(ch.deposit)})`, () => sendTx({ data: SEL.matchChallenge + pad(addr), value: ch.deposit, out, done: "Dispute created on Kleros. Add your evidence on the Kleros court site." }));
       } else if (ch.state === 1) {
         kind = "good"; text = "Nobody matched the challenge in time, so this guest counts as attended. Anyone can settle it now (it also happens automatically at payout).";
-        showAction("Settle challenge", () => sendFrom(null, SEL.resolveChallenge + pad(addr), 0n, out, "Settled: on the attendance list, and the ETH deposit went back."));
+        showAction("Settle challenge", () => sendTx({ data: SEL.resolveChallenge + pad(addr), out, done: "Settled: on the attendance list, and the ETH deposit went back." }));
       } else if (ch.state === 2) {
         kind = "warn"; text = `In a Kleros dispute.${kleros} ${phase === PHASE.Finalized ? "Everyone else has been paid; this guest's share is set aside until the final ruling." : "If payouts are released first, this guest's share is set aside until the final ruling."}`;
-        const settle = () => sendFrom(null, SEL.resolveChallenge + pad(addr), 0n, out, "Settled according to the Kleros ruling.");
+        const settle = () => sendTx({ data: SEL.resolveChallenge + pad(addr), out, done: "Settled according to the Kleros ruling." });
         let a = null;
         try { a = await appealInfo(ch.caseId, addr); } catch {}
-        if (a && !a.ruled && a.period < 4 && isAddr(CONFIG.klerosEvidenceModule)) { evCase = a.id; $("ev-box").hidden = false; }
+        if (a && !a.ruled && a.period < 4 && isAddr(CONFIG.klerosEvidenceModule)) { evCase = { local: ch.localId, core: ch.caseId }; $("ev-box").hidden = false; }
         if (!a) { text += " Once Kleros rules, anyone can settle it here."; showAction("Settle (after the ruling)", settle); }
-        else if (a.ruled) { text += ` Final ruling: <b>${RULINGS[a.ruling]}</b>. Anyone can settle it now.`; showAction("Settle challenge", settle); }
-        else if (a.period === 4 || (a.period === 3 && now >= a.end)) { text += ` Jurors ruled <b>${RULINGS[a.ruling]}</b> and the appeal window is over. Kleros delivers the final ruling shortly; then anyone can settle it here.`; }
+        else if (a.ruled) { ruled = true; text += ` Final ruling: <b>${esc(ruling(a.ruling))}</b>. Anyone can settle it now.`; showAction("Settle challenge", settle); }
+        else if (a.period === 4 || (a.period === 3 && now >= a.end)) { text += ` Jurors ruled <b>${esc(ruling(a.ruling))}</b> and the appeal window is over. Kleros delivers the final ruling shortly; then anyone can settle it here.`; }
         else if (a.period < 3) { text += ` Round ${a.round}: jurors are ${a.period === 0 ? "being drawn and evidence is open" : "voting"}.`; }
         else {
-          text += ` Round ${a.round}: jurors voted <b>${RULINGS[a.ruling]}</b>. Either side can appeal until ${ist(a.end)} (the side that lost this vote only until ${ist(a.loserEnd)}). An appeal needs both answers fully funded, and anyone can chip in. Funders of the side that wins in the end get their ETH back plus a reward, collected here once the case is settled; money for a side that never gets fully funded is returned.`;
+          text += ` Round ${a.round}: jurors voted <b>${esc(ruling(a.ruling))}</b>. Either side can appeal until ${ist(a.end)} (the side that lost this vote only until ${ist(a.loserEnd)}). An appeal needs both answers fully funded, and anyone can chip in: the ETH goes straight from your wallet to Kleros. After the final ruling, Kleros pays the funders of the winning answer their ETH back plus a reward, and returns money for an answer that never got fully funded (its bot usually sends it automatically; otherwise collect it here).`;
           for (const [s, o] of [[1, 2], [2, 1]])
             if ((a.funded.includes(s) || a.paid[s] > 0n) && !a.funded.includes(o))
-              text += ` <b>⚠ "${RULINGS[s]}" is being funded. If "${RULINGS[o]}" is not fully funded by ${ist(a.ruling === o ? a.end : a.loserEnd)}, "${RULINGS[s]}" wins the case.</b>`;
+              text += ` <b>⚠ "${ruling(s)}" is being funded. If "${ruling(o)}" is not fully funded by ${ist(a.ruling === o ? a.end : a.loserEnd)}, "${ruling(s)}" wins the case.</b>`;
           const opts = [1, 2].filter((s) => !a.funded.includes(s) && (a.ruling === s || now < a.loserEnd)).map((s) => {
             const missing = a.need[s] - a.paid[s];
-            text += ` "${RULINGS[s]}": ${eth(a.paid[s])} of ${eth(a.need[s])} raised.`;
-            return [`Appeal: fund "${RULINGS[s]}" (${eth(missing)})`, () => sendFrom(null, SEL.fundAppeal + pad(addr) + word(s), missing, out, "Appeal funding sent. Check back here to see if the other side is funded too.")];
+            text += ` "${ruling(s)}": ${eth(a.paid[s])} of ${eth(a.need[s])} raised.`;
+            return [`Appeal: fund "${ruling(s)}" (${eth(missing)})`, () => sendTx({ to: a.kit, data: KSEL.fundAppeal + word(a.id) + word(s), value: missing, out, done: "Appeal funding sent to Kleros. Check back here to see if the other side is funded too." })];
           });
-          for (const s of a.funded) text += ` "${RULINGS[s]}": fully funded.`;
+          for (const s of a.funded) text += ` "${ruling(s)}": fully funded.`;
           if (opts.length) showAction(opts[0][0], opts[0][1], opts[1]?.[0], opts[1]?.[1]);
         }
       }
     } else if (status === 1) {
       if (phase === PHASE.Finalized) { kind = "bad"; text = "This spot was marked as a no-show, so the deposit was shared among the guests who checked in."; }
-      else if (now > deadline) { kind = "warn"; text = "The event was never settled before the deadline, so you can take your deposit back yourself. Connect this wallet and claim it below."; showClaim(addr, "emergency"); }
+      else if (now > deadline) { kind = "warn"; text = "The attendance list was never published before the deadline, so you can take your deposit back yourself. Connect this wallet and withdraw it below."; showClaim(addr, "emergency"); }
       else { kind = "good"; text = `Spot confirmed. Your deposit is staked. Check in at the door to get it back plus a share of the no-shows' deposits.${sentLink}`; }
     } else if (status === 2) {
       kind = "good";
-      text = phase === PHASE.Cancelled ? "The event was cancelled and this deposit was refunded." : "Paid out. This wallet checked in and received its share.";
-      if (owed > 0n) { kind = "warn"; text += ` ${usd(owed)} couldn't be delivered to this wallet. Connect it and claim the money to another address below.`; showClaim(addr, "claim"); }
-    } else if (status === 3) { kind = ""; text = "Refunded. The deposit went back to this wallet."; }
-    if (ethOwed > 0n && $("claim-box").hidden) { text += ` ${eth(ethOwed)} from a challenge couldn't be sent to this wallet. Connect it and withdraw it to another address below.`; showClaim(addr, "eth"); }
+      if (phase === PHASE.Cancelled) text = "The event was cancelled and this deposit was refunded.";
+      else if (phase === PHASE.Open) text = "Withdrawn after the deadline: the attendance list was never published, so this wallet took its deposit back.";
+      else if (ch.state === 3 && ch.matched) text = "Paid out. Kleros jurors ruled that this guest attended, and their share has been paid.";
+      else if (ch.state === 3) text = "Paid out. Nobody disputed this guest's challenge, so they counted as attended and received their share.";
+      else text = "Paid out. This wallet checked in and received its share.";
+    } else if (status === 3) {
+      if (owed > 0n) { kind = "warn"; text = `Declined by the hosts. The ${usd(owed)} refund couldn't be delivered to this wallet and is waiting to be claimed: connect this wallet and claim it to another address below.`; showClaim(addr, "usdc"); }
+      else if (latest && phase === PHASE.Open) { kind = "warn"; text = `Refunded earlier. A new deposit from this wallet is waiting for the hosts to review your Luma registration.${sentLink}`; }
+      else { text = "Refunded. The deposit went back to this wallet."; }
+    }
+    if (owed > 0n && status !== 3) { kind = "warn"; text += ` ${usd(owed)} couldn't be delivered to this wallet. Connect it and claim the money to another address below.`; showClaim(addr, "usdc"); }
+    if (ethOwed > 0n) { text += ` ${eth(ethOwed)} from a challenge couldn't be sent to this wallet. Connect it and withdraw it to another address below.`; showClaim(addr, "eth"); }
+    if (ch.matched && (ch.state === 3 || ruled)) await offerAppealRewards(ch.caseId);
+    if (phase === PHASE.Listed) checkRelease();
     setNote(out, kind, text);
-  } catch (e) { setNote(out, "bad", `Couldn't check right now (${e.message}). Try again in a minute.`); }
+  } catch (e) { setNote(out, "bad", `Couldn't check right now (${esc(e.message)}). Try again in a minute.`); }
 }
 
-// Sends a transaction from the connected wallet. `onlyFrom`: the wallet that must be connected (or null for anyone).
-async function sendFrom(onlyFrom, data, value, out, done, to = CONFIG.contract) {
-  if (!state.account) { setNote(out, "bad", "Connect your wallet first (step 1)."); return; }
-  if (onlyFrom && state.account.toLowerCase() !== onlyFrom.toLowerCase()) { setNote(out, "bad", `Connect the wallet ${short(onlyFrom)} first (step 1). Only that wallet can do this.`); return; }
-  if (state.chainId !== CONFIG.chainId) { setNote(out, "bad", "Switch your wallet to Arbitrum One first (step 2)."); return; }
-  try {
-    const hash = await window.ethereum.request({ method: "eth_sendTransaction", params: [{ from: state.account, to, data, value: "0x" + value.toString(16) }] });
-    setNote(out, "", `Sent. Waiting for confirmation… <a href="${txUrl(hash)}" target="_blank" rel="noopener">${short(hash)}</a>`);
-    $("ch-box").hidden = true; $("claim-box").hidden = true;
-    const r = await waitReceipt(hash);
-    const ok = r && r.status === "0x1";
-    setNote(out, ok ? "good" : "bad", ok ? `${done} <a href="${txUrl(hash)}" target="_blank" rel="noopener">See it on Arbiscan</a>.` : `It didn't go through. <a href="${txUrl(hash)}" target="_blank" rel="noopener">See it on Arbiscan</a>.`);
-  } catch (e) { setNote(out, "bad", e && e.code === 4001 ? "You cancelled in your wallet." : (e.message || String(e))); }
-}
-
-let claimMode = null, claimFor = null;
+let claimFor = null;
 function showClaim(addr, mode) {
-  claimMode = mode; claimFor = addr;
+  claimFor = addr;
   $("claim-box").hidden = false;
-  $("claim").textContent = mode === "emergency" ? "Withdraw my deposit" : mode === "eth" ? "Withdraw ETH" : "Claim";
+  $("claim-" + mode).hidden = false;
 }
-async function claim() {
+async function claim(mode) {
   const to = $("claim-to").value.trim(), out = $("lookup-out");
   if (!isAddr(to)) { setNote(out, "bad", "Enter the address that should receive it."); return; }
-  const sel = claimMode === "emergency" ? SEL.emergencyWithdraw : claimMode === "eth" ? SEL.withdrawEth : SEL.claim;
-  await sendFrom(claimFor, sel + pad(to), 0n, out, "Done.");
+  const sel = { usdc: SEL.claim, emergency: SEL.emergencyWithdraw, eth: SEL.withdrawEth }[mode];
+  await sendTx({ onlyFrom: claimFor, data: sel + pad(to), out, done: "Done." });
 }
 
 // ---------------------------------------------------------------- wire up
@@ -699,19 +945,28 @@ $("connect").addEventListener("click", connect);
 $("switch").addEventListener("click", switchNetwork);
 $("send").addEventListener("click", send);
 $("lookup").addEventListener("click", lookup);
-$("claim").addEventListener("click", claim);
+for (const mode of ["usdc", "emergency", "eth"]) $("claim-" + mode).addEventListener("click", () => claim(mode));
 $("ch-action").addEventListener("click", () => chAction && chAction());
 $("ch-action2").addEventListener("click", () => chAction2 && chAction2());
+$("collect").addEventListener("click", collectAppealRewards);
+$("release").addEventListener("click", releasePayouts);
 $("ev-send").addEventListener("click", sendEvidence);
 $("copy-contract").addEventListener("click", (e) => copy(CONFIG.contract, e.currentTarget));
 $("copy-tx").addEventListener("click", (e) => copy($("tx-link").textContent, e.currentTarget));
 $("copy-wallet").addEventListener("click", (e) => copy($("tx-wallet").textContent, e.currentTarget));
-// copy the tx link first, then go back to Luma in the same tab (wallet in-app browsers handle new tabs badly)
+// copy the tx link first, then go back to Luma in the same tab (wallet in-app browsers handle new tabs badly).
+// Only leave once the copy worked: otherwise stay, with the link selected, so the guest can copy it by hand.
 $("luma-link").addEventListener("click", async (e) => {
   const link = $("tx-link").textContent;
   if (!/^https:\/\//.test(link)) return;
   e.preventDefault();
-  try { await navigator.clipboard.writeText(link); } catch {}
+  try {
+    await navigator.clipboard.writeText(link);
+  } catch {
+    selectText($("tx-link"));
+    setNote($("luma-msg"), "warn", `Copy this link, then go back to Luma: <span class="mono">${esc(link)}</span><br><a href="${esc(CONFIG.lumaUrl)}" rel="noopener">${esc(CONFIG.lumaUrl.replace(/^https:\/\//, ""))}</a>`);
+    return;
+  }
   location.href = CONFIG.lumaUrl;
 });
 try {
