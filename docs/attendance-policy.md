@@ -33,14 +33,14 @@ This policy applies to disputes created by the Truth Pays deposit contract on Ar
 
 ## Appeals
 
-- After each vote, either side can appeal during the Kleros appeal period. A new, larger jury then decides the same question under this same policy. Parties can add evidence for the new round.
-- Only the **final ruling** counts: the one in force when the last appeal period ends without a funded appeal. Earlier votes do not change the attendance list, the payouts or the challenge deposits.
-- Appeal fees are separate from the challenge deposits. They are crowdfunded on Kleros, and Kleros returns them or pays them out under its own appeal rules.
+- After each vote, either side can appeal during the Kleros appeal period by funding its answer on Kleros. If both answers are fully funded, a new, larger jury decides the same question under this same policy, and the parties can add evidence for the new round. If only one answer is fully funded when the appeal period ends, Kleros decides the case for that answer, whatever the jurors voted.
+- Only the **final ruling** counts: the ruling in force once the last appeal period has ended. Earlier votes do not change the attendance list, the payouts or the challenge deposits.
+- Appeal fees are separate from the challenge deposits. Each funder pays them directly on Kleros, and Kleros returns them or pays them out to that funder under its own appeal rules.
 
 ## What happens after the final ruling
 
 - **Yes, attended:** the challenger is added to the attendance list and receives the same share of the pool as every attendee. The challenger receives the remaining ETH deposits (both deposits minus the Kleros fee).
 - **No, did not attend:** the challenger stays off the list and forfeits their deposit, which is shared among the attendees. The party who matched the challenge receives the remaining ETH deposits.
-- **Refused to arbitrate:** the challenger stays off the list and the remaining ETH is split equally between both parties.
+- **Refused to arbitrate:** the challenger stays off the list and forfeits their deposit, as with "No", and the remaining ETH is split equally between both parties.
 
 Attendees can be paid before a dispute ends: the challenger's share is then set aside and handed out according to the final ruling. Once a challenge is in a dispute, the organiser can no longer add that person to the list directly; if the organiser agrees they attended, they say so in the case.
