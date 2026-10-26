@@ -80,7 +80,7 @@ check("config shows Kleros", /Kleros, 3 jurors/.test(await txt("deployInfo")), a
 check("connect", await click("connect", /ETH on/) || /ETH on/.test(await txt("who")), await txt("who"));
 check("deploy", await click("deploy", /Deployed at/), await logText());
 const kAddr = await page.inputValue("#addr");
-const kick = new ethers.Contract(kAddr, load("GroundTruthKickback").abi, owner);
+const kick = new ethers.Contract(kAddr, load("TruthPaysKickback").abi, owner);
 check("deployed with the configured DisputeResolver", (await kick.disputeResolver()) === resolver.target);
 check("deployed with the policy", (await kick.policyURI()) === "/ipfs/QmConsoleE2E/policy.md");
 

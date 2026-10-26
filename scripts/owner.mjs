@@ -25,7 +25,7 @@ const cfg = loadConfig(a.config ?? "config.json");
 if (!cfg.contract) throw new Error('Set "contract" in config.json');
 const prov = provider(cfg);
 const signer = process.env.PRIVATE_KEY ? new ethers.Wallet(process.env.PRIVATE_KEY, prov) : null;
-const { abi } = loadAbi("GroundTruthKickback");
+const { abi } = loadAbi("TruthPaysKickback");
 const c = new ethers.Contract(cfg.contract, abi, signer ?? prov);
 const readJson = (f) => JSON.parse(fs.readFileSync(f, "utf8"));
 // verify-deposits writes { contract, chainId, items: [{ wallet, … }] }; plain arrays also work

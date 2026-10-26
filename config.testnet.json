@@ -1,5 +1,5 @@
 {
-  "eventName": "Ground Truth: TEST RUN",
+  "eventName": "Truth Pays: TEST RUN",
   "chain": "arbitrum-sepolia",
   "rpcUrl": "https://sepolia-rollup.arbitrum.io/rpc",
   "deposit": "25",

@@ -101,7 +101,7 @@ export function klerosConfig(cfg) {
   };
 }
 
-/** Constructor arguments for GroundTruthKickback, checked before anything is sent. */
+/** Constructor arguments for TruthPaysKickback, checked before anything is sent. */
 export function deployArgs(cfg, owner) {
   const { eventStartTs: start, claimDeadlineTs: end } = cfg;
   if (!start || !end)
@@ -110,7 +110,7 @@ export function deployArgs(cfg, owner) {
   const k = klerosConfig(cfg);
   if (cfg.mode === "live" && !/^\/ipfs\/\S+/.test(k.policyURI))
     throw new Error('Set "kleros.policyURI" to the IPFS path of docs/attendance-policy.md (e.g. /ipfs/Qm…) before the live deploy');
-  return [cfg.token, cfg.depositUnits, cfg.eventName ?? "Ground Truth", owner, start, end, [k.disputeResolver, k.extraData, k.policyURI]];
+  return [cfg.token, cfg.depositUnits, cfg.eventName ?? "Truth Pays", owner, start, end, [k.disputeResolver, k.extraData, k.policyURI]];
 }
 
 // Contract Status enum

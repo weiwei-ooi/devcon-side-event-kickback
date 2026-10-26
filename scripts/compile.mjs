@@ -6,7 +6,7 @@ import solc from "solc";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const files = {
-  "GroundTruthKickback.sol": path.join(root, "contracts/GroundTruthKickback.sol"),
+  "TruthPaysKickback.sol": path.join(root, "contracts/TruthPaysKickback.sol"),
   "MockUSDC.sol": path.join(root, "test/MockUSDC.sol"),
   "MockKleros.sol": path.join(root, "test/MockKleros.sol"),
 };
@@ -31,8 +31,8 @@ if (errors.length) process.exit(1);
 fs.mkdirSync(path.join(root, "build"), { recursive: true });
 // For "Verify & Publish" on Arbiscan (Solidity standard-JSON input, compiler v0.8.28)
 fs.writeFileSync(
-  path.join(root, "build", "GroundTruthKickback.standard-input.json"),
-  JSON.stringify({ ...input, sources: { "GroundTruthKickback.sol": input.sources["GroundTruthKickback.sol"] } }, null, 2)
+  path.join(root, "build", "TruthPaysKickback.standard-input.json"),
+  JSON.stringify({ ...input, sources: { "TruthPaysKickback.sol": input.sources["TruthPaysKickback.sol"] } }, null, 2)
 );
 for (const [file, contracts] of Object.entries(out.contracts)) {
   for (const [name, c] of Object.entries(contracts)) {

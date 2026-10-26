@@ -47,7 +47,7 @@ interface IDisputeResolver {
         returns (bytes memory arbitratorExtraData, bool isRuled, uint256 ruling, uint256 numberOfRulingOptions);
 }
 
-/// @title GroundTruthKickback (v4)
+/// @title TruthPaysKickback (v4)
 /// @notice Kickback-style refundable deposits for an IRL event, with Kleros-arbitrated attendance.
 ///
 /// Flow
@@ -86,7 +86,7 @@ interface IDisputeResolver {
 ///    possible up to `claimDeadline`, so the two can never race. Once the list is posted the
 ///    payout is permissionless, so the organiser cannot hold it back.
 ///  - Ownership changes need the new owner to accept, so a typo cannot lock the contract.
-contract GroundTruthKickback {
+contract TruthPaysKickback {
     // ------------------------------------------------------------------ errors
     error NotOwner();
     error NotPendingOwner();

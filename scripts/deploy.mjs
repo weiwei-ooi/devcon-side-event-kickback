@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Deploy GroundTruthKickback (developers only; the organiser deploys from the owner console).
+// Deploy TruthPaysKickback (developers only; the organiser deploys from the owner console).
 //
 //   PRIVATE_KEY=0x… node scripts/deploy.mjs [--config config.json] [--owner 0x…]
 //
@@ -17,7 +17,7 @@ const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider(cfg));
 const owner = ethers.getAddress(a.owner ?? cfg.owner ?? wallet.address);
 const params = deployArgs(cfg, owner);
 
-const { abi, bytecode } = loadAbi("GroundTruthKickback");
+const { abi, bytecode } = loadAbi("TruthPaysKickback");
 console.log(`Deploying on chain ${cfg.chainId}: token ${cfg.token}, deposit ${cfg.deposit}, owner ${owner}`);
 console.log(`  attendance list from ${new Date(params[4] * 1000).toISOString()}, by ${new Date(params[5] * 1000).toISOString()}`);
 console.log(`  Kleros: DisputeResolver ${params[6][0]}, policy ${params[6][2] || "(none)"}`);

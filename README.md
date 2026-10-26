@@ -1,4 +1,4 @@
-# Ground Truth: Kickback-style deposits for Luma
+# Truth Pays: Kickback-style deposits for Luma
 
 Guests who want a guaranteed spot send a **$25 USDC refundable deposit**. Guests who show up get their deposit back, **plus an equal share of the no-shows' deposits**. Everyone else can still request a free spot, which the hosts approve by hand. A staker who was there but missed at check-in can challenge the attendance list on **Kleros**.
 
@@ -26,14 +26,14 @@ Guests who want a guaranteed spot send a **$25 USDC refundable deposit**. Guests
 
 | File | What it does |
 |---|---|
-| `contracts/GroundTruthKickback.sol` | Holds the deposits, keeps a public staker list, publishes the attendance list, runs the Kleros challenge window, and splits the pool equally among attendees. It also refunds declined guests, handles cancellation (full refunds), returns mistaken transfers (spare money only), keeps failed payouts for the guest to claim, lets stakers withdraw their own deposit if the organiser never settles, and sweeps rounding dust after settlement. |
+| `contracts/TruthPaysKickback.sol` | Holds the deposits, keeps a public staker list, publishes the attendance list, runs the Kleros challenge window, and splits the pool equally among attendees. It also refunds declined guests, handles cancellation (full refunds), returns mistaken transfers (spare money only), keeps failed payouts for the guest to claim, lets stakers withdraw their own deposit if the organiser never settles, and sweeps rounding dust after settlement. |
 | `scripts/verify-deposits.mjs` | Reads the Luma guest CSV and checks every pasted tx on-chain: correct token, correct receiver, sent from the guest's wallet, at least $25, inside the deposit window, and not reused. It also lists deposits that nobody claimed. |
 | `scripts/build-payout.mjs` | Matches the Luma check-in export (plus an optional manual list) against the stakers and computes each payout. |
 | `scripts/owner.mjs` | Sends the owner transactions directly, if the owner is a normal wallet. |
 | `scripts/deploy.mjs` | Deploys the contract. |
 | `console/` + `scripts/console.mjs` | The owner console: a local page where the organiser clicks buttons and confirms in her wallet. |
 | `site/index.html` + `scripts/build-site.mjs` | The public guest deposit page: switches the wallet to Arbitrum One, checks the contract, sends exactly 25 USDC and gives the tx link for Luma. See "Guest deposit page". |
-| `docs/attendance-policy.md` | The policy Kleros jurors apply in an attendance dispute. Pinned on IPFS at `/ipfs/QmTkgQ2kCTPPH7z7GNW7hsq9w9yeYp7DRUsvbdNnx7Hw9s` (set as `kleros.policyURI` in config.json; check it at https://cdn.kleros.link/ipfs/QmTkgQ2kCTPPH7z7GNW7hsq9w9yeYp7DRUsvbdNnx7Hw9s). If the file changes, it must be uploaded again and the new path set before the deploy. |
+| `docs/attendance-policy.md` | The policy Kleros jurors apply in an attendance dispute. Pinned on IPFS at `/ipfs/QmQmGrayc6kWJqpRgVDoN814by8RYx8pLQ5VcC6qhKR2gJ` (set as `kleros.policyURI` in config.json; check it at https://cdn.kleros.link/ipfs/QmQmGrayc6kWJqpRgVDoN814by8RYx8pLQ5VcC6qhKR2gJ). If the file changes, it must be uploaded again and the new path set before the deploy. |
 | `test/` | Contract tests (guards, blocklisted wallets, odd tokens, 150 guests, every challenge path with a mock Kleros), an end-to-end test of the scripts on a local chain, and browser tests of the guest page and the owner console. |
 
 All the owner transactions are also written out as **Safe Transaction Builder** files (`out/safe-*.json`), so a Kleros or Arkiv Safe can own the contract and sign the payouts.

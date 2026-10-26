@@ -62,7 +62,7 @@ const contractAddr = cfg.contract ? ethers.getAddress(cfg.contract) : null;
 let stakerWallets = verified.map((v) => ethers.getAddress(v.wallet));
 let onchain = null;
 if (contractAddr) {
-  const { abi } = loadAbi("GroundTruthKickback");
+  const { abi } = loadAbi("TruthPaysKickback");
   const c = new ethers.Contract(contractAddr, abi, provider(cfg));
   const all = await c.stakers();
   const st = await Promise.all(all.map((w) => c.status(w)));
@@ -117,7 +117,7 @@ writeCsv(
   ["name", "email", "wallet", "attended", "payout"]
 );
 
-const summary = `# Ground Truth: deposit settlement
+const summary = `# Truth Pays: deposit settlement
 
 | | |
 |---|---|
@@ -132,9 +132,9 @@ fs.writeFileSync(`${out}/payout-summary.md`, summary);
 console.log(summary);
 
 if (contractAddr && attendees.length) {
-  const { abi } = loadAbi("GroundTruthKickback");
+  const { abi } = loadAbi("TruthPaysKickback");
   const iface = new ethers.Interface(abi);
-  writeJson(`${out}/safe-post-attendance.json`, safeBatch(cfg, `Ground Truth: post ${attendees.length} attendees`, [
+  writeJson(`${out}/safe-post-attendance.json`, safeBatch(cfg, `Truth Pays: post ${attendees.length} attendees`, [
     { to: contractAddr, data: iface.encodeFunctionData("postAttendance", [attendees.map((x) => x.wallet), share]) },
   ]));
   console.log(`Next: click "Post attendance list" in the console (reads ${out}/payout-plan.json), or upload ${out}/safe-post-attendance.json in Safe.`);
@@ -142,7 +142,7 @@ if (contractAddr && attendees.length) {
 } else if (attendees.length) {
   // No contract: deposits sit in a Safe. Pay out with one batched Safe tx of USDC transfers.
   const erc20 = new ethers.Interface(["function transfer(address,uint256)"]);
-  writeJson(`${out}/safe-payout-transfers.json`, safeBatch(cfg, `Ground Truth: pay ${attendees.length} attendees`,
+  writeJson(`${out}/safe-payout-transfers.json`, safeBatch(cfg, `Truth Pays: pay ${attendees.length} attendees`,
     attendees.map((x) => ({ to: cfg.token, data: erc20.encodeFunctionData("transfer", [x.wallet, share]) }))));
   console.log(`No contract configured → upload ${out}/safe-payout-transfers.json in Safe Transaction Builder (from the deposit Safe).`);
 }

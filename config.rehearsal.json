@@ -1,5 +1,5 @@
 {
-  "eventName": "Ground Truth: REHEARSAL",
+  "eventName": "Truth Pays: REHEARSAL",
   "chain": "arbitrum",
   "rpcUrl": "https://arb1.arbitrum.io/rpc",
   "deposit": "25",
@@ -19,6 +19,6 @@
     "court": 1,
     "jurors": 3,
     "disputeKit": 1,
-    "policyURI": "/ipfs/QmTkgQ2kCTPPH7z7GNW7hsq9w9yeYp7DRUsvbdNnx7Hw9s"
+    "policyURI": "/ipfs/QmQmGrayc6kWJqpRgVDoN814by8RYx8pLQ5VcC6qhKR2gJ"
   }
 }

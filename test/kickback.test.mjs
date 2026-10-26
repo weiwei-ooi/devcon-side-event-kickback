@@ -45,7 +45,7 @@ before(async () => {
   const arbitrator = await deploy("MockArbitrator", owner);
   resolver = await deploy("MockDisputeResolver", owner, await arbitrator.getAddress());
   const extra = ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256", "uint256"], [1, 3, 1]);
-  kick = await deploy("GroundTruthKickback", owner, await usdc.getAddress(), U(15), "Ground Truth", await owner.getAddress(), t + 3600, t + 3600 + 14 * 86400,
+  kick = await deploy("TruthPaysKickback", owner, await usdc.getAddress(), U(15), "Truth Pays", await owner.getAddress(), t + 3600, t + 3600 + 14 * 86400,
     [await resolver.getAddress(), extra, "/ipfs/QmTest/attendance-policy.md"]);
   for (const g of guests) await (await usdc.mint(await g.getAddress(), U(100))).wait();
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "gt-"));

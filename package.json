@@ -1,5 +1,5 @@
 {
-  "name": "ground-truth-kickback",
+  "name": "truth-pays-kickback",
   "version": "2.0.0",
   "description": "Kickback-style refundable USDC deposits for Luma events",
   "scripts": {

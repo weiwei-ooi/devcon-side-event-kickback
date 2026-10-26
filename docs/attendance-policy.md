@@ -1,10 +1,10 @@
-# Ground Truth: attendance policy for Kleros jurors
+# Truth Pays: attendance policy for Kleros jurors
 
-This policy applies to disputes created by the Ground Truth deposit contract on Arbitrum One. Each dispute asks one question: **did the person who registered with this wallet attend the event?** (In the dispute, the event is called "Ground Truth: Devcon Mumbai 2026".)
+This policy applies to disputes created by the Truth Pays deposit contract on Arbitrum One. Each dispute asks one question: **did the person who registered with this wallet attend the event?** (In the dispute, the event is called "Truth Pays: Devcon Mumbai 2026".)
 
 ## The event
 
-- **Ground Truth: Queryable Data, Prediction Markets & Decentralised Justice on Ethereum**, a Devcon Mumbai side event (networking dinner).
+- **Truth Pays: Queryable Data, Prediction Markets & Onchain Justice**, a Devcon Mumbai side event (networking dinner).
 - **When:** Wednesday 4 November 2026, 18:00–22:00 IST.
 - **Where:** the venue announced to registered guests on Luma (planned: Hitchki, Bandra Kurla Complex (BKC), Mumbai).
 - **Hosts:** Kleros, Arkiv (Golem Network) and Web3 Mumbai.

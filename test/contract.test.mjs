@@ -50,7 +50,7 @@ const send = async (p) => (await p).wait();
 
 async function freshKick({ startIn = 3600, deadlineIn = 3600 * 24 * 14 } = {}) {
   const t = await now();
-  return deploy("GroundTruthKickback", owner, await usdc.getAddress(), U(15), "Ground Truth", await addr(owner), t + startIn, t + deadlineIn, arb());
+  return deploy("TruthPaysKickback", owner, await usdc.getAddress(), U(15), "Truth Pays", await addr(owner), t + startIn, t + deadlineIn, arb());
 }
 const arb = () => [resolver.target, EXTRA, POLICY];
 // post the list, let the 1-day challenge window pass, release
@@ -86,7 +86,7 @@ after(async () => server && (await server.close()));
 
 test("constructor rejects a deadline before the event start", async () => {
   const t = await now();
-  const { abi, bytecode } = load("GroundTruthKickback");
+  const { abi, bytecode } = load("TruthPaysKickback");
   const f = new ethers.ContractFactory(abi, bytecode, owner);
   // the settlement window after the event must be at least 7 days
   for (const [s, d] of [[t + 100, t + 100], [t + 100, t + 100 + 7 * 86400 - 1]]) {

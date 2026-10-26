@@ -1,11 +1,11 @@
-# Ground Truth: Kickback deposits (project brief for Claude)
+# Truth Pays: Kickback deposits (project brief for Claude)
 
 ## Who you're working with
 - **Wei Wei**, Event Manager at **Kleros**. **She is not a developer.** Do all the technical work yourself (installing, compiling, running scripts, editing files). Explain things in plain language. Only ask her to do things a human must do: confirm transactions in her wallet and approve or decline guests on Luma.
 - **Never ask for, read or store a private key or recovery phrase.** All signing happens in her browser wallet (Zerion, owner `0x259a1084C2043a7B3b5b288596E05C41b8EFa5d6`) through the owner console (`npm run console`). Do not put a `PRIVATE_KEY` in `.env` for her. `scripts/deploy.mjs` and `scripts/owner.mjs` exist for developers only.
 
 ## The event
-- **Ground Truth: Queryable Data, Prediction Markets & Decentralised Justice on Ethereum**. This is a Devcon Mumbai side event: a networking dinner.
+- **Truth Pays: Queryable Data, Prediction Markets & Onchain Justice**. This is a Devcon Mumbai side event: a networking dinner.
 - When and where: Wed 4 Nov 2026, 18:00–22:00 IST, at Hitchki, BKC, Mumbai (venue via Mirah Hospitality; booking being finalised).
 - Hosts: Kleros, Arkiv (Golem Network), and Web3 Mumbai.
 - Luma (Private for now): https://luma.com/qewnqhas. Manage page: https://luma.com/event/manage/evt-xjcerzm2NJ0OVdq. The event is on the "Kleros Events" calendar.
@@ -31,7 +31,8 @@
 - [x] Owner wallet set up (Zerion, funded on Arbitrum One). Rehearsal of v1 passed on Arbitrum One with a throwaway contract (`0x1F044c041D873CC906E614c558B7b877E88F620f`, never put on Luma).
 - [x] v3 (25 Oct): Kleros challenges + require style. Contract tests, script e2e, guest page and console browser tests pass. Needs dev re-review and a short rehearsal including one challenge.
 - [x] v4 (25 Oct, her request "the whole A to Z" + all 12 dev-review findings, `/mnt/project-files/reviews/dev-review-2026-10-25.md`): appeals through the contract (`fundAppeal`, `claimAppealRewards`, `appealStatus`), evidence to Kleros's EvidenceModule from console and guest page, and F7: a Kleros case no longer freezes payouts (pay now, one share set aside per open case). Tests: contract + scripts 24/24, console 40/40, guest page 55/55. Needs dev re-review of v4.
-- [x] Juror policy v4 (Appeals section + review wording) pinned via Kleros's upload service (Chrome tab on kleros-api.netlify.app; the container and her device VM are blocked): `/ipfs/QmTkgQ2kCTPPH7z7GNW7hsq9w9yeYp7DRUsvbdNnx7Hw9s`, byte-identical (sha256 checked via cdn.kleros.link). Set as `kleros.policyURI` in config.json and config.rehearsal.json. If the file changes, re-upload and update the path.
+- [x] Juror policy v4 (Appeals section + review wording; re-pinned 26 Oct after the rename to Truth Pays) pinned via Kleros's upload service (Chrome tab on kleros-api.netlify.app; the container and her device VM are blocked): `/ipfs/QmQmGrayc6kWJqpRgVDoN814by8RYx8pLQ5VcC6qhKR2gJ`, byte-identical (sha256 checked via cdn.kleros.link). Set as `kleros.policyURI` in config.json and config.rehearsal.json. If the file changes, re-upload and update the path.
+- [x] Renamed to **Truth Pays** (26 Oct): contract `TruthPaysKickback`, configs, console, guest page, docs. Luma title/description updated the same day.
 - [ ] Short v3 rehearsal on Arbitrum One (`npm run console:rehearsal`, 500 USDC safety cap): deploy, deposit 25, register, refund-declined, deposit again, pay out.
 - [ ] Her developers review the code. Zero open issues before going public.
 - [ ] Deploy the live contract with `npm run console` (config.json), set `receiver`, `contract`, `deployBlock` and `depositOpensAt` (deploy time), verify the source on Arbiscan (0.8.28, optimizer 200, EVM paris), and put the address on Luma (event stays **Private**).

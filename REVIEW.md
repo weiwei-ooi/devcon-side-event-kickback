@@ -1,6 +1,13 @@
-# Ground Truth Kickback v4: review summary (25 Oct 2026, deposit 25 USDC on Arbitrum One)
+# Truth Pays Kickback v4: review summary (25 Oct 2026, deposit 25 USDC on Arbitrum One)
 
 For Wei Wei and the developers reviewing the code before the live deployment.
+
+## Since v4 (26 Oct, no contract logic change)
+
+- **New event name, Truth Pays.** The contract is renamed `GroundTruthKickback` → `TruthPaysKickback` (file, NatSpec and build artifacts; bytecode logic unchanged), `eventName` in the configs is now "Truth Pays: …", and the console, guest page, scripts and docs use the new name.
+- **Juror policy** updated with the new event name and re-pinned at `/ipfs/QmQmGrayc6kWJqpRgVDoN814by8RYx8pLQ5VcC6qhKR2gJ` (byte-identical, checked via cdn.kleros.link); `kleros.policyURI` updated in config.json and config.rehearsal.json.
+- **Guest page (`site/index.html`) has two modes.** The default page only does the deposit: connect, switch to Arbitrum One, send 25 USDC, then "Copy link and go back to Luma" (copies the Arbiscan tx link and returns to the Luma event, where the guest picks the Committed Spot ticket and pastes it; Luma then shows the registration as pending approval). After-event tools (deposit lookup, Kleros challenge, evidence, appeals) moved to `#status` on the same file.
+- **v4 rehearsal on Arbitrum One** (throwaway contract `0xc49531098132c0aa1E5eA4d061eA1B6C68076c5C`): deploy, deposit, register, refund, deposit again, register, post attendance list all passed; release payouts is due after the challenge window.
 
 ## What changed in v4 (25 Oct, please review this first)
 
@@ -26,7 +33,7 @@ Requested by the organiser ("it is missing appeals: the whole A to Z, contract, 
 - **F10:** `challengeDeposit()` NatSpec says matching takes `challenges(staker).deposit`. **F12:** `stakers()` NatSpec notes a re-registered wallet appears twice.
 - **F2, F8, F11, F3 (README):** emergency withdrawal only applies when no list was posted; `PAID_AGAIN_DECLINED` in the issue table; a last-minute challenge can delay the payout by its own 1-day match window; a match is refused if the Kleros fee more than doubles within that day.
 
-**Juror policy:** new "Appeals" section, the F5/F7/F9 wording. Re-pinned at `/ipfs/QmTkgQ2kCTPPH7z7GNW7hsq9w9yeYp7DRUsvbdNnx7Hw9s` (byte-identical to the file, checked via cdn.kleros.link) and set as `kleros.policyURI` in config.json and config.rehearsal.json.
+**Juror policy:** new "Appeals" section, the F5/F7/F9 wording. Re-pinned at `/ipfs/QmQmGrayc6kWJqpRgVDoN814by8RYx8pLQ5VcC6qhKR2gJ` (byte-identical to the file, checked via cdn.kleros.link) and set as `kleros.policyURI` in config.json and config.rehearsal.json.
 
 **Size:** runtime bytecode 23,441 bytes (limit 24,576), optimizer 200, EVM paris, solc 0.8.28.
 
@@ -53,7 +60,7 @@ Requested by the organiser on 25 Oct:
 
 Points we would like reviewers to look at in particular: the ETH accounting in `resolveChallenge` (2 × deposit − fee, rounding on the split), the `cost ≤ 2 × deposit` guard if the Kleros fee rises between challenge and match, the unbounded loop over `_challengers` in `releasePayouts` (bounded by the number of stakers, at most 150), and the template JSON (no user-controlled strings except the owner-set event name and policy path).
 
-**Tradeoffs the organiser accepted:** a fee of about 0.015 ETH per side; a matched challenge holds that challenger's share for about 3 weeks (one Kleros round; each appeal adds another round); since v4 everyone else is paid on time; the juror policy (`docs/attendance-policy.md`, approved by the organiser) is pinned on IPFS at `/ipfs/QmTkgQ2kCTPPH7z7GNW7hsq9w9yeYp7DRUsvbdNnx7Hw9s` and set in `config.kleros.policyURI` (the live deploy refuses without one).
+**Tradeoffs the organiser accepted:** a fee of about 0.015 ETH per side; a matched challenge holds that challenger's share for about 3 weeks (one Kleros round; each appeal adds another round); since v4 everyone else is paid on time; the juror policy (`docs/attendance-policy.md`, approved by the organiser) is pinned on IPFS at `/ipfs/QmQmGrayc6kWJqpRgVDoN814by8RYx8pLQ5VcC6qhKR2gJ` and set in `config.kleros.policyURI` (the live deploy refuses without one).
 
 Tests: 19 contract tests (including every challenge path against a mock DisputeResolver and an ETH-refusing wallet), the end-to-end script test (posts the list, an unmatched challenge, release), 43 browser checks on the guest page and 19 on the owner console (deploy with Kleros settings → register → post → challenge → dispute → ruling → settle → release).
 
@@ -97,6 +104,6 @@ Deploy, 25 USDC deposit, verify, decline + refund (`rejectAndRefund`, tx 0x4c738
 ## Before going live
 
 1. Short v3 rehearsal on Arbitrum One (`npm run console:rehearsal`, 500 USDC cap, throwaway contract), including one challenge left unmatched.
-2. Developer review of `contracts/GroundTruthKickback.sol` and `console/index.html`.
-3. Juror policy: pinned again for v4 (path in config.json `kleros.policyURI`); re-pin only if the file changes. Deploy the live contract from `npm run console`, verify the source on Arbiscan (`build/GroundTruthKickback.standard-input.json`, compiler 0.8.28), record `contract`, `receiver`, `deployBlock` and `depositOpensAt` in `config.json`, and put the address on Luma while the event stays Private.
+2. Developer review of `contracts/TruthPaysKickback.sol` and `console/index.html`.
+3. Juror policy: pinned again for v4 (path in config.json `kleros.policyURI`); re-pin only if the file changes. Deploy the live contract from `npm run console`, verify the source on Arbiscan (`build/TruthPaysKickback.standard-input.json`, compiler 0.8.28), record `contract`, `receiver`, `deployBlock` and `depositOpensAt` in `config.json`, and put the address on Luma while the event stays Private.
 4. Go Public only when the organiser says so.

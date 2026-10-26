@@ -23,7 +23,7 @@ const prov = new ethers.JsonRpcProvider(`http://127.0.0.1:${RPC}`, 1337, { stati
 const [owner, g1, g2, g3, poor] = keys.map((k) => new ethers.NonceManager(new ethers.Wallet(k, prov)));
 const addr = async (w) => w.getAddress();
 const { abi: uabi, bytecode: ubc } = load("MockUSDC");
-const { abi: kabi, bytecode: kbc } = load("GroundTruthKickback");
+const { abi: kabi, bytecode: kbc } = load("TruthPaysKickback");
 const usdc = await (await new ethers.ContractFactory(uabi, ubc, owner).deploy()).waitForDeployment();
 for (const g of [g1, g2, g3]) await (await usdc.mint(await addr(g), U(100))).wait();
 const now = (await prov.getBlock("latest")).timestamp;
@@ -177,7 +177,7 @@ await p.click("#ch-action"); await p.waitForTimeout(1500);
 check("dispute created", /Dispute created on Kleros/.test(await waitText(p, "lookup-out", /Dispute created on Kleros|didn't go through|cancelled/)), await txt(p, "lookup-out"));
 check("in dispute: Kleros case link", /In a Kleros dispute/.test(await lookupAs(p, await addr(g3))) && /Kleros case #1000/.test(await txt(p, "lookup-out")), await txt(p, "lookup-out"));
 check("evidence form shown", await vis(p, "ev-box"));
-await p.fill("#ev-title", "Photo at the venue"); await p.fill("#ev-text", "Cai at the bar at 19:30, with the Ground Truth banner."); await p.fill("#ev-link", "ipfs://QmPhoto");
+await p.fill("#ev-title", "Photo at the venue"); await p.fill("#ev-text", "Cai at the bar at 19:30, with the Truth Pays banner."); await p.fill("#ev-link", "ipfs://QmPhoto");
 await p.click("#ev-send"); await p.waitForTimeout(1500);
 check("evidence sent", /Evidence sent to Kleros case #1000/.test(await waitText(p, "lookup-out", /Evidence sent|didn't go through|cancelled/)), await txt(p, "lookup-out"));
 const evs = await evidence.queryFilter(evidence.filters.Evidence(1000));

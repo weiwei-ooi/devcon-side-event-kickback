@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Ground Truth · Owner Console</title>
+<title>Truth Pays · Owner Console</title>
 <style>
   :root { --bg:#1B003F; --card:#26085a; --line:#3d1b7a; --text:#f3ecff; --muted:#b9a6dd; --accent:#9747FF; --blue:#27CDFE; --ok:#3ddc97; --err:#ff6b8b; --warn:#ffc46b; }
   * { box-sizing:border-box; }
@@ -38,7 +38,7 @@
 </head>
 <body>
 <main>
-  <h1>Ground Truth · <span>Owner Console</span></h1>
+  <h1>Truth Pays · <span>Owner Console</span></h1>
   <div class="sub">Every action opens your wallet for you to confirm. Keys never leave your wallet.</div>
   <div id="banner" class="banner" hidden></div>
 
@@ -276,7 +276,7 @@ async function init() {
     chain = { chainId: Number(cfg.chainId), name: cfg.chain || "custom network", rpc: cfg.rpcUrl, explorer: cfg.explorer || "", usdc: cfg.token, testnet: true };
   if (!chain) { log(`Unknown chain "${cfg.chain}" in config.json`, "err"); return; }
   dec = cfg.tokenDecimals ?? 6;
-  artifact = await getJson("/build/GroundTruthKickback.json");
+  artifact = await getJson("/build/TruthPaysKickback.json");
   iface = new ethers.Interface(artifact.abi);
   // Reads, gas and fee estimates go through the public RPC, so the wallet only has to sign.
   rp = new ethers.JsonRpcProvider(chain.rpc, chain.chainId, { staticNetwork: true });
@@ -293,7 +293,7 @@ async function init() {
     ["Network", chain.name],
     ["Token", "USDC · " + (cfg.token || chain.usdc)],
     ["Deposit", cfg.deposit + " USDC"],
-    ["Event name", cfg.eventName || "Ground Truth"],
+    ["Event name", cfg.eventName || "Truth Pays"],
     ["Attendance list from", start ? when(start) : "missing in config", start ? "" : "err"],
     ["List by", end ? when(end) + " (if no list by then, guests can withdraw their own deposit)" : "missing in config", end ? "" : "err"],
     ["Challenges", klerosInfo() ? `Kleros, ${cfg.kleros?.jurors ?? 3} jurors, policy ${cfg.kleros?.policyURI || "(not set)"}` : "Kleros not configured", klerosInfo() ? "" : "err"],
@@ -413,7 +413,7 @@ async function deploy() {
   if (!confirm(`Deploy a new deposit contract on ${chain.name}?\nOwner: ${account}\nDeposit: ${cfg.deposit} USDC\nAttendance list from: ${when(start)}\nList by: ${when(end)}\nChallenges: Kleros (${short(k.disputeResolver)})`)) return;
   const units = ethers.parseUnits(String(cfg.deposit), dec);
   const f = new ethers.ContractFactory(artifact.abi, artifact.bytecode);
-  const dtx = await f.getDeployTransaction(cfg.token || chain.usdc, units, cfg.eventName || "Ground Truth", account, start, end, [k.disputeResolver, k.extraData, k.policyURI]);
+  const dtx = await f.getDeployTransaction(cfg.token || chain.usdc, units, cfg.eventName || "Truth Pays", account, start, end, [k.disputeResolver, k.extraData, k.policyURI]);
   const r = await sendTx("deploy the contract", { data: dtx.data });
   const addr = ethers.getAddress(r.contractAddress);
   $("addr").value = addr;

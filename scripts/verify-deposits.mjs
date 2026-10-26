@@ -58,7 +58,7 @@ let c = null;
 let iface = null;
 let snapshotBlock = await prov.getBlockNumber();
 if (kickbackAddr) {
-  const { abi } = loadAbi("GroundTruthKickback");
+  const { abi } = loadAbi("TruthPaysKickback");
   c = new ethers.Contract(kickbackAddr, abi, prov);
   iface = new ethers.Interface(abi);
 }
@@ -117,9 +117,9 @@ writeJson(`${out}/refunds.json`, { ...stamp, items: refunds.map(item) });
 
 if (iface) {
   const chunks = (list) => Array.from({ length: Math.ceil(list.length / 100) }, (_, i) => list.slice(i * 100, i * 100 + 100));
-  writeJson(`${out}/safe-register.json`, safeBatch(cfg, `Ground Truth: register ${newStakers.length} stakers`,
+  writeJson(`${out}/safe-register.json`, safeBatch(cfg, `Truth Pays: register ${newStakers.length} stakers`,
     chunks(newStakers.map((v) => v.wallet)).map((ch) => ({ to: kickbackAddr, data: iface.encodeFunctionData("registerStakers", [ch]) }))));
-  writeJson(`${out}/safe-refunds.json`, safeBatch(cfg, `Ground Truth: refund ${refunds.length} declined guests`,
+  writeJson(`${out}/safe-refunds.json`, safeBatch(cfg, `Truth Pays: refund ${refunds.length} declined guests`,
     chunks(refunds.map((v) => v.wallet)).map((ch) => ({ to: kickbackAddr, data: iface.encodeFunctionData("rejectAndRefund", [ch]) }))));
 }
 

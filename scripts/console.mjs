@@ -19,7 +19,7 @@ const OUT = arg("--out") || "out";
 const ALLOWED = [
   "console/index.html",
   "node_modules/ethers/dist/ethers.umd.min.js",
-  "build/GroundTruthKickback.json",
+  "build/TruthPaysKickback.json",
   "config.json",
   "out/new-stakers.json",
   "out/attendees.json",
@@ -29,7 +29,7 @@ const ALLOWED = [
 ];
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".json": "application/json", ".md": "text/plain" };
 
-if (!fs.existsSync(path.join(root, "build/GroundTruthKickback.json"))) {
+if (!fs.existsSync(path.join(root, "build/TruthPaysKickback.json"))) {
   console.error("Run `npm run compile` first.");
   process.exit(1);
 }
