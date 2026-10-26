@@ -129,14 +129,21 @@ export function readCsv(file) {
   return parse(fs.readFileSync(file, "utf8"), { columns: true, skip_empty_lines: true, bom: true, relax_column_count: true });
 }
 
+// Guests type their own names and answers on Luma. A cell starting with = + - @ (or a tab / CR)
+// would run as a formula when the CSV is opened in a spreadsheet, so it gets a leading '.
+const FORMULA_START = /^[=+\-@\t\r]/;
+export const csvCell = (v) => {
+  let s = v === undefined || v === null ? "" : String(v);
+  if (FORMULA_START.test(s)) s = "'" + s;
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+/** Undo csvCell's leading ' when reading our own CSVs back (emails, names). */
+export const uncell = (v) => (/^'[=+\-@\t\r]/.test(String(v ?? "")) ? String(v).slice(1) : String(v ?? ""));
+
 export function writeCsv(file, rows, headers) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const cols = headers ?? (rows[0] ? Object.keys(rows[0]) : []);
-  const esc = (v) => {
-    const s = v === undefined || v === null ? "" : String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
-  fs.writeFileSync(file, [cols.join(","), ...rows.map((r) => cols.map((c) => esc(r[c])).join(","))].join("\n") + "\n");
+  fs.writeFileSync(file, [cols.map(csvCell).join(","), ...rows.map((r) => cols.map((c) => csvCell(r[c])).join(","))].join("\n") + "\n");
 }
 
 export function writeJson(file, data) {
@@ -191,138 +198,329 @@ export const fmt = (units, decimals = 6) => ethers.formatUnits(units, decimals);
 
 // ---------------------------------------------------------------- verification
 
+/** Code of a contract, not of a plain wallet (an EIP-7702 delegated wallet is still a plain wallet). */
+export const isContractCode = (code) => code !== "0x" && !/^0xef0100[0-9a-f]{40}$/i.test(code);
+
+/** One deposit = the USDC one wallet sent to the receiver in one tx. */
+export const depKey = (tx, from) => `${String(tx).toLowerCase()}|${String(from).toLowerCase()}`;
+
 /**
  * Verify one deposit transaction.
  * Valid when: tx succeeded, it contains a `token` Transfer to `receiver`,
  * sent from the guest's wallet, totalling >= deposit, inside the deposit window.
+ * Every result that found USDC going to the receiver also carries `deposits` (the amount per
+ * sender in this tx) and `block`, so what the contract sent back can be paired with it later.
  */
 export async function verifyTx(prov, cfg, txHash, claimedWallet) {
   const receipt = await prov.getTransactionReceipt(txHash);
   if (!receipt) return { ok: false, code: "TX_NOT_FOUND", note: "Not found on this chain (wrong network?)" };
   if (receipt.status !== 1) return { ok: false, code: "TX_FAILED", note: "Transaction reverted" };
 
-  const transfers = receipt.logs
-    .filter(
-      (l) =>
-        ethers.getAddress(l.address) === cfg.token &&
-        l.topics[0] === TRANSFER_TOPIC &&
-        l.topics.length === 3 &&
-        ethers.getAddress(ethers.dataSlice(l.topics[2], 12)) === cfg.receiver
-    )
-    .map((l) => ({
-      from: ethers.getAddress(ethers.dataSlice(l.topics[1], 12)),
-      value: BigInt(l.data),
-    }));
-
-  if (!transfers.length)
+  const bySender = new Map();
+  for (const l of receipt.logs) {
+    if (ethers.getAddress(l.address) !== cfg.token || l.topics[0] !== TRANSFER_TOPIC || l.topics.length !== 3) continue;
+    if (ethers.getAddress(ethers.dataSlice(l.topics[2], 12)) !== cfg.receiver) continue;
+    const from = ethers.getAddress(ethers.dataSlice(l.topics[1], 12));
+    const d = bySender.get(from) ?? { from, amount: 0n, logIndex: l.index };
+    d.amount += BigInt(l.data);
+    d.logIndex = Math.min(d.logIndex, l.index);
+    bySender.set(from, d);
+  }
+  if (!bySender.size)
     return { ok: false, code: "NO_DEPOSIT_TRANSFER", note: "No USDC transfer to the deposit address in this tx" };
 
-  const senders = [...new Set(transfers.map((t) => t.from))];
+  const deposits = [...bySender.values()];
+  const senders = deposits.map((d) => d.from);
+  const seen = { deposits, block: receipt.blockNumber };
   let wallet = claimedWallet;
   let inferred = false;
   if (!wallet) {
-    if (senders.length !== 1) return { ok: false, code: "AMBIGUOUS_SENDER", note: "No wallet given and tx has several senders" };
+    if (senders.length !== 1) return { ok: false, code: "AMBIGUOUS_SENDER", note: "No wallet given and tx has several senders", ...seen };
     wallet = senders[0];
     inferred = true;
+    // No ETH address on Luma: refunds and payouts would go to whoever sent the USDC. That must be
+    // an ordinary wallet, not a bridge mint (from 0x0) or a contract (bridge, exchange, router…).
+    if (wallet === ethers.ZeroAddress)
+      return { ok: false, code: "UNUSUAL_SENDER", note: "The USDC was minted straight to the deposit address (a bridge?), so there is no sender wallet. Ask the guest for their wallet address and to add it on Luma.", ...seen };
+    if (isContractCode(await prov.getCode(wallet)))
+      return { ok: false, code: "UNUSUAL_SENDER", note: `Sent by a contract (${wallet}: a bridge, an exchange or a smart wallet?) and no ETH address on Luma. Ask the guest which wallet should get refunds and payouts, and to add it on Luma.`, sender: wallet, ...seen };
   }
-  const amount = transfers.filter((t) => t.from === wallet).reduce((a, t) => a + t.value, 0n);
-  if (amount === 0n)
-    return { ok: false, code: "WRONG_SENDER", note: `Deposit came from ${senders.join(" / ")}, not ${wallet}`, sender: senders[0] };
+  if (wallet === ethers.ZeroAddress)
+    return { ok: false, code: "UNUSUAL_SENDER", note: "The ETH address on Luma is the zero address. Ask the guest for their real wallet.", ...seen };
+  const mine = bySender.get(wallet);
+  if (!mine)
+    return { ok: false, code: "WRONG_SENDER", note: `Deposit came from ${senders.join(" / ")}, not ${wallet}`, sender: senders[0], ...seen };
 
-  const block = await prov.getBlock(receipt.blockNumber);
-  const ts = Number(block.timestamp);
+  const amount = mine.amount;
+  const ts = Number((await prov.getBlock(receipt.blockNumber)).timestamp);
+  const res = { wallet, inferred, amount, ts, logIndex: mine.logIndex, ...seen };
   if (ts < cfg.opensAt || ts > cfg.deadline)
-    return { ok: false, code: "OUTSIDE_WINDOW", note: `Sent at ${new Date(ts * 1000).toISOString()}`, wallet, amount, ts };
-
+    return { ok: false, code: "OUTSIDE_WINDOW", note: `Sent at ${new Date(ts * 1000).toISOString()}`, ...res };
   if (amount < cfg.depositUnits)
-    return { ok: false, code: "AMOUNT_TOO_LOW", note: `Sent ${fmt(amount, cfg.decimals)}, need ${cfg.deposit}`, wallet, amount, ts };
-
-  const notes = [];
-  if (inferred) notes.push("wallet taken from tx sender");
-  if (amount > cfg.depositUnits) notes.push(`overpaid by ${fmt(amount - cfg.depositUnits, cfg.decimals)} (refund the excess)`);
-  return { ok: true, code: "VERIFIED", wallet, amount, ts, block: receipt.blockNumber, note: notes.join("; ") };
+    return { ok: false, code: "AMOUNT_TOO_LOW", note: `Sent ${fmt(amount, cfg.decimals)}, need ${cfg.deposit}. A second transfer can't be added to it: return this one (returns.csv) and ask for one new ${cfg.deposit} USDC transfer.`, ...res };
+  return { ok: true, code: "VERIFIED", note: inferred ? "wallet taken from the transaction sender" : "", ...res };
 }
 
-/** Verify every deposit registration in a Luma export. Pure: no files written. */
+/**
+ * Check every deposit registration in a Luma export on-chain, each row on its own. Rows that point
+ * at the same tx or wallet are sorted out afterwards (resolveClaims). Pure: no files written.
+ */
 export async function verifyRegistrations(prov, cfg, rows, { onlyDepositTicket = true } = {}) {
   const headers = rows.length ? Object.keys(rows[0]) : [];
   const col = detectColumns(headers, cfg.columns);
   if (!col.tx) throw new Error(`Couldn't find the tx-link column. Headers: ${headers.join(" | ")}. Set config.columns.tx`);
 
   const ticketRe = new RegExp(cfg.depositTicketPattern ?? "deposit|commit|stake", "i");
-  const usedTx = new Map();
-  const usedWallet = new Map();
-  const verified = [];
-  const issues = [];
-
+  const cache = new Map();
+  const results = [];
   for (const r of rows) {
     const who = { name: r[col.name] ?? "", email: (r[col.email] ?? "").toLowerCase().trim() };
     const isDepositTicket = col.ticket ? ticketRe.test(r[col.ticket] ?? "") : true;
     const rawTx = (r[col.tx] ?? "").trim();
-    if (onlyDepositTicket && col.ticket && !isDepositTicket && !rawTx) continue; // free "Request to Join" guest
-
     const txHash = extractTxHash(rawTx);
+    // free "Request to Join" guest: skip unless they pasted an actual tx hash ("N/A", "-", "none"…)
+    if (onlyDepositTicket && col.ticket && !isDepositTicket && !txHash) continue;
+
     const claimed = col.wallet ? normAddress(r[col.wallet]) : null;
     const approval = (col.approval ? r[col.approval] ?? "" : "").toLowerCase().trim();
-    const base = { ...who, ticket: r[col.ticket] ?? "", approval, wallet: claimed ?? "", tx: txHash ?? rawTx };
+    const base = { ...who, ticket: r[col.ticket] ?? "", approval, decision: lumaDecision(approval), wallet: claimed ?? "", tx: txHash ?? rawTx };
 
-    if (!rawTx) { issues.push({ ...base, code: "NO_TX", note: "Deposit ticket but no tx link" }); continue; }
-    if (!txHash) { issues.push({ ...base, code: "BAD_TX_HASH", note: "Couldn't find a 0x… tx hash in the answer" }); continue; }
-    if (usedTx.has(txHash)) {
-      issues.push({ ...base, code: "DUPLICATE_TX", note: `Same tx already used by ${usedTx.get(txHash)}` });
-      continue;
-    }
+    if (!rawTx) { results.push({ ...base, ok: false, code: "NO_TX", note: "Deposit ticket but no tx link" }); continue; }
+    if (!txHash) { results.push({ ...base, ok: false, code: "BAD_TX_HASH", note: "Couldn't find a 0x… tx hash in the answer" }); continue; }
 
-    let res;
-    try {
-      res = await verifyTx(prov, cfg, txHash, claimed);
-    } catch (e) {
-      res = { ok: false, code: "RPC_ERROR", note: e.shortMessage || e.message };
-    }
-    const row = {
+    const key = `${txHash}|${claimed ?? ""}`;
+    if (!cache.has(key))
+      cache.set(key, verifyTx(prov, cfg, txHash, claimed).catch((e) => ({ ok: false, code: "RPC_ERROR", note: e.shortMessage || e.message })));
+    const res = await cache.get(key);
+    results.push({
       ...base,
+      ok: res.ok,
+      inferred: !!res.inferred,
+      deposits: res.deposits ?? [],
+      units: res.amount,
+      logIndex: res.logIndex,
       wallet: res.wallet ?? claimed ?? "",
       amount: res.amount !== undefined ? fmt(res.amount, cfg.decimals) : "",
       sent_at: res.ts ? new Date(res.ts * 1000).toISOString() : "",
       explorer: cfg.explorer ? `${cfg.explorer}/tx/${txHash}` : "",
       block: res.block ?? "",
       code: res.code,
-      note: res.note ?? "",
-    };
-    if (!res.ok) { issues.push(row); continue; }
+      note: [res.note, res.inferred && res.code !== "VERIFIED" ? "wallet taken from the transaction sender" : ""].filter(Boolean).join("; "),
+    });
+  }
+  return { results, columns: col };
+}
 
-    usedTx.set(txHash, who.email || who.name);
-    if (usedWallet.has(row.wallet)) {
-      issues.push({ ...row, code: "DUPLICATE_WALLET", note: `Wallet already staked for ${usedWallet.get(row.wallet)}` });
+// Rows whose own wallet really sent USDC in their tx (whether or not it counts as a deposit).
+export const MONEY_CODES = new Set(["VERIFIED", "OUTSIDE_WINDOW", "AMOUNT_TOO_LOW"]);
+
+/**
+ * Several Luma rows can point at the same deposit (a copied tx link, a second sign-up) or at the
+ * same wallet. Pick the row that really owns it, so that a copy can never knock out the real guest:
+ *  - A row declined on Luma never wins over one that is not declined, so declining a copy is enough.
+ *  - Same tx: a row whose stated ETH address sent it beats a row with a blank address whose wallet
+ *    is registered on-chain, which beats other blank-address rows (their wallet is only guessed from
+ *    the sender). A row whose stated wallet did NOT send it (WRONG_SENDER) and that is not declined
+ *    blocks the plain blank-address rows: either could be the real owner (an exchange withdrawal).
+ *  - Same wallet, different txs: a row whose deposit still backs a spot (`held`) wins.
+ *  - Equals: if all are declined, the first one stands (so it is refunded once); if several are
+ *    not declined, all of them are DUPLICATE_CLAIM until she declines the wrong ones.
+ * The rows that lose are issues with no on-chain action (DUPLICATE_TX / DUPLICATE_WALLET), never
+ * registered or refunded. Returns { kept, issues }; flagged rows keep their check result in `was`.
+ */
+export function resolveClaims(results, { isStaker = () => false, held = () => true } = {}) {
+  const issues = [];
+  const who = (r) => r.email || r.name || r.wallet || "another guest";
+  const live = (r) => r.decision !== "declined";
+  const flag = (r, code, note, extra = false) => issues.push({ ...r, was: r.code, code, note, extra });
+  const pick = (pool) => {
+    if (pool.length <= 1) return { keep: pool[0] ?? null, conflict: [] };
+    const notDeclined = pool.filter(live);
+    if (notDeclined.length === 1) return { keep: notDeclined[0], conflict: [] };
+    if (!notDeclined.length) return { keep: pool[0], conflict: [] };
+    return { keep: null, conflict: notDeclined };
+  };
+  const copyNote = (r, owner) =>
+    `Same tx already claimed by ${who(owner)}. No on-chain action for this registration${live(r) ? "; if it is a copy, decline it on Luma" : ""}.`;
+
+  // 1. rows pointing at the same tx
+  const stage = [];
+  const byTx = new Map();
+  for (const r of results) {
+    if (!TX_HASH_RE.test(r.tx)) { issues.push(r); continue; } // NO_TX / BAD_TX_HASH
+    const k = r.tx.toLowerCase();
+    if (!byTx.has(k)) byTx.set(k, []);
+    byTx.get(k).push(r);
+  }
+  for (const group of byTx.values()) {
+    if (group.length === 1) {
+      (MONEY_CODES.has(group[0].code) ? stage : issues).push(group[0]);
       continue;
     }
-    usedWallet.set(row.wallet, who.email || who.name);
-    verified.push(row);
+    const claimants = group.filter((r) => MONEY_CODES.has(r.code));
+    const blocked = group.some((r) => r.code === "WRONG_SENDER" && live(r));
+    const blocker = group.find((r) => r.code === "WRONG_SENDER" && live(r));
+    // 1: the stated ETH address sent it; 2: blank address, but that wallet is registered; 3: blank address
+    const tier = (r) => (!r.inferred ? 1 : isStaker(r.wallet) ? 2 : 3);
+    const owners = [];
+    for (const w of new Set(claimants.map((r) => r.wallet))) {
+      const mine = claimants.filter((r) => r.wallet === w);
+      const eligible = mine.filter((r) => !(blocked && tier(r) === 3));
+      if (!eligible.length) {
+        for (const r of mine)
+          flag(r, "DUPLICATE_CLAIM", `${who(blocker)} pasted the same tx with an ETH address that did not send it, and this registration has no ETH address. Decide by hand which one is real, and decline the other on Luma.`);
+        continue;
+      }
+      // declined rows never win over a row that is not declined; then the best tier wins
+      const notDeclined = eligible.filter(live);
+      const base = notDeclined.length ? notDeclined : eligible;
+      const best = Math.min(...base.map(tier));
+      const top = base.filter((r) => tier(r) === best);
+      const keep = top.length === 1 || !notDeclined.length ? top[0] : null;
+      const conflict = keep ? [] : top;
+      for (const r of conflict) flag(r, "DUPLICATE_CLAIM", "Several Luma registrations claim this deposit. Decline the wrong ones on Luma (or decide by hand which one is real).");
+      if (keep) { stage.push(keep); owners.push(keep); }
+      for (const r of mine) if (r !== keep && !conflict.includes(r)) flag(r, "DUPLICATE_TX", copyNote(r, keep ?? conflict[0]));
+    }
+    for (const r of group) {
+      if (MONEY_CODES.has(r.code)) continue; // handled above
+      if (owners.length) flag(r, "DUPLICATE_TX", copyNote(r, owners[0]));
+      else issues.push(r); // nobody owns it yet: the row keeps its own code (e.g. WRONG_SENDER)
+    }
   }
-  return { verified, issues, columns: col };
+
+  // 2. rows using the same wallet with different txs
+  const kept = [];
+  const byWallet = new Map();
+  for (const r of stage) {
+    const k = r.wallet.toLowerCase();
+    if (!byWallet.has(k)) byWallet.set(k, []);
+    byWallet.get(k).push(r);
+  }
+  for (const group of byWallet.values()) {
+    if (group.length === 1) { kept.push(group[0]); continue; }
+    const heldRows = group.filter(held);
+    const heldVerified = heldRows.filter((r) => r.code === "VERIFIED");
+    const { keep, conflict } = pick(heldVerified.length ? heldVerified : heldRows.length ? heldRows : group);
+    for (const r of conflict) flag(r, "DUPLICATE_CLAIM", "Several Luma registrations use this wallet. Decline the wrong ones on Luma (or decide by hand which one is real).");
+    if (keep) kept.push(keep);
+    for (const r of group) {
+      if (r === keep || conflict.includes(r)) continue;
+      if (keep) flag(r, "DUPLICATE_WALLET", `This wallet's deposit is already counted for ${who(keep)}. Any money from this extra deposit still held is listed in returns.csv.`, true);
+      else flag(r, "DUPLICATE_WALLET", "Other registrations use this wallet too. Decide by hand which one is real.");
+    }
+  }
+  return { kept, issues };
+}
+
+/**
+ * How much of each deposit the contract still holds for the wallet that sent it.
+ *
+ * The contract only counts money in total, so this pairs, per wallet and in chain order, every
+ * deposit with what the contract sent back to that wallet: Rejected events (rejectAndRefund, the
+ * "Refund declined guests" button) and Refunded events (refund, "Return a stray transfer"). A
+ * return only covers deposits made before it, by amount, oldest first, with these preferences:
+ *  - while the wallet is a registered staker, one of its deposits is staked: refund() cannot touch
+ *    that part (it only pays out spare money), and a Rejected of the staker returns it;
+ *  - a Rejected of an unregistered payer goes first to the deposit a verified Luma row claims (`prefer`);
+ *  - a Refunded goes first to a deposit whose unstaked part is exactly that amount, then to deposits
+ *    no verified Luma row claims (strays, short or late payments), then oldest first.
+ *
+ * deposits: [{ tx, from, amount, block, logIndex }]
+ * events:   [{ type: "Rejected" | "Refunded" | "StakerRegistered", wallet, amount, block, logIndex, tx }]
+ * stakers:  lower-case wallets registered (or paid) at the snapshot, in case their registration is
+ *           older than the scanned range.
+ * Returns byDeposit: Map depKey → { remaining, staked, returnedBy[] }; free money = remaining
+ * minus the deposit if staked. Also `unbacked` (registrations with no deposit of their own behind
+ * them) and `unpaired` (returns larger than the deposits seen).
+ */
+export function pairReturns(deposits, events, { deposit, prefer = new Set(), stakers = new Set() }) {
+  const byDeposit = new Map();
+  const timeline = new Map();
+  const at = (w) => {
+    const k = String(w).toLowerCase();
+    if (!timeline.has(k)) timeline.set(k, []);
+    return timeline.get(k);
+  };
+  for (const d of deposits) {
+    const k = depKey(d.tx, d.from);
+    if (byDeposit.has(k)) continue;
+    const s = { tx: String(d.tx).toLowerCase(), from: d.from, amount: d.amount, block: Number(d.block), logIndex: d.logIndex ?? -1, remaining: d.amount, staked: false, returnedBy: [] };
+    byDeposit.set(k, s);
+    at(d.from).push({ block: s.block, logIndex: s.logIndex, dep: s });
+  }
+  for (const e of events) at(e.wallet).push({ block: Number(e.block), logIndex: e.logIndex ?? 0, ev: e });
+
+  const unbacked = [];
+  const unpaired = [];
+  const preferred = (s) => prefer.has(s.tx);
+  for (const [wallet, list] of timeline) {
+    list.sort((x, y) => x.block - y.block || x.logIndex - y.logIndex);
+    const deps = [];
+    let staked = null;
+    const free = (s) => s.remaining - (s === staked ? deposit : 0n);
+    const stakeOne = () => {
+      const ok = deps.filter((s) => s.remaining >= deposit);
+      return ok.find(preferred) ?? ok[0] ?? null;
+    };
+    for (const it of list) {
+      if (it.dep) { deps.push(it.dep); continue; }
+      const e = it.ev;
+      if (e.type === "StakerRegistered") {
+        staked = stakeOne();
+        if (!staked) unbacked.push(e);
+        continue;
+      }
+      let left = e.amount;
+      if (e.type === "Rejected" && staked) {
+        const t = staked.remaining < left ? staked.remaining : left;
+        staked.remaining -= t;
+        left -= t;
+        staked.returnedBy.push(e.tx);
+        staked = null;
+      }
+      const amount = left;
+      const order = e.type === "Rejected"
+        ? [...deps.filter(preferred), ...deps.filter((s) => !preferred(s))]
+        : [...deps].sort((x, y) => (free(x) === amount ? 0 : 1) - (free(y) === amount ? 0 : 1) || (preferred(x) ? 1 : 0) - (preferred(y) ? 1 : 0));
+      for (const s of order) {
+        if (left === 0n) break;
+        const f = free(s);
+        if (f <= 0n) continue;
+        const t = f < left ? f : left;
+        s.remaining -= t;
+        left -= t;
+        s.returnedBy.push(e.tx);
+      }
+      if (left > 0n) unpaired.push({ ...e, left });
+    }
+    if (!staked && stakers.has(wallet)) staked = stakeOne();
+    if (staked) staked.staked = true;
+  }
+  return { byDeposit, unbacked, unpaired };
+}
+
+/** eth_getLogs over a block range in chunks, so RPCs that cap the range still answer. */
+export async function getLogsChunked(prov, filter, fromBlock, toBlock = "latest", step = 50_000) {
+  const latest = toBlock === "latest" ? await prov.getBlockNumber() : Number(toBlock);
+  const out = [];
+  for (let start = Number(fromBlock); start <= latest; start += step) {
+    const logs = await prov.getLogs({ ...filter, fromBlock: start, toBlock: Math.min(start + step - 1, latest) });
+    for (const l of logs) out.push(l);
+  }
+  return out;
 }
 
 /** Every token transfer into the receiver within a block range (for cross-checking). */
 export async function incomingTransfers(prov, cfg, fromBlock, toBlock = "latest", step = 50_000) {
-  const latest = toBlock === "latest" ? await prov.getBlockNumber() : Number(toBlock);
-  const out = [];
-  for (let start = Number(fromBlock); start <= latest; start += step) {
-    const end = Math.min(start + step - 1, latest);
-    const logs = await prov.getLogs({
-      address: cfg.token,
-      topics: [TRANSFER_TOPIC, null, ethers.zeroPadValue(cfg.receiver, 32)],
-      fromBlock: start,
-      toBlock: end,
-    });
-    for (const l of logs)
-      out.push({
-        tx: l.transactionHash.toLowerCase(),
-        from: ethers.getAddress(ethers.dataSlice(l.topics[1], 12)),
-        amount: BigInt(l.data),
-        block: l.blockNumber,
-      });
-  }
-  return out;
+  const logs = await getLogsChunked(prov, { address: cfg.token, topics: [TRANSFER_TOPIC, null, ethers.zeroPadValue(cfg.receiver, 32)] }, fromBlock, toBlock, step);
+  return logs.map((l) => ({
+    tx: l.transactionHash.toLowerCase(),
+    from: ethers.getAddress(ethers.dataSlice(l.topics[1], 12)),
+    amount: BigInt(l.data),
+    block: l.blockNumber,
+    logIndex: l.index,
+  }));
 }
 
 /** Safe{Wallet} Transaction Builder batch file (Apps → Transaction Builder → drag & drop). */
