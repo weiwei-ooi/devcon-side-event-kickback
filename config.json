@@ -18,7 +18,7 @@
   "kleros": {
     "court": 0,
     "jurors": 3,
-    "policyURI": "",
-    "metaEvidenceURI": ""
+    "policyURI": "/ipfs/QmWzCbhNEaySZ8EtFgPKuq4AYCtJba962S4VT77AGdw25B",
+    "metaEvidenceURI": "/ipfs/QmXAtWkxqrYPhriV4s1r7cQktEfF3498M6tmhKjXtvFUgU"
   }
 }
