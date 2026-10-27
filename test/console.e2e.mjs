@@ -124,6 +124,8 @@ const txt = (id) => page.locator("#" + id).innerText();
 const logText = () => txt("log");
 const clearLog = () => page.locator("#log").evaluate((el) => (el.textContent = ""));
 const waitLog = async (re) => { for (let i = 0; i < 120 && !re.test(await logText()); i++) await page.waitForTimeout(250); return re.test(await logText()); };
+// the status panel refreshes after the log line, so wait for it instead of reading it once
+const waitStatus = async (...res) => { const ok = async () => { const t = await txt("status"); return res.every((re) => re.test(t)); }; for (let i = 0; i < 120 && !(await ok()); i++) await page.waitForTimeout(250); return ok(); };
 const click = async (id, re) => { await page.click("#" + id); return waitLog(re); };
 const skew = async (secs) => { await prov.send("evm_increaseTime", [secs]); await prov.send("evm_mine", []); await page.evaluate((s) => (window.__skew = (window.__skew || 0) + s * 1000), secs); };
 const nonce = () => prov.getTransactionCount(me);
@@ -189,7 +191,7 @@ write("new-stakers.json", { contract: kAddr, chainId: 1337, deposit: E("0.005").
 check("list made for another deposit refused", await click("register", /was made for a deposit of 0\.005 ETH, but this contract takes 0\.01 ETH/) && (await nonce()) === n0, await logText());
 write("new-stakers.json", { contract: kAddr, chainId: 1337, deposit: E("0.01").toString(), items });
 check("register", await click("register", /Registered 3 stakers/), await logText());
-check("status shows the ETH pool", /Staked pool\s*0\.03 ETH/.test(await txt("status")) && /ETH in contract\s*0\.03 ETH/.test(await txt("status")), await txt("status"));
+check("status shows the ETH pool", await waitStatus(/Staked pool\s*0\.03 ETH/, /ETH in contract\s*0\.03 ETH/), await txt("status"));
 
 // RC L8: "Remove and refund" refuses anyone who is not a registered staker
 await page.evaluate(() => (document.querySelector("details").open = true)); // "Other actions"
@@ -255,7 +257,7 @@ check("post button unlocked", !(await page.isDisabled("#postList")), await txt("
 check("post attendance list", await click("postList", /Attendance list posted/), await logText());
 check("post prompt in ETH", /Each would get 0\.015 ETH \(pool 0\.03 ETH\)/.test(lastDialog()), lastDialog());
 await page.waitForTimeout(1000);
-check("phase shows challenge window", /challenge window/.test(await txt("status")), await txt("status"));
+check("phase shows challenge window", await waitStatus(/challenge window/), await txt("status"));
 check("release locked during window", (await page.isDisabled("#release")) && /locked until/.test(await txt("release")), await txt("release"));
 
 // Cai challenges from their own wallet; the owner disputes it from the console and sends the challenge details
@@ -405,7 +407,7 @@ check("second stray returned", (await bal(ana)) - anaBal === E("0.005"));
 check("nothing left over", await click("sweep", /Nothing left over/), await logText());
 check("contract holds no ETH", (await bal(kAddr)) === 0n, String(await bal(kAddr)));
 await page.waitForTimeout(1000);
-check("phase shows paid out", /Paid out/.test(await txt("status")), await txt("status"));
+check("phase shows paid out", await waitStatus(/Paid out/), await txt("status"));
 check("every transaction carried the network's chainId", sent.length > 0 && sent.every((t) => t.chainId === "0x539"), sent.map((t) => t.chainId).join(","));
 check("no page errors", errs.length === 0, errs.join("; "));
 
