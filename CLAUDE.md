@@ -11,9 +11,9 @@
 - Luma (Private for now): https://luma.com/qewnqhas. Manage page: https://luma.com/event/manage/evt-xjcerzm2NJ0OVdq. The event is on the "Kleros Events" calendar.
 - Luma setup:
   - Capacity 150 with a waitlist, and every registration needs approval.
-  - Ticket types: **"Committed Spot ($25 Deposit)"** and **"Request to Join (Free)"**. The Committed Spot name still says $25 (USDC era): rename it to the ETH amount she confirmed (0.01 ETH) when the Luma text is updated.
+  - Ticket types: **"Committed Spot (0.01 ETH)"** (renamed 27 Oct; Luma caps ticket names at 30 characters) and **"Request to Join (Free)"**.
   - Questions: ETH Address (optional, connected wallet), Company/Project + job title, X, LinkedIn, "What are you building?", and "Deposit tx link (Committed Spot only)…".
-- The Luma description still contains the placeholders **[NETWORK]** and **[DEPOSIT ADDRESS]**. Replace them once the contract is deployed: the network is **Ethereum mainnet** (since 27 Oct; it was Arbitrum One before), and the address is the deployed contract. The description also still describes 25 USDC on Arbitrum One and has the ⚠️ "Arbitrum One ONLY" line (see Notes): update it to the ETH deposit on Ethereum mainnet (README "Guest instructions").
+- Since 27 Oct the Luma description, Committed Spot ticket, "Deposit tx link" question and Declined email describe the **0.01 ETH deposit on Ethereum mainnet** (⚠️ "Ethereum mainnet ONLY" warning, etherscan.io links, Kleros fee about 0.0162 ETH). The description still contains the placeholder **[DEPOSIT ADDRESS]**: replace it with the deployed live contract.
 
 ## The mechanism (decided with Wei Wei)
 - Guests choosing the Committed Spot send the **ETH deposit** on **Ethereum mainnet** from their own wallet to the deposit contract, then paste the tx link (etherscan.io) on Luma.
@@ -43,7 +43,7 @@
 - [ ] Owner wallet: move a little ETH to Ethereum mainnet (about 0.05 ETH for gas, more if she will dispute challenges).
 - [ ] Short v6 rehearsal on Ethereum mainnet (`npm run console:rehearsal`, 0.25 ETH cap): deploy, deposit, register, refund a declined guest, post list, a challenge left unmatched, release payouts; Zerion accepting `chainId`. Matching a challenge there opens a **real** Kleros case (about 0.0162 ETH, real jurors, about 3 weeks): only on purpose, after the metaevidence is pinned. Check the Dispute Resolver's event layout (indexed fields) against Etherscan during the rehearsal.
 - [ ] Her developers review the v6 code. Zero open issues before going public.
-- [ ] Deploy the live contract with `npm run console` (config.json), set `receiver`, `contract`, `deployBlock` and `depositOpensAt` (deploy time), verify the source on Etherscan (0.8.28, optimizer 200, EVM paris), and put the address on Luma (event stays **Private**). Update the Luma copy: Ethereum mainnet, ETH amount, ticket name, wrong-network warning flipped, etherscan.io links.
+- [ ] Deploy the live contract with `npm run console` (config.json), set `receiver`, `contract`, `deployBlock` and `depositOpensAt` (deploy time), verify the source on Etherscan (0.8.28, optimizer 200, EVM paris), and put the address on Luma in place of [DEPOSIT ADDRESS] (event stays **Private**). The rest of the Luma copy was switched to 0.01 ETH on Ethereum mainnet on 27 Oct.
 - [ ] Switch Luma from Private to Public only when she says so.
 
 ## How to run things
