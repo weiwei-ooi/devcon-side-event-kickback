@@ -38,6 +38,11 @@ interface IArbitrableProxy {
         returns (uint256 winnerStakeMultiplier, uint256 loserStakeMultiplier, uint256 loserAppealPeriodMultiplier, uint256 denominator);
 }
 
+/// @notice The ERC-20 call `returnToken` makes, to give back tokens sent here by mistake.
+interface IERC20Transfer {
+    function transfer(address to, uint256 amount) external returns (bool);
+}
+
 /// @title TruthPaysKickback (v6)
 /// @notice Kickback-style refundable ETH deposits for an IRL event on Ethereum mainnet, with
 /// attendance challenges decided by Kleros Court.
@@ -91,6 +96,8 @@ interface IArbitrableProxy {
 ///     to any address it chooses.
 ///  7. ETH nobody is owed (rounding dust, overpayments, stray or unregistered deposits) can be
 ///     returned with `refund` or swept after settlement with `sweep`, never anything in `reserved()`.
+///     Tokens are never deposits: tokens sent here by mistake (USDC, for example) can be sent back
+///     with `returnToken`, which cannot move ETH.
 ///
 /// ETH accounting
 ///  One balance holds everything: the staked pool, the set-aside shares (`heldBack`), the
@@ -171,6 +178,7 @@ contract TruthPaysKickback {
     event EmergencyWithdrawn(address indexed staker, uint256 amount);
     event Refunded(address indexed to, uint256 amount);
     event Swept(address indexed to, uint256 amount);
+    event TokenReturned(address indexed token, address indexed to, uint256 amount);
     event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
@@ -226,13 +234,17 @@ contract TruthPaysKickback {
     /// @notice Minimum time between the event start and the deadline, so a late list is still possible.
     uint256 public constant MIN_SETTLEMENT_WINDOW = 7 days;
     /// @notice Gas a batch payment may use in the recipient's wallet. A plain wallet needs none. A
-    /// Safe (proxy + `SafeReceived` event) or a common smart account (ERC-4337 proxies, Argent)
-    /// needs well under 20,000, more than the 2,300 of `transfer` since cold storage reads got
-    /// pricier. 100,000 leaves a wide margin for heavier wallets, while a hostile recipient can
-    /// waste at most 100,000 gas per payment, so a batch of 150 still fits easily in a block.
-    /// A wallet that needs more is not lost: its payment waits in `owed` for `claim`, which
-    /// forwards all the gas the caller sends.
-    uint256 public constant PAYOUT_GAS = 100_000;
+    /// Safe (proxy + `SafeReceived` event), a common smart account (ERC-4337 proxies, Argent) or an
+    /// EIP-7702 delegated wallet needs well under 20,000, more than the 2,300 of `transfer` since
+    /// cold storage reads got pricier. 40,000 leaves twice that, and keeps the worst batch inside
+    /// one Ethereum transaction: since EIP-7825 (Fusaka) a transaction may use at most 2^24 =
+    /// 16,777,216 gas, whatever the block limit. A recipient that burns its whole allowance costs
+    /// the batch about 65,000 gas (the allowance, plus recording the payment in `owed`), so a
+    /// payout, a lost case's split or a cancellation over 150 such wallets needs about 12.6 million
+    /// gas, and the console's 30% margin on top still stays under 2^24 (tested). A wallet that
+    /// needs more is not lost: its payment waits in `owed` for `claim`, which forwards all the gas
+    /// the caller sends.
+    uint256 public constant PAYOUT_GAS = 40_000;
 
     /// @notice The deposit per guest, in wei (0.01 ETH = 10000000000000000).
     uint256 public immutable depositAmount;
@@ -480,6 +492,18 @@ contract TruthPaysKickback {
         require(amount <= spare(), InsufficientBalance(reserved() + amount, address(this).balance));
         emit Refunded(to, amount);
         _sendOrRevert(to, amount);
+    }
+
+    /// @notice Send back ERC-20 tokens (USDC, for example) that someone sent to this address by
+    /// mistake. Deposits are ETH only, so this contract holds no tokens of its own, and this call
+    /// sends no ETH: it can never touch the pool or anything in `reserved()`. Allowed in every phase.
+    function returnToken(address token, address to, uint256 amount) external nonReentrant onlyOwner {
+        require(to != address(0) && to != address(this), ZeroAddress());
+        emit TokenReturned(token, to, amount);
+        // USDC answers true; some tokens (USDT) answer nothing, which counts as done if `token` is a
+        // contract (a call to an address without code would "succeed" without moving anything)
+        (bool ok, bytes memory answer) = token.call(abi.encodeCall(IERC20Transfer.transfer, (to, amount)));
+        require(ok && token.code.length > 0 && (answer.length == 0 || abi.decode(answer, (bool))), TransferFailed(to, amount));
     }
 
     // ------------------------------------------------------------------ attendance

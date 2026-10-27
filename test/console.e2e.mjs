@@ -7,7 +7,8 @@
 // Resolver from the owner wallet (never through the deposit contract) → deliver the final ruling →
 // settle → release payouts. Also: deploy refuses a changed config and a live config without the
 // pinned files, and asks before a second deploy; single refunds only for registered stakers; stray
-// returns list earlier returns; leftover warning above rounding dust.
+// returns list earlier returns; leftover warning above rounding dust; lists made for another deposit
+// are refused; tokens sent by mistake go back with "Return tokens"; no gas limit above 2^24 (EIP-7825).
 // Needs Playwright with Chromium (see test/site.e2e.mjs).
 //   node test/console.e2e.mjs
 import fs from "node:fs";
@@ -81,6 +82,18 @@ await page.addInitScript(() => {
   const real = Date.now;
   Date.now = () => real() + (window.__skew || 0);
   window.ethereum = { request: ({ method, params }) => window.__rpc(method, params), on() {}, removeListener() {} };
+});
+// `bigEstimate`: the chain answers every gas estimate from the page with 13.6 million gas (a big
+// payout batch), so the console's 30% margin would pass the 2^24 per-transaction cap (EIP-7825)
+let bigEstimate = false;
+await page.route(new RegExp(`127\\.0\\.0\\.1:${RPC}`), async (route) => {
+  if (!bigEstimate || route.request().method() !== "POST") return route.continue();
+  const body = JSON.parse(route.request().postData() || "null");
+  const res = await route.fetch();
+  const out = await res.json();
+  const big = (q, a) => (q?.method === "eth_estimateGas" ? { ...a, result: "0xd00000" } : a);
+  const json = Array.isArray(out) ? out.map((a) => big([body].flat().find((q) => q.id === a.id), a)) : big(body, out);
+  return route.fulfill({ response: res, body: JSON.stringify(json) });
 });
 // Kleros's IPFS upload service, simulated: each upload gets a new CID and answers like the real one
 // ({ cids: ["ipfs://<cid>/<file name>"] }). `ipfsFail` makes the next uploads fail with an HTTP 500.
@@ -168,7 +181,13 @@ check("no second contract", (await nonce()) === n0);
 for (const g of [g1, g2, g3]) await (await g.sendTransaction({ to: kAddr, value: E("0.01") })).wait();
 const items = [];
 for (const [g, name] of [[g1, "Ana"], [g2, "Ben"], [g3, "Cai"]]) items.push({ wallet: await addr(g), name, status: 0 });
+// finding 5: a list checked against another deposit amount than the contract's is refused
 write("new-stakers.json", { contract: kAddr, chainId: 1337, items });
+n0 = await nonce();
+check("list without a deposit stamp refused", await click("register", /was made for an unknown deposit, but this contract takes 0\.01 ETH\. Ask Claude to fix the deposit/) && (await nonce()) === n0, await logText());
+write("new-stakers.json", { contract: kAddr, chainId: 1337, deposit: E("0.005").toString(), items });
+check("list made for another deposit refused", await click("register", /was made for a deposit of 0\.005 ETH, but this contract takes 0\.01 ETH/) && (await nonce()) === n0, await logText());
+write("new-stakers.json", { contract: kAddr, chainId: 1337, deposit: E("0.01").toString(), items });
 check("register", await click("register", /Registered 3 stakers/), await logText());
 check("status shows the ETH pool", /Staked pool\s*0\.03 ETH/.test(await txt("status")) && /ETH in contract\s*0\.03 ETH/.test(await txt("status")), await txt("status"));
 
@@ -207,6 +226,28 @@ n0 = await nonce();
 check("returning more than the spare is refused", await click("refundOne", /Only 0\.005 ETH is spare/) && (await nonce()) === n0, await logText());
 await page.fill("#rfTo", ""); await page.fill("#rfAmt", ""); // this 0.005 ETH stays in the contract (for the leftover test)
 
+// finding 8: Ben sends 25 USDC to the contract by mistake; it is not a deposit, and goes back with "Return tokens"
+const usdc = await dep("TestToken");
+const ben = await addr(g2);
+await (await usdc.mint(ben, 25_000_000n)).wait();
+await (await usdc.connect(g2).transfer(kAddr, 25_000_000n)).wait();
+const ethBefore = await bal(kAddr);
+await page.fill("#tkToken", usdc.target); await page.fill("#tkTo", ben); await page.fill("#tkAmt", "30");
+n0 = await nonce();
+check("returning more tokens than the contract holds is refused", await click("returnTokens", /The contract holds only 25 USDC/) && (await nonce()) === n0, await logText());
+await page.fill("#tkAmt", "25.0000001");
+check("more decimals than the token has are refused", await click("returnTokens", /Enter an amount of USDC like 25 or 12\.5/) && (await nonce()) === n0, await logText());
+await page.fill("#tkToken", ana); await page.fill("#tkAmt", "25");
+check("an address without a token is refused", await click("returnTokens", /is not a token contract/) && (await nonce()) === n0, await logText());
+await page.fill("#tkToken", usdc.target);
+bigEstimate = true;
+const sentTk = sent.length;
+check("return tokens sent by mistake", await click("returnTokens", /Sent 25 USDC to/), await logText());
+bigEstimate = false;
+check("token return prompt: amount, token, no ETH", lastDialog().includes(`Send 25 USDC (token ${usdc.target})`) && /Tokens are never deposits, and this sends no ETH/.test(lastDialog()), lastDialog());
+check("tokens back with the guest, contract ETH untouched", (await usdc.balanceOf(ben)) === 25_000_000n && (await usdc.balanceOf(kAddr)) === 0n && (await bal(kAddr)) === ethBefore);
+check("gas limit capped at 2^24 (EIP-7825) when the estimate plus 30% is above it", sent.length === sentTk + 1 && BigInt(sent[sent.length - 1].gas) === 16_777_216n, sent.slice(sentTk).map((t) => t.gas).join(","));
+
 // after the event: Ana and Ben checked in; Cai was missed at the door
 write("payout-plan.json", { contract: kAddr, chainId: 1337, stakers: 3, attendees: [await addr(g1), await addr(g2)], share: E("0.015").toString() });
 await page.click("#refresh"); await page.waitForTimeout(800);
@@ -237,6 +278,9 @@ check("challenge details uploaded through Kleros's service as an evidence JSON",
 check("challenge details name the staker, the contract and where to check",
   /Challenge details/.test(details.name) && details.description?.includes(`This case is about the wallet ${cai}`) && details.description.includes(kAddr) &&
   /Challenged and ChallengeMatched events/.test(details.description) && details.description.includes(me) && details.description.includes(`/tx/${challengeTx}`), JSON.stringify(details));
+check("challenge details name the Kleros case number (as the case description and the policy promise) and the Dispute Resolver's number",
+  details.description?.includes(`It is Kleros case #1000 (https://court.kleros.io/cases/1000), number ${localID} in Kleros's Dispute Resolver`) &&
+  /The ChallengeMatched event for \S+ names Kleros case #1000\./.test(details.description), JSON.stringify(details));
 check("challenge details on Kleros under the local ID, from the owner", localID !== 1000n && evs.length === 1 && evs[0].args._party === me && evs[0].args._evidence === uploads[0].path,
   `local ${localID}: ` + evs.map((e) => `${e.args._party} ${e.args._evidence}`).join("; "));
 check("Kleros case created with the metaevidence", (await proxy.queryFilter(proxy.filters.MetaEvidence(localID)))[0]?.args._evidence === META);

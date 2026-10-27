@@ -139,7 +139,7 @@ body.status .deposit-only, body:not(.status) .status-only { display: none !impor
 
   <div class="network deposit-only" role="note">
     <span class="tag">!</span>
-    <div><strong>Ethereum mainnet only.</strong> Send your ETH on Ethereum mainnet, not on Arbitrum, Base, Optimism or any other network. ETH sent to this address on another network can't be counted and would be lost. This page switches your wallet to Ethereum mainnet before you send.</div>
+    <div><strong>Ethereum mainnet only.</strong> Send your ETH on Ethereum mainnet, not on Arbitrum, Base, Optimism or any other network. ETH sent to this address on another network can't be counted and would be lost. This page switches your wallet to Ethereum mainnet before you send. <strong>ETH only:</strong> USDC or any other token sent to this address is not a deposit and books no spot (the hosts can only send it back by hand).</div>
   </div>
 
   <section class="panel" aria-labelledby="contract-h">
@@ -296,7 +296,7 @@ const PSEL = { submitEvidence: "0xa6a7f0eb", // submitEvidence(uint256 localDisp
   withdrawAll: "0x0e274e4c", // withdrawFeesAndRewardsForAllRounds(uint256 localDisputeID, address contributor, uint256[] rulings)
   withdrawable: "0xc25516e9", // getTotalWithdrawableAmount(uint256 localDisputeID, address contributor, uint256[] rulings)
   disputes: "0x564a565d", // disputes(uint256 localDisputeID) -> (bytes extraData, bool isRuled, uint256 ruling, uint256 arbitratorDisputeID)
-  rounds: "0x3ef40ba7" }; // disputeIDtoRoundArray(uint256 localDisputeID, uint256 round): reverts past the last round
+  rounds: "0x3ef40ba7" }; // disputeIDtoRoundArray(uint256 localDisputeID, uint256 round): fails past the last round
 // KlerosLiquid (the court itself): its case number is the arbitrator dispute ID
 const KSEL = { disputes: "0x564a565d", // disputes(uint256) -> (subcourtID, arbitrated, choices, period, lastPeriodChange, draws, commits, ruled)
   currentRuling: "0x1c3db16d", passPeriod: "0x115d5376", executeRuling: "0x8bb04875" };
@@ -306,6 +306,8 @@ const TOPIC = {
   refunded: "0xd7dee2702d63ad89917b6a4da9981c90c4d24f8c2bdfd64c604ecae57d8d0651", // Refunded(address indexed to, uint256 amount)
   // Dispute Resolver: Contribution(uint256 localDisputeID, uint256 round, uint256 ruling, address contributor, uint256 amount)
   contribution: "0xcae597f39a3ad75c2e10d46b031f023c5c2babcd58ca0491b122acda3968d4c0",
+  // Dispute Resolver: RulingFunded(uint256 localDisputeID, uint256 round, uint256 ruling), when an answer is fully funded
+  rulingFunded: "0x39493c1b78d9a13bcc9e1d532fc7faed3889248d93affa811416ce3c6bcb1a68",
 };
 // Plain words for the refusals a guest is most likely to hit: errors of the deposit contract, by selector, and reason
 // strings of Kleros's Dispute Resolver and court
@@ -341,6 +343,8 @@ const DEPOSIT = BigInt(CONFIG.depositWei); // wei
 const DEPOSIT_GAS = 50000n;
 // Kleros quotes a huge "non-payable" appeal cost once a case can't be appealed any further
 const NOT_APPEALABLE = 10n ** 30n;
+// Since EIP-7825 (Fusaka) one Ethereum transaction may use at most 2^24 gas, whatever the block limit
+const TX_GAS_CAP = 16_777_216n;
 const short = (a) => a.slice(0, 6) + "…" + a.slice(-4);
 const txUrl = (h) => `${CONFIG.explorer}/tx/${h}`;
 // An amount of wei in ETH, rounded to `dp` decimals, without trailing zeros: eth(10n ** 16n) = "0.01 ETH".
@@ -368,7 +372,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Reads go to the public Ethereum RPC, so they work before a wallet is connected and whatever network the wallet is on.
 // If the RPC fails, the wallet's own connection is tried. A revert is the chain's answer, not a network problem: it is
-// never retried, and its data is kept so the page can say why.
+// never retried, and its data is kept so the page can say why. So is an invalid opcode: contracts built with Solidity
+// before 0.8 (Kleros's Dispute Resolver, KlerosLiquid) stop that way on a failed check or a read past the end of a
+// list, and a geth node reports it as {code: -32000, message: "invalid opcode: INVALID"}, with no data.
 let rpcId = 0;
 function rpcError(err) {
   const e = new Error(String((err && err.message) || "RPC error"));
@@ -376,7 +382,7 @@ function rpcError(err) {
   const data = [err && err.data, inner.data, inner.result, inner.originalError && inner.originalError.data, err && err.error && err.error.data]
     .find((d) => typeof d === "string" && /^0x[0-9a-fA-F]*$/.test(d));
   e.code = err && err.code;
-  e.revert = data !== undefined || (err && err.code === 3) || inner.code === 3 || [e.message, inner.message].some((m) => /revert/i.test(String(m || "")));
+  e.revert = data !== undefined || (err && err.code === 3) || inner.code === 3 || [e.message, inner.message].some((m) => /revert|invalid opcode/i.test(String(m || "")));
   e.data = data || "0x";
   return e;
 }
@@ -712,10 +718,17 @@ async function sendTx({ onlyFrom = null, to = CONFIG.contract, data, value = 0n,
     // a dry run first, so a refusal is explained in plain words instead of a wallet error
     try { await call(to, data, { from, value: tx.value }); }
     catch (e) { if (e.revert) { setNote(out, "bad", `This would fail, so nothing was sent: ${esc(explain(e.data))}.`); return false; } }
+    // Wallets add their own margin to the gas they estimate (MetaMask: +50%). For a very large payout batch that could
+    // pass the 2^24 cap and the network would refuse it, so then the page sets the limit itself: +30%, at most the cap.
+    let gas = null;
+    try {
+      const est = big(await rpc("eth_estimateGas", [{ from, to, data, value: tx.value }]));
+      if ((est * 3n) / 2n > TX_GAS_CAP) { const g = (est * 13n) / 10n; gas = "0x" + (g > TX_GAS_CAP ? TX_GAS_CAP : g).toString(16); }
+    } catch {}
     // the network is read last, right before the wallet prompt, and pinned in the request so the wallet refuses any other one
     state.chainId = Number(await window.ethereum.request({ method: "eth_chainId" }));
     if (state.chainId !== CONFIG.chainId) { refresh(); setNote(out, "bad", "Your wallet is no longer on Ethereum mainnet. Switch back (step 2) and try again."); return false; }
-    const hash = await window.ethereum.request({ method: "eth_sendTransaction", params: [{ ...tx, chainId: CHAIN_HEX }] });
+    const hash = await window.ethereum.request({ method: "eth_sendTransaction", params: [{ ...tx, ...(gas ? { gas } : {}), chainId: CHAIN_HEX }] });
     if (!isHash(hash)) throw new Error("The wallet didn't return a transaction link. Check your wallet's activity.");
     setNote(out, "", `Sent. Waiting for confirmation… ${txA(hash)}`);
     for (const id of ["ch-box", "claim-box", "reward-box", "release-box"]) $(id).hidden = true;
@@ -851,34 +864,54 @@ function showAction(label, fn, label2, fn2) {
   $("ch-box").hidden = false;
 }
 
-// Appeal contributions on the Dispute Resolver, from its Contribution events. The event's indexed fields are read from
-// the log itself (localDisputeID, round and contributor indexed, as in Kleros's interface; or none indexed), so a
-// different layout gives nothing rather than wrong numbers. Throws if the logs can't be read.
-async function contributions(proxy) {
-  const logs = await getLogs({ address: proxy, topics: [TOPIC.contribution] });
-  const out = [];
+// Appeal money on the Dispute Resolver, from its events (one search): Contribution (who put how much on which answer)
+// and RulingFunded (an answer fully funded). The events' indexed fields are read from the log itself (localDisputeID,
+// round and contributor indexed, as in Kleros's interface; or none indexed), so a different layout gives nothing
+// rather than wrong numbers. Throws if the logs can't be read.
+async function appealLogs(proxy) {
+  const logs = await getLogs({ address: proxy, topics: [[TOPIC.contribution, TOPIC.rulingFunded]] });
+  const contributions = [], funded = [];
   for (const l of logs) {
     const t = l.topics || [], w = words(l.data).map((x) => big("0x" + x));
-    if (t.length === 4 && w.length === 2) out.push({ local: big(t[1]), round: Number(big(t[2])), ruling: Number(w[0]), contributor: "0x" + String(t[3]).slice(-40).toLowerCase(), amount: w[1] });
-    else if (t.length === 1 && w.length === 5) out.push({ local: w[0], round: Number(w[1]), ruling: Number(w[2]), contributor: "0x" + w[3].toString(16).padStart(40, "0"), amount: w[4] });
+    if (String(t[0]).toLowerCase() === TOPIC.rulingFunded) {
+      const v = [...t.slice(1).map((x) => big(x)), ...w];
+      if (v.length === 3) funded.push({ local: v[0], round: Number(v[1]), ruling: Number(v[2]) });
+    }
+    else if (t.length === 4 && w.length === 2) contributions.push({ local: big(t[1]), round: Number(big(t[2])), ruling: Number(w[0]), contributor: "0x" + String(t[3]).slice(-40).toLowerCase(), amount: w[1] });
+    else if (t.length === 1 && w.length === 5) contributions.push({ local: w[0], round: Number(w[1]), ruling: Number(w[2]), contributor: "0x" + w[3].toString(16).padStart(40, "0"), amount: w[4] });
   }
-  return out;
+  return { contributions, funded };
 }
-// Rounds of a case on the Dispute Resolver: disputeIDtoRoundArray(local, i) answers for every round and reverts past the last.
-async function roundCount(proxy, local) {
-  for (let i = 0; i < 30; i++) {
-    try { await call(proxy, PSEL.rounds + word(local) + word(i)); }
-    catch (e) { if (e.revert) return i; throw e; }
+const contributions = async (proxy) => (await appealLogs(proxy)).contributions;
+// The case's current round on the Dispute Resolver (counted from 1) and the answers already fully funded in it: each
+// round in which both answers got funded opened the next one. From the RulingFunded events; if those can't be read,
+// the rounds are counted by reading disputeIDtoRoundArray(local, i) until it fails, and the funded answers are unknown.
+// round is null if neither works: the rest of the case panel never depends on it.
+async function caseRound(proxy, local, logs) {
+  if (logs) {
+    const byRound = {};
+    for (const f of logs.funded) if (f.local === BigInt(local)) (byRound[f.round] = byRound[f.round] || new Set()).add(f.ruling);
+    let r = 0;
+    while (byRound[r] && byRound[r].size >= 2) r++;
+    return { round: r + 1, funded: [...(byRound[r] || [])] };
   }
-  return 30;
+  try {
+    for (let i = 0; i < 30; i++) {
+      try { await call(proxy, PSEL.rounds + word(local) + word(i)); }
+      catch (e) { if (e.revert) return { round: i, funded: null }; throw e; }
+    }
+  } catch {}
+  return { round: null, funded: null };
 }
 // Where a Kleros case stands: round, period, current vote, final ruling, and in the appeal period what each side needs.
 async function caseInfo(ch, staker) {
   const { proxy, court } = await klerosContracts();
-  const [d, pd, cr, rounds] = await Promise.all([call(court, KSEL.disputes + word(ch.caseId)), call(proxy, PSEL.disputes + word(ch.localId)),
-    call(court, KSEL.currentRuling + word(ch.caseId)), roundCount(proxy, ch.localId)]);
-  // the final ruling is the Dispute Resolver's: it already includes the "only one side funded the appeal" override
-  const a = { id: ch.caseId, local: ch.localId, proxy, court, round: rounds, period: Number(wordAt(d, 3)), ruled: wordAt(pd, 1) === 1n,
+  const [d, pd, cr, logs] = await Promise.all([call(court, KSEL.disputes + word(ch.caseId)), call(proxy, PSEL.disputes + word(ch.localId)),
+    call(court, KSEL.currentRuling + word(ch.caseId)), appealLogs(proxy).catch(() => null)]);
+  const { round, funded } = await caseRound(proxy, ch.localId, logs);
+  // the final ruling is the Dispute Resolver's: it already includes the "only one side funded the appeal" override.
+  // fundedNow: the answers fully funded for an appeal in this round (null: unknown)
+  const a = { id: ch.caseId, local: ch.localId, proxy, court, round, fundedNow: funded, period: Number(wordAt(d, 3)), ruled: wordAt(pd, 1) === 1n,
     final: Number(wordAt(pd, 2)), ruling: Number(wordAt(cr, 0)) };
   if (a.period !== 3) return a;
   // deadlines and amounts as the deposit contract computes them from Kleros (appealStatus)
@@ -886,11 +919,10 @@ async function caseInfo(ch, staker) {
   a.ruling = Number(wordAt(st, 0)); a.start = Number(wordAt(st, 1)); a.end = Number(wordAt(st, 2)); a.loserEnd = Number(wordAt(st, 3));
   a.need = { 1: wordAt(st, 4), 2: wordAt(st, 5) };
   a.paid = { 1: 0n, 2: 0n };
-  a.known = true;
-  try {
-    for (const c of await contributions(proxy)) if (c.local === BigInt(a.local) && c.round === a.round - 1 && c.ruling in a.paid) a.paid[c.ruling] += c.amount;
-  } catch { a.known = false; } // amounts raised unknown: offer the full amount (the Dispute Resolver sends back any extra)
-  a.funded = [1, 2].filter((s) => a.paid[s] >= a.need[s]);
+  // amounts raised unknown (logs unreadable): offer the full amount (the Dispute Resolver sends back any extra)
+  a.known = !!logs && a.round !== null;
+  if (a.known) for (const c of logs.contributions) if (c.local === BigInt(a.local) && c.round === a.round - 1 && c.ruling in a.paid) a.paid[c.ruling] += c.amount;
+  a.funded = [1, 2].filter((s) => a.paid[s] >= a.need[s] || (a.fundedNow || []).includes(s));
   return a;
 }
 // Kleros's bots usually deliver the ruling once the last appeal period is over. Anyone can: the court moves the case to
@@ -991,17 +1023,25 @@ async function lookup() {
         const settle = () => sendTx({ data: SEL.resolveChallenge + pad(addr), out, done: "Settled according to the Kleros ruling." });
         let a = null;
         try { a = await caseInfo(ch, addr); } catch {}
-        if (a && !a.ruled) { evCase = { local: ch.localId, id: ch.caseId, staker: addr }; $("ev-box").hidden = false; }
+        // evidence stays open until Kleros's final ruling, even if the rest of the case can't be read right now
+        let ruledNow = a ? a.ruled : null;
+        if (!a) try { ruledNow = wordAt(await call((await klerosContracts()).proxy, PSEL.disputes + word(ch.localId)), 1) === 1n; } catch {}
+        if (ruledNow !== true) { evCase = { local: ch.localId, id: ch.caseId, staker: addr }; $("ev-box").hidden = false; }
+        const roundName = a && a.round ? `Round ${a.round}` : "This round";
         if (!a) { text += " Once Kleros rules, anyone can settle it here."; showAction("Settle (after the ruling)", settle); }
         else if (a.ruled) { ruled = true; text += ` Final ruling: <b>${esc(ruling(a.final))}</b>. Anyone can settle it now.`; showAction("Settle challenge", settle); }
         else if (a.period === 4 || (a.period === 3 && now >= a.end)) {
-          text += ` Jurors ruled <b>${esc(ruling(a.ruling))}</b> and the appeal window is over. Kleros's bots usually deliver the final ruling within hours; anyone can also deliver it here (two transactions, network fee only). Then anyone can settle the challenge.`;
+          // Kleros's rule: if only one answer was fully funded for an appeal, that answer wins, whatever the jurors voted
+          const lone = a.fundedNow && a.fundedNow.length === 1 && a.fundedNow[0] !== a.ruling ? a.fundedNow[0] : null;
+          if (lone !== null) text += ` Jurors voted <b>${esc(ruling(a.ruling))}</b>, but only <b>${esc(ruling(lone))}</b> was fully funded for an appeal, so <b>${esc(ruling(lone))}</b> wins the case (Kleros's rule when only one side funds an appeal). The appeal window is over.`;
+          else text += ` Jurors ruled <b>${esc(ruling(a.ruling))}</b> and the appeal window is over.${a.fundedNow ? "" : " (Couldn't check the appeal funding right now: if only the other answer was fully funded for an appeal, that answer wins instead.)"}`;
+          text += " Kleros's bots usually deliver the final ruling within hours; anyone can also deliver it here (two transactions, network fee only). Then anyone can settle the challenge.";
           showAction("Deliver the final ruling", () => deliverRuling(a));
         }
-        else if (a.period < 3) { text += ` Round ${a.round}: jurors are ${a.period === 0 ? "being drawn and evidence is open" : "voting"}.`; }
-        else if (a.need[1] >= NOT_APPEALABLE && a.need[2] >= NOT_APPEALABLE) { text += ` Round ${a.round}: jurors voted <b>${esc(ruling(a.ruling))}</b>. This case can't be appealed any further.`; }
+        else if (a.period < 3) { text += ` ${roundName}: jurors are ${a.period === 0 ? "being drawn and evidence is open" : "voting"}.`; }
+        else if (a.need[1] >= NOT_APPEALABLE && a.need[2] >= NOT_APPEALABLE) { text += ` ${roundName}: jurors voted <b>${esc(ruling(a.ruling))}</b>. This case can't be appealed any further.`; }
         else {
-          text += ` Round ${a.round}: jurors voted <b>${esc(ruling(a.ruling))}</b>. Either side can appeal until ${ist(a.end)} (a side the jurors did not vote for only until ${ist(a.loserEnd)}). An appeal needs both answers fully funded, and anyone can chip in: the ETH goes straight from your wallet to Kleros. After the final ruling, the funders of the winning answer get their ETH back plus a reward, and money for an answer that never got fully funded is returned (collect it here). Fund from an ordinary wallet, not a Safe or other smart-contract wallet: Kleros pays appeal money back with a basic transfer that such wallets may not accept, and then it is lost.`;
+          text += ` ${roundName}: jurors voted <b>${esc(ruling(a.ruling))}</b>. Either side can appeal until ${ist(a.end)} (a side the jurors did not vote for only until ${ist(a.loserEnd)}). An appeal needs both answers fully funded, and anyone can chip in: the ETH goes straight from your wallet to Kleros. After the final ruling, the funders of the winning answer get their ETH back plus a reward, and money for an answer that never got fully funded is returned (collect it here). Fund from an ordinary wallet, not a Safe or other smart-contract wallet: Kleros pays appeal money back with a basic transfer that such wallets may not accept, and then it is lost.`;
           if (a.known) for (const [s, o] of [[1, 2], [2, 1]])
             if ((a.funded.includes(s) || a.paid[s] > 0n) && !a.funded.includes(o))
               text += ` <b>⚠ "${ruling(s)}" is being funded. If "${ruling(o)}" is not fully funded by ${ist(a.ruling === o ? a.end : a.loserEnd)}, "${ruling(s)}" wins the case.</b>`;

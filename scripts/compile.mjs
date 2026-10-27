@@ -7,9 +7,10 @@ import solc from "solc";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const files = {
   "TruthPaysKickback.sol": path.join(root, "contracts/TruthPaysKickback.sol"),
-  // test stand-ins: Kleros Court v1 (KlerosLiquid + Dispute Resolver) and a wallet contract
+  // test stand-ins: Kleros Court v1 (KlerosLiquid + Dispute Resolver), wallet contracts and a token
   "MockKleros.sol": path.join(root, "test/MockKleros.sol"),
   "TestWallet.sol": path.join(root, "test/TestWallet.sol"),
+  "TestToken.sol": path.join(root, "test/TestToken.sol"),
 };
 
 const input = {

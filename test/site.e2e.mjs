@@ -63,7 +63,7 @@ const build = (contract, name, extra = {}) => {
   execFileSync("node", ["scripts/build-site.mjs", "--config", cfg, "--out", path.join(outDir, name), ...(contract ? [] : ["--preview"])], { cwd: proj, stdio: "pipe" });
 };
 build(kick.target, "live"); build(bad.target, "bad"); build(late.target, "late"); build(otherKleros.target, "otherkleros"); build("", "preview");
-http.createServer((rq, rs) => { if (!/^\/(live|bad|preview|late|otherkleros)?$/.test(rq.url)) { rs.writeHead(404); return rs.end(); } const f = path.join(outDir, rq.url.split("/")[1] || "live", "index.html"); rs.writeHead(200, { "content-type": "text/html" }); rs.end(fs.readFileSync(f)); }).listen(WEB);
+http.createServer((rq, rs) => { if (!/^\/(live|bad|preview|late|otherkleros|case2)?$/.test(rq.url)) { rs.writeHead(404); return rs.end(); } const f = path.join(outDir, rq.url.split("/")[1] || "live", "index.html"); rs.writeHead(200, { "content-type": "text/html" }); rs.end(fs.readFileSync(f)); }).listen(WEB);
 
 const results = [];
 const check = (name, ok, extra = "") => { results.push(ok); console.log(`${ok ? "PASS" : "FAIL"} ${name} ${ok ? "" : extra}`); };
@@ -76,7 +76,12 @@ const cidFor = (n) => "Qm" + `TestCid${"abcdefghijkmnpqrstuvwxyz"[n % 24]}`.padE
 // opts: failLogs (every log query fails, on the public RPC and in the wallet), logRange (log queries over more blocks
 // are refused, like a range-limited RPC), clockAt (the browser's clock, in unix seconds: the chain's clock after
 // evm_increaseTime), smart (a TestWallet: the page sees its address and transactions go through its exec, like a
-// smart-account wallet)
+// smart-account wallet), invalidOpcode (an address: the Dispute Resolver read through a geth node. It is built with
+// Solidity 0.7, where a read past the end of a list (disputeIDtoRoundArray) or a Panic-type failure hits the INVALID
+// opcode, which geth reports as {code: -32000, message: "invalid opcode: INVALID"} with no data; on the public RPC and
+// in the wallet).
+// page.bigEstimate = true: every gas estimate the page asks the public RPC for answers 13.6 million gas.
+const asSolc07 = (data, e) => { let s = ""; try { s = JSON.stringify(e); } catch {} return /^0x3ef40ba7/.test(String(data)) || /4e487b71/.test(s + String(e && e.message)); };
 async function open(site, wallet, startChain = 1337, opts = {}) {
   const page = await browser.newPage();
   const errs = []; page.on("pageerror", (e) => errs.push(e.message));
@@ -93,9 +98,12 @@ async function open(site, wallet, startChain = 1337, opts = {}) {
       if (t.chainId !== undefined && parseInt(t.chainId, 16) !== chain) throw new Error("Invalid chainId for the current network");
       const value = t.value ? BigInt(t.value) : 0n;
       if (opts.smart) return (await opts.smart.connect(signer).exec(t.to, t.data, { value })).hash;
-      return (await signer.sendTransaction({ to: t.to, data: t.data, value })).hash;
+      // a gas limit set by the page is used as it is, like real wallets do
+      return (await signer.sendTransaction({ to: t.to, data: t.data, value, ...(t.gas ? { gasLimit: BigInt(t.gas) } : {}) })).hash;
     }
     if (method === "eth_getLogs" && refused(params[0])) throw new Error("wallet RPC: log range not allowed");
+    if (method === "eth_call" && opts.invalidOpcode && String(params[0].to).toLowerCase() === opts.invalidOpcode.toLowerCase())
+      try { return await prov.send(method, params); } catch (e) { if (asSolc07(params[0].data, e)) throw new Error("invalid opcode: INVALID"); throw e; }
     return prov.send(method, params ?? []);
   });
   await page.route((u) => u.port === String(RPC), async (route) => {
@@ -104,6 +112,13 @@ async function open(site, wallet, startChain = 1337, opts = {}) {
     const fail = (error) => route.fulfill({ status: 200, headers: { "content-type": "application/json", "access-control-allow-origin": "*" }, body: JSON.stringify({ jsonrpc: "2.0", id: body.id, error }) });
     if (body && body.method === "eth_getLogs") { page.logQueries = (page.logQueries || 0) + 1; page.maxLogRange = Math.max(page.maxLogRange || 0, parseInt(body.params[0].toBlock, 16) - parseInt(body.params[0].fromBlock, 16) + 1); }
     if (body && body.method === "eth_getLogs" && refused(body.params[0])) return fail({ code: -32005, message: "block range too large" });
+    if (body && body.method === "eth_estimateGas" && page.bigEstimate)
+      return route.fulfill({ status: 200, headers: { "content-type": "application/json", "access-control-allow-origin": "*" }, body: JSON.stringify({ jsonrpc: "2.0", id: body.id, result: "0xd00000" }) });
+    if (body && body.method === "eth_call" && opts.invalidOpcode && String(body.params[0].to).toLowerCase() === opts.invalidOpcode.toLowerCase()) {
+      const res = await route.fetch(), j = await res.json();
+      if (j.error && asSolc07(body.params[0].data, j.error)) return fail({ code: -32000, message: "invalid opcode: INVALID" });
+      return route.fulfill({ response: res, body: JSON.stringify(j) });
+    }
     return route.continue();
   });
   await page.route("https://kleros-api.netlify.app/**", async (route) => {
@@ -155,6 +170,7 @@ check("preview: 'opens soon' shown", await vis(p, "preview"));
 check("preview: connect disabled", await dis(p, "connect"));
 check("preview: the deposit amount comes from the config", /Send exactly 0\.01 ETH/.test(await p.locator("#s-send h2").innerText()) && /get your 0\.01 ETH back/.test(await p.locator("footer").innerText()));
 check("preview: warns Ethereum mainnet only, not Arbitrum, Base or Optimism", /Ethereum mainnet only\..*not on Arbitrum, Base, Optimism or any other network.*would be lost/s.test(await p.locator(".network").innerText()));
+check("preview: ETH only, a token (USDC) sent there is not a deposit", /ETH only: USDC or any other token sent to this address is not a deposit and books no spot/.test(await p.locator(".network").innerText()), await p.locator(".network").innerText());
 await p.close();
 let refusedBuild = false;
 try { build(kick.target, "nodeploy", { deployBlock: "" }); } catch (e) { refusedBuild = /deployBlock/.test(String(e.stderr)); }
@@ -356,9 +372,11 @@ check("listed, window running: no Release payouts button", !(await vis(p, "relea
 await p.click("#ch-action");
 check("challenge sent", /Challenge sent/.test(await waitText(p, "lookup-out", /Challenge sent|didn't go through|cancelled|would fail/)), await txt(p, "lookup-out"));
 check("challenge recorded on-chain with the Kleros fee", Number((await kick.challenges(g3a)).state) === 1 && (await kick.challenges(g3a)).deposit === FEE && BigInt(p.sent.at(-1).value) === FEE);
+check("an ordinary transaction leaves the gas limit to the wallet", p.sent.at(-1).gas === undefined, JSON.stringify(p.sent.at(-1)));
 check("listed: attendee sees on the list", /On the attendance list/.test(await lookupAs(p, g1a)), await txt(p, "lookup-out"));
 await p.close();
-p = await open("live", g2); await toStatus(p);
+// g2's page reads Kleros through a geth node: the Dispute Resolver (Solidity 0.7) fails a check with an invalid opcode
+p = await open("live", g2, 1337, { invalidOpcode: proxy.target }); await toStatus(p);
 check("open challenges list shows challenger", (await vis(p, "open-ch")) && (await txt(p, "open-ch-list")).toLowerCase().includes(g3a.toLowerCase()), await txt(p, "open-ch-list"));
 await connect(p);
 check("challenge open: dispute offered", /Challenge open/.test(await lookupAs(p, g3a)) && /Dispute this claim \(0\.0162 ETH\)/.test(await txt(p, "ch-action")), await txt(p, "lookup-out"));
@@ -368,7 +386,7 @@ const chg = await kick.challenges(g3a);
 check("Kleros case opened through the Dispute Resolver (arbitrator ID 1001, local ID 1)", chg.arbitratorDisputeID === 1001n && chg.localDisputeID === 1n);
 out = await lookupAs(p, g3a);
 check("in dispute: Kleros case link on court.kleros.io", /In a Kleros dispute/.test(out) && /Kleros case #1001/.test(out) && (await linkHref(p)) === "https://court.kleros.io/cases/1001", out);
-check("evidence form shown", await vis(p, "ev-box"));
+check("evidence form shown, and the round, with Kleros read through a geth node (invalid opcode, not a revert)", (await vis(p, "ev-box")) && /Round 1: jurors are being drawn and evidence is open/.test(out), out);
 // the upload service fails: clear error, nothing sent to Kleros
 ipfs.mode = "fail";
 const nEv = p.sent.length;
@@ -433,9 +451,13 @@ p = await open("live", g2, 1337, { clockAt: await chainNow() }); await connect(p
 await lookupAs(p, g1a); await p.waitForTimeout(500);
 check("Release payouts offered once the challenge window is over", await vis(p, "release-box"));
 const g1Eth = await bal(g1);
+// a payout batch estimated at 13.6 million gas: a wallet's own margin (+50%) would pass the 2^24 cap (EIP-7825)
+p.bigEstimate = true;
 await p.click("#release");
 check("payouts released from the guest page while the case is open (one share set aside)", /Payouts released/.test(await waitText(p, "release-msg", /Payouts released|didn't go through|cancelled|would fail/)) && Number(await kick.phase()) === 2
   && (await bal(g1)) === g1Eth + D && (await kick.challenges(g3a)).heldShare === D, await txt(p, "release-msg"));
+p.bigEstimate = false;
+check("big payout batch: the page sets the gas limit itself, at most 2^24 (EIP-7825)", p.sent.at(-1).gas === "0x1000000", JSON.stringify(p.sent.at(-1)));
 check("Release payouts gone once released", !(await vis(p, "release-box")));
 // the appeal period is over but nobody delivered the ruling yet: anyone can, from the page
 out = await lookupAs(p, g3a);
@@ -476,6 +498,34 @@ check("a wallet that never funded an appeal: no appeal money box", !(await vis(p
 await p.close();
 check("every transaction pinned to the network (chainId)", allSent.length >= 15 && allSent.every((t) => t.chainId === "0x539"), JSON.stringify(allSent.map((t) => t.chainId)));
 check("no appeal or evidence call ever sent to the deposit contract", !allSent.some((t) => t.to.toLowerCase() === kick.target.toLowerCase() && /^0x(4b2f0ea0|0e274e4c|a6a7f0eb)/.test(t.data)));
+
+// 8b. jurors vote "No", only "Yes" gets fully funded for an appeal, and the window ends. Kleros's rule makes "Yes" win:
+// the page says so instead of showing the jurors' vote as the outcome.
+const [c1, c2, c3] = keys.slice(6, 9).map((k) => new ethers.NonceManager(new ethers.Wallet(k, prov)));
+const c1a = await addr(c1), c2a = await addr(c2);
+const kick2 = await deploy("0.01");
+build(kick2.target, "case2");
+for (const c of [c1, c2]) await (await c.sendTransaction({ to: kick2.target, value: D })).wait();
+await (await kick2.connect(owner).registerStakers([c1a, c2a])).wait();
+await (await kick2.connect(owner).postAttendance([c1a], 2n * D)).wait();
+await (await kick2.connect(c2).challenge({ value: await kick2.challengeDeposit() })).wait();
+await (await kick2.connect(c3).matchChallenge(c2a, { value: (await kick2.challenges(c2a)).deposit })).wait();
+const { arbitratorDisputeID: case2, localDisputeID: local2 } = await kick2.challenges(c2a);
+await (await liquid.startAppealPeriod(case2, 2, 2 * 86400)).wait();
+await (await proxy.connect(c1).fundAppeal(local2, 1, { value: (await kick2.appealStatus(c2a)).costAttended })).wait();
+await prov.send("evm_increaseTime", [2 * 86400 + 10]); await prov.send("evm_mine", []);
+p = await open("case2", c1, 1337, { clockAt: await chainNow() }); await connect(p);
+out = await lookupAs(p, c2a);
+check("one answer funded, appeal window over: that answer is shown as the winner, not the jurors' vote",
+  /Jurors voted No, did not attend, but only Yes, attended was fully funded for an appeal, so Yes, attended wins the case/.test(out) && !/Jurors ruled No/.test(out) && (await txt(p, "ch-action")) === "Deliver the final ruling", out);
+check("no page errors (one-sided appeal)", p.errs.length === 0, p.errs.join("; "));
+await p.close();
+p = await open("case2", c1, 1337, { clockAt: await chainNow(), failLogs: true }); await connect(p);
+out = await lookupAs(p, c2a);
+check("appeal funding unreadable: the jurors' vote with a warning that a lone funded answer would win", /Jurors ruled No, did not attend and the appeal window is over\. \(Couldn't check the appeal funding right now: if only the other answer was fully funded for an appeal, that answer wins instead\.\)/.test(out), out);
+await p.close();
+await (await liquid.passPeriod(case2)).wait(); await (await liquid.executeRuling(case2)).wait();
+check("and Kleros's final ruling is indeed the funded answer", (await proxy.disputes(local2)).ruling === 1n);
 
 // 9. a list never published: after the claim deadline a staker withdraws their own deposit from the page
 await (await g1.sendTransaction({ to: late.target, value: D })).wait();

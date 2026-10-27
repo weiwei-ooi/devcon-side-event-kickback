@@ -99,8 +99,8 @@ const bal = async (w) => prov.getBalance(typeof w === "string" ? w : await w.get
 const pay = async (g, amount, to) => (await (await g.sendTransaction({ to: to ?? kick.target, value: U(amount) })).wait()).hash;
 const payWithDeposit = async (k, g, amount) => (await (await k.connect(g).deposit({ value: U(amount) })).wait()).hash;
 // a payment the contract refuses: mined, but failed (an explicit gas limit skips the estimate that would refuse it)
-async function failedPayment(g, to, value) {
-  const tx = await g.sendTransaction({ to, value, gasLimit: 100_000 });
+async function failedPayment(g, to, value, gasLimit = 100_000) {
+  const tx = await g.sendTransaction({ to, value, gasLimit });
   await assert.rejects(tx.wait());
   return tx.hash;
 }
@@ -562,6 +562,12 @@ test("late payers, failed and wrong-network txs, contract senders (exchanges, Sa
   const txAnn = await s.pay(guests[5], 25);
   // a payment the contract refused (0 ETH): mined, failed, no money in
   const txMin = await failedPayment(guests[4], s.kAddr, 0n);
+  // a plain transfer with a fixed 21,000 gas limit (some wallets and exchanges): out of gas, no money in
+  const txGas = await failedPayment(guests[3], s.kAddr, U(25), 21_000);
+  // 25 USDC sent to the deposit address instead of ETH
+  const usdc = await deploy("TestToken", owner);
+  await (await usdc.mint(await guests[3].getAddress(), 25_000_000n)).wait();
+  const txUsdc = (await (await usdc.connect(guests[3]).transfer(s.kAddr, 25_000_000n)).wait()).hash;
   // a contract sending the deposit with no ETH address on Luma, and a Safe-like wallet whose owner states it
   const relay = await smartWalletDeposit(s.k, 25);
   const safe = await smartWalletDeposit(s.k, 25);
@@ -579,6 +585,8 @@ test("late payers, failed and wrong-network txs, contract senders (exchanges, Sa
   const lines = [
     `"=HYPERLINK(""http://evil.example"",""click"")",ann@x.io,${T25},approved,,${ann},${txAnn}`,
     `Min,min@x.io,${T25},approved,,,https://etherscan.io/tx/${txMin}`,
+    `Gas,gas@x.io,${T25},approved,,,https://etherscan.io/tx/${txGas}`,
+    `Usd,usd@x.io,${T25},approved,,,https://etherscan.io/tx/${txUsdc}`,
     `Con,con@x.io,${T25},declined,,,${relay.hash}`,
     `Saf,saf@x.io,${T25},approved,,${safe.wallet},${safe.hash}`,
     `Arb,arb@x.io,${T25},approved,,${ida},https://arbiscan.io/tx/${fakeHash}`,
@@ -598,6 +606,13 @@ test("late payers, failed and wrong-network txs, contract senders (exchanges, Sa
   const codeOf = (email) => issues.filter((i) => i.email === email).map((i) => i.code);
   assert.deepEqual(codeOf("min@x.io"), ["TX_FAILED"]);
   assert.match(issues.find((i) => i.email === "min@x.io").note, /deposit contract refused this payment.*only paid the network fee/);
+  // out of gas is not a refusal: the guest is told to keep the gas limit their wallet suggests
+  assert.deepEqual(codeOf("gas@x.io"), ["TX_FAILED"]);
+  assert.match(issues.find((i) => i.email === "gas@x.io").note, /too little gas \(a limit of 21,000\).*needs about 25,000.*no ETH moved.*not a fixed 21,000/);
+  assert.doesNotMatch(issues.find((i) => i.email === "gas@x.io").note, /refused/);
+  // a token is never a deposit: the note says how to give it back
+  assert.deepEqual(codeOf("usd@x.io"), ["NO_DEPOSIT_TRANSFER"]);
+  assert.match(issues.find((i) => i.email === "usd@x.io").note, new RegExp(`sent a token.*not ETH.*token contract ${usdc.target}.*Return tokens sent by mistake.*new deposit in ETH`));
   assert.deepEqual(codeOf("con@x.io"), ["UNUSUAL_SENDER"]);
   assert.match(issues.find((i) => i.email === "con@x.io").note, /Sent by a contract.*Safe/);
   assert.deepEqual(codeOf("arb@x.io"), ["WRONG_NETWORK"]);
@@ -820,4 +835,25 @@ test("live mode needs the deploy block; a stopped run leaves no stale lists behi
   // an old USDC config is refused outright
   s.config({ token: "0x" + "12".repeat(20), tokenDecimals: 6 });
   assert.match(await s.fails("verify-deposits.mjs", ["--guests", "guests.csv", "--out", "out"]), /deposits are in ETH now/);
+
+  // the deposit is fixed in the contract (0.025 here): a config with another amount lists nothing
+  s.config();
+  await s.verify(lines);
+  assert.equal(s.jsonOut("new-stakers.json").deposit, U(25).toString()); // the lists say which deposit they were made for
+  for (const deposit of ["0.01", "0.03"]) {
+    s.config({ deposit });
+    const err = await s.fails("verify-deposits.mjs", ["--guests", "guests.csv", "--out", "out"]);
+    assert.match(err, new RegExp(`says the deposit is ${deposit} ETH, but the contract .* was deployed with 0\\.025 ETH\\. Nothing was listed`));
+    for (const f of ["new-stakers.json", "refunds.json", "returns.csv"]) assert.ok(!fs.existsSync(s.outFile(f)), `${f} removed`);
+  }
+  // owner.mjs refuses too, and refuses a list made for another deposit amount
+  s.config();
+  await s.verify(lines);
+  s.config({ deposit: "0.01" });
+  assert.match(await s.fails("owner.mjs", ["register"], { PRIVATE_KEY: ownerKey }), /config says the deposit is 0\.01 ETH, but the contract was deployed with 0\.025 ETH/);
+  s.config();
+  const list = s.jsonOut("new-stakers.json");
+  fs.writeFileSync(s.outFile("new-stakers.json"), JSON.stringify({ ...list, deposit: U(10).toString() }));
+  assert.match(await s.fails("owner.mjs", ["register"], { PRIVATE_KEY: ownerKey }), /was made for a deposit of 0\.01 ETH, but the contract takes 0\.025 ETH/);
+  assert.equal(await s.k.stakerCount(), 0n);
 });

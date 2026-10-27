@@ -72,6 +72,14 @@ if (!isContractCode(await prov.getCode(kickbackAddr))) {
 const { abi } = loadAbi("TruthPaysKickback");
 const c = new ethers.Contract(kickbackAddr, abi, prov);
 const iface = new ethers.Interface(abi);
+// The deposit is fixed in the contract when it is deployed, and every check below uses the config's
+// "deposit": they must be the same, or payers of the wrong amount would be listed for registration.
+const onChainDeposit = await c.depositAmount();
+if (onChainDeposit !== cfg.depositUnits) {
+  console.error(`${configFile} says the deposit is ${cfg.deposit} ETH, but the contract at ${kickbackAddr} was deployed with ` +
+    `${fmt(onChainDeposit)} ETH. Nothing was listed. Set "deposit" in ${configFile} to the contract's amount (or redeploy).`);
+  process.exit(1);
+}
 
 const rows = readCsv(a.guests);
 console.log(`Loaded ${rows.length} registrations from ${a.guests}`);
@@ -279,9 +287,9 @@ writeCsv(`${out}/returns.csv`, returns, ["code", "name", "email", "wallet", "to_
 // of them counts for that wallet (payouts only ever go to the registered wallet itself)
 const claims = [...verified, ...issues.filter((i) => i.was === "VERIFIED" && /^DUPLICATE_/.test(i.code))];
 writeCsv(`${out}/claims.csv`, claims.map((r) => ({ ...r, code: r.was ? r.code : "VERIFIED" })), ["wallet", "email", "name", "code", "approval", "tx"]);
-// The console checks contract, network and each wallet's on-chain status before sending, so an
-// out-of-date list is refused instead of acting on a guest whose situation has changed.
-const stamp = { contract: kickbackAddr, chainId: Number(cfg.chainId), block: snapshotBlock, generatedAt: new Date().toISOString() };
+// The console checks contract, network, deposit amount (in wei) and each wallet's on-chain status before
+// sending, so an out-of-date list is refused instead of acting on a guest whose situation has changed.
+const stamp = { contract: kickbackAddr, chainId: Number(cfg.chainId), deposit: dep.toString(), block: snapshotBlock, generatedAt: new Date().toISOString() };
 const STATUS_OF = { unregistered: 0, registered: 1, "refunded, paid again": 3 };
 const item = (v) => ({ wallet: v.wallet, name: v.name, email: v.email, onchain: v.onchain, status: STATUS_OF[v.onchain] });
 writeJson(`${out}/new-stakers.json`, { ...stamp, items: newStakers.map(item) });

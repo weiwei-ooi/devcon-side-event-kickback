@@ -10,6 +10,8 @@ import { ethers } from "ethers";
 export const DEPOSITED_EVENT = "event Deposited(address indexed from, uint256 amount)";
 const DEPOSITED = new ethers.Interface([DEPOSITED_EVENT]);
 export const DEPOSITED_TOPIC = DEPOSITED.getEvent("Deposited").topicHash;
+// An ERC-20 token transfer (USDC…). Tokens sent to the deposit contract are never a deposit.
+export const TOKEN_TRANSFER_TOPIC = ethers.id("Transfer(address,address,uint256)");
 
 // The deposit is native ETH on Ethereum mainnet (27 Oct 2026: moved from 25 USDC on Arbitrum One).
 // A local test chain uses another "chain" name and sets "chainId" (and "rpcUrl") itself.
@@ -117,7 +119,15 @@ export function loadConfig(file = "config.json") {
 export const MIN_SETTLEMENT_WINDOW = 7 * 24 * 3600; // must match the contract
 export const CHALLENGE_PERIOD = 24 * 3600; // must match the contract
 export const MATCH_PERIOD = 24 * 3600; // must match the contract
-export const PAYOUT_GAS = 100_000; // must match the contract: gas a batch payment may use in the recipient
+export const PAYOUT_GAS = 40_000; // must match the contract: gas a batch payment may use in the recipient
+/** EIP-7825 (Fusaka, December 2025): one Ethereum transaction may use at most 2^24 gas, whatever the block limit.
+ * Gas limits with a margin over the estimate are capped at this, or the network refuses the transaction. */
+export const TX_GAS_CAP = 16_777_216n;
+/** The gas limit to send with: `margin` percent over the estimate, never above TX_GAS_CAP. */
+export const gasLimitFor = (estimate, margin = 30n) => {
+  const limit = (BigInt(estimate) * (100n + margin)) / 100n;
+  return limit > TX_GAS_CAP ? TX_GAS_CAP : limit;
+};
 
 // Kleros Court v1 on Ethereum mainnet. Cases go through Kleros's general-purpose Dispute Resolver
 // (ArbitrableProxy), whose arbitrator is KlerosLiquid. Evidence, appeals and appeal withdrawals are
@@ -356,16 +366,28 @@ export async function verifyTx(prov, cfg, txHash, claimedWallet, link = "") {
     return { ok: false, code: "TX_NOT_FOUND", note: `Not found on ${net}. Sent on another network (Arbitrum, Base, Optimism…), or a typo in the link? Ask the guest for their etherscan.io link.` };
   }
   const toContract = !!receipt.to && ethers.getAddress(receipt.to) === cfg.receiver;
-  if (receipt.status !== 1)
+  if (receipt.status !== 1) {
+    // A plain transfer with a fixed 21,000 gas limit (some wallets and exchanges) runs out of gas: the
+    // contract needs about 25,000 to log the deposit. Running out of gas uses up the whole limit;
+    // a refusal (0 ETH, deposits closed) returns the rest.
+    const tx = toContract ? await prov.getTransaction(txHash) : null;
+    if (tx && receipt.gasUsed >= tx.gasLimit)
+      return { ok: false, code: "TX_FAILED", note: `Sent with too little gas (a limit of ${Number(tx.gasLimit).toLocaleString("en-US")}): the deposit contract needs about 25,000 to record a deposit, so the transaction failed and no ETH moved. The guest only paid the network fee. Ask them to send it again from the deposit page, or from their wallet with the gas limit it suggests (not a fixed 21,000).` };
     return { ok: false, code: "TX_FAILED", note: toContract
       ? "The deposit contract refused this payment (0 ETH sent, or deposits were already closed), so no ETH arrived: the guest only paid the network fee. If they still want a spot, they send a new deposit."
       : "This transaction failed, so no ETH moved: the guest only paid the network fee. If they still want a spot, they send a new deposit." };
+  }
 
   const bySender = depositsInLogs(receipt.logs, cfg.receiver);
-  if (!bySender.size)
+  if (!bySender.size) {
+    const receiverTopic = ethers.zeroPadValue(cfg.receiver, 32).toLowerCase();
+    const token = receipt.logs.find((l) => l.topics.length === 3 && l.topics[0] === TOKEN_TRANSFER_TOPIC && l.topics[2].toLowerCase() === receiverTopic);
+    if (token)
+      return { ok: false, code: "NO_DEPOSIT_TRANSFER", note: `This sent a token (USDC, for example), not ETH, to the deposit contract (token contract ${ethers.getAddress(token.address)}). A token is never a deposit: give it back with 'Return tokens sent by mistake' in the console (it shows the amount), and ask the guest for a new deposit in ETH.` };
     return { ok: false, code: "NO_DEPOSIT_TRANSFER", note: toContract || !receipt.to
       ? "No ETH deposit to the deposit contract in this tx"
       : `No ETH deposit to the deposit contract in this tx (it went to ${ethers.getAddress(receipt.to)}: wrong address?)` };
+  }
 
   const deposits = [...bySender.values()];
   const senders = deposits.map((d) => d.from);

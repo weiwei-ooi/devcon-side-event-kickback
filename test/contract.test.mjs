@@ -3,7 +3,8 @@
 // funders' own wallets, the one-side-funded override, refusal to rule), payouts with shares set
 // aside for open Kleros cases (fair in any settlement order), ETH accounting (refund / sweep only
 // touch spare ETH), wallets that refuse ETH or burn gas, reentrancy, emergency exit, two-step
-// ownership and a 150-guest run.
+// ownership, a 150-guest run, the worst 150-wallet batches inside one mainnet transaction's gas cap
+// (EIP-7825), and tokens sent by mistake (returnToken).
 // Local in-memory chain (ganache) with stand-ins for KlerosLiquid and the Dispute Resolver.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -157,7 +158,7 @@ test("constructor: checks the times, deposit, owner and Dispute Resolver, and re
   assert.equal(await k.arbitratorExtraData(), EXTRA);
   assert.equal(await k.metaEvidenceURI(), META);
   assert.equal(await k.policyURI(), POLICY);
-  assert.equal(await k.PAYOUT_GAS(), 100_000n);
+  assert.equal(await k.PAYOUT_GAS(), 40_000n);
   assert.equal(await k.RULING_OPTIONS(), 2n);
   assert.equal(await k.challengeDeposit(), FEE); // KlerosLiquid: fee per juror x 3 jurors
 });
@@ -304,7 +305,7 @@ test("a wallet that refuses ETH or burns its gas does not block the payout: its 
   const g0 = await bal(g);
   const r = await settle(kick, all, D);
   assert.equal(await bal(g), g0 + D);
-  assert.equal(await bal(busy), D); // needs ~66k gas: more than transfer's 2,300, within PAYOUT_GAS
+  assert.equal(await bal(busy), D); // needs ~28k gas: more than transfer's 2,300, within PAYOUT_GAS
   assert.equal(await busy.received(), 1n);
   assert.deepEqual(logsOf(r, kick, "PayoutFailed").map((l) => l.args.to), [refuser.target, burner.target]);
   assert.equal(await kick.owed(refuser.target), D);
@@ -333,7 +334,7 @@ test("a wallet that refuses ETH or burns its gas does not block the payout: its 
 
 test("a caller cannot starve a payment into owed by sending too little gas (NotEnoughGas)", async () => {
   const kick = await freshKick({ startIn: 1 });
-  const smart = await testWallet(kick, MODE.Busy); // a smart wallet that needs ~66k gas to receive
+  const smart = await testWallet(kick, MODE.Busy); // a smart wallet that needs ~28k gas to receive
   await send(kick.registerStakers([smart.target]));
   await warp(2);
   await send(kick.postAttendance([smart.target], D));
@@ -362,7 +363,7 @@ test("a caller cannot starve a payment into owed by sending too little gas (NotE
   await send(k2.postAttendance([burner.target], D));
   await warp(DAY + 1);
   const r2 = await send(k2.connect(guests[61]).releasePayouts({ gasLimit: 1_000_000 }));
-  assert.ok(r2.gasUsed > 100_000n, `gas used ${r2.gasUsed}`);
+  assert.ok(r2.gasUsed > 40_000n, `gas used ${r2.gasUsed}`);
   assert.equal(await k2.owed(burner.target), D);
 });
 
@@ -467,6 +468,75 @@ test("150 guests: register in batches, post 120 attendees and release, all fit e
   console.log(`  gas: register 150 = ${regGas}, post 120 = ${p.gasUsed}, release 120 = ${r.gasUsed}`);
   assert.ok(p.gasUsed < 10_000_000n && r.gasUsed < 10_000_000n);
   assert.equal(await bal(kick), 0n);
+});
+
+// Since Fusaka (EIP-7825, December 2025) one Ethereum mainnet transaction may use at most 2^24 gas,
+// whatever the block limit. The console sends with 30% over the estimate, capped at that limit.
+const TX_GAS_CAP = 16_777_216n;
+test("worst case: 150 attendees whose wallets burn all their gas still fit in one mainnet transaction (2^24 gas), with the console's 30% margin", async () => {
+  const factory = await deploy("GasBurners", owner);
+  const burners = async (n) => {
+    const ws = await factory.make.staticCall(n);
+    await send(factory.make(n, BIG));
+    return [...ws];
+  };
+  // a batch that goes through with this limit is estimated at most this much, and x1.3 stays under the cap
+  // (a limit cut too fine would revert with NotEnoughGas rather than give a wallet less than PAYOUT_GAS)
+  const LIMIT = (TX_GAS_CAP * 10n) / 13n;
+  const fits = async (what, p) => {
+    let r;
+    try {
+      r = await send(p);
+    } catch (e) {
+      assert.fail(`${what} does not go through with ${LIMIT} gas (x1.3 = the 2^24 cap): ${e.shortMessage ?? e.message}`);
+    }
+    gas.push(`${what} ${r.gasUsed}`);
+    return r;
+  };
+  const gas = [];
+  // ganache's gas estimate is slow on big batches: the setup transactions get a plain limit
+  const BIG = { gasLimit: 12_000_000 };
+  // the contract counts money in total: one transfer covers every burner's deposit
+  async function registered(ws, extra = []) {
+    const kick = await freshKick({ startIn: 1 });
+    await send(owner.sendTransaction({ to: kick.target, value: D * BigInt(ws.length + extra.length) }));
+    const all = [...ws, ...(await Promise.all(extra.map(addr)))];
+    for (let i = 0; i < all.length; i += 50) await send(kick.registerStakers(all.slice(i, i + 50), BIG));
+    return kick;
+  }
+  const caller = guests[157];
+
+  // releasePayouts: every share fails after burning the full PAYOUT_GAS and waits in owed
+  const ws = await burners(150);
+  const kick = await registered(ws);
+  await warp(2);
+  await send(kick.postAttendance(ws, D, BIG));
+  await warp(DAY + 1);
+  const r = await fits("release", kick.connect(caller).releasePayouts({ gasLimit: LIMIT }));
+  assert.equal(logsOf(r, kick, "PayoutFailed").length, 150);
+  assert.equal(await kick.owedTotal(), 150n * D);
+
+  // a case lost after payout pays every attendee a part of the set-aside share: that second batch fits too
+  const g = guests[158];
+  const ws2 = await burners(150);
+  const k2 = await registered(ws2, [g]);
+  await warp(2);
+  await send(k2.postAttendance(ws2, (D * 151n) / 150n, BIG));
+  await send(k2.connect(g).challenge({ value: FEE }));
+  await send(k2.matchChallenge(await addr(g), { value: FEE }));
+  await warp(DAY + 1);
+  await fits("release with a case open", k2.connect(caller).releasePayouts({ gasLimit: LIMIT }));
+  assert.equal((await k2.challenges(await addr(g))).heldShare, D);
+  await send(liquid.giveFinalRuling((await k2.challenges(await addr(g))).arbitratorDisputeID, 2, KGAS));
+  const rl = await fits("lost case", k2.connect(caller).resolveChallenge(await addr(g), { gasLimit: LIMIT }));
+  assert.equal(logsOf(rl, k2, "PayoutFailed").length, 150);
+  assert.equal(await k2.heldBack(), 0n);
+
+  // cancel refunds every staker in one batch
+  const k3 = await registered(await burners(150));
+  await fits("cancel", k3.cancel({ gasLimit: LIMIT }));
+  assert.equal(await k3.owedTotal(), 150n * D);
+  console.log(`  gas with 150 gas-burning wallets (limit ${LIMIT}, cap ${TX_GAS_CAP}): ${gas.join(", ")}`);
 });
 
 // ------------------------------------------------------------------ Kleros challenges
@@ -989,6 +1059,42 @@ test("refund and sweep only ever move spare ETH: never the pool, unclaimed payme
   assert.equal(await bal(kick), D + each); // only the refuser's unclaimed payments are left
   await send(refuser.exec(kick.target, kickIface.encodeFunctionData("claim", [await addr(guests[150])])));
   assert.equal(await bal(kick), 0n);
+});
+
+test("tokens sent by mistake (USDC) are never deposits; the owner can send them back, and returnToken never moves ETH", async () => {
+  const kick = await freshKick({ startIn: 1 });
+  const [g, h, x] = guests.slice(54, 57);
+  await stake(kick, [g]);
+  await send(kick.registerStakers([await addr(g)]));
+  const usdc = await deploy("TestToken", owner);
+  await send(usdc.mint(await addr(h), 25_000_000n));
+  // a guest sends 25 USDC to the deposit address: no Deposited event, nothing counted
+  const r = await send(usdc.connect(h).transfer(kick.target, 25_000_000n));
+  assert.equal(logsOf(r, kick, "Deposited").length, 0);
+  assert.equal(await usdc.balanceOf(kick.target), 25_000_000n);
+  const eth0 = await bal(kick);
+  await reverts(kick.connect(h), "returnToken", [usdc.target, await addr(h), 25_000_000n], "NotOwner");
+  await reverts(kick, "returnToken", [usdc.target, ethers.ZeroAddress, 1n], "ZeroAddress");
+  await reverts(kick, "returnToken", [usdc.target, kick.target, 1n], "ZeroAddress");
+  await reverts(kick, "returnToken", [await addr(x), await addr(h), 1n], "TransferFailed"); // not a token: no code
+  await reverts(kick, "returnToken", [usdc.target, await addr(h), 25_000_001n], "TransferFailed"); // more than it holds
+  await send(usdc.setStyle(2)); // a token that answers false
+  await reverts(kick, "returnToken", [usdc.target, await addr(h), 1n], "TransferFailed");
+  await send(usdc.setStyle(1)); // a token that answers nothing (like USDT)
+  const rr = await send(kick.returnToken(usdc.target, await addr(h), 5_000_000n));
+  assert.deepEqual(logsOf(rr, kick, "TokenReturned").map((l) => [...l.args]), [[usdc.target, await addr(h), 5_000_000n]]);
+  await send(usdc.setStyle(0)); // like USDC: answers true
+  await send(kick.returnToken(usdc.target, await addr(h), 20_000_000n));
+  assert.equal(await usdc.balanceOf(await addr(h)), 25_000_000n);
+  assert.equal(await usdc.balanceOf(kick.target), 0n);
+  // the ETH side never moved
+  assert.equal(await bal(kick), eth0);
+  assert.equal(await kick.reserved(), D);
+  // also after the list is posted and the pool is paid out
+  await send(usdc.mint(kick.target, 7n));
+  await settle(kick, [await addr(g)], D);
+  await send(kick.returnToken(usdc.target, await addr(x), 7n));
+  assert.equal(await usdc.balanceOf(await addr(x)), 7n);
 });
 
 test("reentrancy: a recipient calling back into the contract is refused, and its payment still arrives", async () => {

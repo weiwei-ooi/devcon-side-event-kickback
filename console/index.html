@@ -114,6 +114,10 @@
     <p>Only ETH that is not part of the staked pool can be returned this way (shown as “Spare” in the status). Before you confirm, the console lists what was already returned or refunded to that address, so the same money is not sent twice.</p>
     <div class="row"><input id="rfTo" placeholder="Send to 0x…"><input id="rfAmt" placeholder="Amount in ETH, e.g. 0.01" style="flex:0 1 180px"><button class="secondary" id="refundOne" disabled>Return</button></div>
 
+    <h2 style="margin-top:18px">Return tokens sent by mistake</h2>
+    <p>Deposits are ETH only. If someone sent a token (USDC, for example) to the contract, it is not a deposit: send it back to them here. Enter the token's contract address (Claude's check names it); the console shows how much the contract holds. This never moves ETH.</p>
+    <div class="row"><input id="tkToken" placeholder="Token contract 0x…"><input id="tkTo" placeholder="Send to 0x…"><input id="tkAmt" placeholder="Amount, e.g. 25" style="flex:0 1 140px"><button class="secondary" id="returnTokens" disabled>Return tokens</button></div>
+
     <h2 style="margin-top:18px">Collect leftover rounding dust</h2>
     <p>After the payout, a few wei of rounding may remain (a wei is a billionth of a billionth of an ETH); this sends spare ETH to your wallet. Return guests' money first (declined, waitlisted and late payers, overpayments, stray transfers): it also counts as spare, and the console warns you if the spare is more than rounding dust. Unclaimed payouts and challenge money always stay for their owners.</p>
     <div class="row"><button class="secondary" id="sweep" disabled>Collect leftovers</button></div>
@@ -137,7 +141,10 @@ const MAINNET = 1; // Ethereum mainnet: the only real network this event uses
 const MIN_WINDOW = 7 * 24 * 3600; // must match the contract
 const PHASES = ["Open", "List posted (challenge window)", "Paid out", "Cancelled"];
 const CH_STATES = ["", "waiting for a match", "in a Kleros dispute", "settled"];
-const OWNER_BUTTONS = ["register", "refundDeclined", "postList", "addAtt", "removeOne", "refundOne", "sweep", "cancel"];
+const OWNER_BUTTONS = ["register", "refundDeclined", "postList", "addAtt", "removeOne", "refundOne", "returnTokens", "sweep", "cancel"];
+// Since EIP-7825 (Fusaka) one Ethereum transaction may use at most 2^24 gas, whatever the block limit:
+// a higher gas limit is refused by the network, so the 30% margin never goes above it.
+const TX_GAS_CAP = 16_777_216n;
 const ANYONE_BUTTONS = ["matchOne", "resolveOne", "release", "fundAppeal", "deliverRuling", "collectAppeal", "submitEvidence", "sendDetails"]; // any wallet can do these
 // Kleros Court v1 on Ethereum mainnet. Cases are opened through Kleros's Dispute Resolver
 // (ArbitrableProxy), the arbitrable side of every case; its arbitrator is KlerosLiquid (the court).
@@ -197,6 +204,7 @@ const KLEROS_ERRORS = [
   [/Value is less than required/i, "The Kleros fee changed a moment ago. Press Refresh and try again."],
 ];
 let cfg, cfgText, settings, chain, mode, artifact, iface, rp, wallet, signer, account, state, busy = false;
+let warnedDeposit = null; // the contract whose deposit-mismatch warning was already shown
 
 const short = (a) => (a ? a.slice(0, 6) + "…" + a.slice(-4) : "");
 const eth = (x) => ethers.formatEther(x) + " ETH";
@@ -265,7 +273,7 @@ function explain(e) {
       case "InsufficientBalance": return `Not enough spare ETH in the contract for this (needs ${eth(x)} in total, has ${eth(y)}). A deposit may be missing; ask Claude to re-check.`;
       case "NothingToClaim": return "There is nothing to claim for this wallet.";
       case "NotAppealable": return `The challenge of ${x} is not in a Kleros case that can be appealed.`;
-      case "TransferFailed": return `The address ${x} did not accept the ETH (it may be a smart-contract wallet that refuses ETH). Nothing was sent. Try another address.`;
+      case "TransferFailed": return `The transfer to ${x} did not go through: an address that refuses ETH (some smart-contract wallets do), or, when returning tokens, a token contract that refused (check the token address and the amount the contract holds). Nothing was sent.`;
     }
     return "The contract refused: " + err.name;
   }
@@ -390,6 +398,11 @@ async function loadList(file) {
   if (d.contract.toLowerCase() !== contractAddr().toLowerCase() || Number(d.chainId) !== chain.chainId)
     throw new Error(`${file.slice(1)} was made for another contract or network. Ask Claude to rebuild it.`);
   const c = new ethers.Contract(contractAddr(), artifact.abi, rp);
+  // Claude's check compares each guest's payment with the deposit in the config: a list made with
+  // another amount than the contract's could register guests who paid too little
+  const dep = await c.depositAmount();
+  if (d.deposit === undefined || BigInt(d.deposit) !== dep)
+    throw new Error(`${file.slice(1)} was made for ${d.deposit === undefined ? "an unknown deposit" : "a deposit of " + eth(BigInt(d.deposit))}, but this contract takes ${eth(dep)}. Ask Claude to fix the deposit in the config and re-check the Luma list.`);
   const now = await Promise.all(d.items.map((i) => c.status(i.wallet)));
   const changed = d.items.filter((i, k) => Number(now[k]) !== Number(i.status));
   if (changed.length) throw new Error(`${file.slice(1)} is out of date (${changed.length} guest(s) changed since it was made, e.g. ${changed[0].name || short(changed[0].wallet)}). Ask Claude to re-check the Luma list.`);
@@ -405,7 +418,8 @@ async function sendTx(label, txReq, { onSent } = {}) {
   try { await rp.call({ ...txReq, from }); } catch (e) { throw new Error(explain(e)); }
   const gas = await rp.estimateGas({ ...txReq, from });
   const fee = await rp.getFeeData();
-  const req = { ...txReq, chainId: chain.chainId, gasLimit: (gas * 13n) / 10n };
+  const margin = (gas * 13n) / 10n;
+  const req = { ...txReq, chainId: chain.chainId, gasLimit: margin > TX_GAS_CAP ? TX_GAS_CAP : margin };
   if (fee.maxFeePerGas) { req.maxFeePerGas = fee.maxFeePerGas * 2n; req.maxPriorityFeePerGas = fee.maxPriorityFeePerGas ?? 0n; }
   else if (fee.gasPrice) req.gasPrice = (fee.gasPrice * 12n) / 10n;
   log(`Confirm in your wallet: ${label}…`);
@@ -565,6 +579,10 @@ async function refresh() {
   }
   kv($("challenges"), chPairs);
   if (settings.poolCapWei && bal > BigInt(settings.poolCapWei)) log(`⚠ The contract holds more than the ${settings.poolCap} ETH safety cap.`, "err");
+  if (settings.depositWei && BigInt(settings.depositWei) !== dep && warnedDeposit !== c.target) {
+    warnedDeposit = c.target;
+    log(`⚠ The config says the deposit is ${eth(BigInt(settings.depositWei))}, but this contract takes ${eth(dep)}. Ask Claude to fix the config before checking the Luma list.`, "err");
+  }
   if (account && !isOwner) log("The connected wallet is not the owner of this contract, so owner actions are disabled.", "warn");
   state.isOwner = isOwner;
   if (!busy) applyButtons();
@@ -674,6 +692,31 @@ async function refundOne() {
   log(`✅ Sent ${amt} ETH to ${to}`, "ok");
   $("rfTo").value = ""; $("rfAmt").value = "";
   await refresh();
+}
+
+// Tokens (USDC, for example) are never deposits: send back what someone sent here by mistake.
+const ERC20 = new ethers.Interface(["function balanceOf(address) view returns (uint256)", "function decimals() view returns (uint8)", "function symbol() view returns (string)"]);
+async function returnTokens() {
+  const t = $("tkToken").value.trim(), a = $("tkTo").value.trim(), amt = $("tkAmt").value.trim();
+  if (!ethers.isAddress(t)) throw new Error("Enter the token's contract address (0x…). Claude's check of the Luma list names it.");
+  if (!ethers.isAddress(a)) throw new Error("Enter the address to send the tokens to (0x…)");
+  const token = new ethers.Contract(ethers.getAddress(t), ERC20, rp);
+  if ((await rp.getCode(token.target)) === "0x") throw new Error(`${token.target} is not a token contract on ${chain.name}. Check the address.`);
+  let held, decimals, symbol;
+  try { [held, decimals] = await Promise.all([token.balanceOf(contractAddr()), token.decimals().then(Number)]); }
+  catch { throw new Error(`${token.target} does not answer like a token. Check the address.`); }
+  symbol = String(await token.symbol().catch(() => "tokens")).replace(/[^\w.$-]/g, "").slice(0, 12) || "tokens";
+  const amountRe = decimals > 0 ? new RegExp(`^\\d+(\\.\\d{1,${decimals}})?$`) : /^\d+$/;
+  if (!amountRe.test(amt) || Number(amt) <= 0) throw new Error(`Enter an amount of ${symbol} like ${decimals > 0 ? "25 or 12.5" : "25"}`);
+  const units = ethers.parseUnits(amt, decimals);
+  const fmtUnits = (v) => ethers.formatUnits(v, decimals).replace(/\.0$/, "");
+  if (units > held) throw new Error(`The contract holds only ${fmtUnits(held)} ${symbol}.`);
+  await preflight();
+  const to = ethers.getAddress(a);
+  if (!confirm(`Send ${amt} ${symbol} (token ${token.target}) from the contract to ${to}, ${where()}?\n\nThe contract holds ${fmtUnits(held)} ${symbol}. Tokens are never deposits, and this sends no ETH.`)) return;
+  await sendTx("return tokens", call("returnToken", [token.target, to, units]));
+  log(`✅ Sent ${amt} ${symbol} to ${to}`, "ok");
+  $("tkToken").value = ""; $("tkTo").value = ""; $("tkAmt").value = "";
 }
 
 async function postList() {
@@ -1007,12 +1050,12 @@ async function challengeDetails(ch) {
   const tx = (l) => (l ? ` (transaction: ${chain.explorer}/tx/${l.transactionHash})` : "");
   const utc = async (l) => (l ? ` on ${new Date(Number((await rp.getBlock(l.blockNumber)).timestamp) * 1000).toUTCString()}` : "");
   const description = [
-    `This case is about the wallet ${ch.wallet}.`,
+    `This case is about the wallet ${ch.wallet}. It is Kleros case #${ch.disputeID} (${caseUrl(ch.disputeID)}), number ${ch.localID} in Kleros's Dispute Resolver (${(await klerosContracts()).proxy.target}).`,
     `Event: "${eventName}". Guests paid a refundable ETH deposit to the contract ${contractAddr()} on ${chain.name} (${chain.explorer}/address/${contractAddr()}).`,
     `After the event the organiser posted the list of guests who checked in${tx(posted[0])}. ${ch.wallet} was a registered guest and is not on that list.`,
     `This wallet challenged the list${await utc(challenged[0])}, saying it attended${tx(challenged[0])}. ${ch.matcher} matched the challenge${await utc(matched[0])}, saying it did not attend, which opened this case${tx(matched[0])}.`,
     `Question: did the person behind ${ch.wallet} attend the event? Please rule following the attendance policy of this case.`,
-    `All of this is public in the contract's Challenged and ChallengeMatched events: ${chain.explorer}/address/${contractAddr()}#events`,
+    `All of this is public in the contract's Challenged and ChallengeMatched events: ${chain.explorer}/address/${contractAddr()}#events. The ChallengeMatched event for ${ch.wallet} names Kleros case #${ch.disputeID}.`,
   ].join("\n\n");
   return { name: `Challenge details: who this case is about (${ch.wallet})`, description };
 }
@@ -1125,7 +1168,7 @@ const wrap = (fn) => async () => {
     if (account) { $("deploy").disabled = false; $("refresh").disabled = false; }
   }
 };
-for (const [id, fn] of Object.entries({ connect, deploy, refresh, register, refundDeclined, removeOne, refundOne, postList, addAtt, matchOne, resolveOne, release, fundAppeal, deliverRuling, collectAppeal, submitEvidence, sendDetails, sweep, cancel })) $(id).onclick = wrap(fn);
+for (const [id, fn] of Object.entries({ connect, deploy, refresh, register, refundDeclined, removeOne, refundOne, returnTokens, postList, addAtt, matchOne, resolveOne, release, fundAppeal, deliverRuling, collectAppeal, submitEvidence, sendDetails, sweep, cancel })) $(id).onclick = wrap(fn);
 init().catch((e) => log(explain(e), "err"));
 </script>
 </body>
