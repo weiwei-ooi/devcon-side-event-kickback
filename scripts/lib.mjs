@@ -1,10 +1,15 @@
-// Shared helpers: config, Kleros settings, CSV I/O, Luma column detection, deposit verification.
+// Shared helpers: config, Kleros settings, CSV I/O, Luma column detection, deposit verification
+// (from the contract's own Deposited events), chunked log scans with retries.
 import fs from "node:fs";
 import path from "node:path";
 import { parse } from "csv-parse/sync";
 import { ethers } from "ethers";
 
-export const TRANSFER_TOPIC = ethers.id("Transfer(address,address,uint256)");
+// A deposit is the contract's own Deposited event (receive() or deposit()): `from` is the wallet that
+// sent the ETH (a Safe or smart wallet shows up as its own address), `amount` is in wei.
+export const DEPOSITED_EVENT = "event Deposited(address indexed from, uint256 amount)";
+const DEPOSITED = new ethers.Interface([DEPOSITED_EVENT]);
+export const DEPOSITED_TOPIC = DEPOSITED.getEvent("Deposited").topicHash;
 
 // The deposit is native ETH on Ethereum mainnet (27 Oct 2026: moved from 25 USDC on Arbitrum One).
 // A local test chain uses another "chain" name and sets "chainId" (and "rpcUrl") itself.
@@ -275,38 +280,92 @@ export function normAddress(value) {
 
 export const fmt = (units, decimals = DECIMALS) => ethers.formatUnits(units, decimals);
 
+/**
+ * An ETH amount for people to read: exact when it fits in `digits` decimals ("0.01 ETH"), otherwise
+ * rounded down and marked with "~" ("~0.013333 ETH"). CSV and JSON files keep the exact amount (fmt).
+ */
+export function fmtEth(units, digits = 6) {
+  const exact = ethers.formatEther(units);
+  const [whole, dec = ""] = exact.split(".");
+  if (dec.length <= digits) return `${exact} ETH`;
+  const short = dec.slice(0, digits).replace(/0+$/, "");
+  return short || whole !== "0" ? `~${whole}${short ? "." + short : ""} ETH` : `${exact} ETH`; // dust: in full
+}
+
 // ---------------------------------------------------------------- verification
 
 /** Code of a contract, not of a plain wallet (an EIP-7702 delegated wallet is still a plain wallet). */
 export const isContractCode = (code) => code !== "0x" && !/^0xef0100[0-9a-f]{40}$/i.test(code);
 
-/** One deposit = the USDC one wallet sent to the receiver in one tx. */
+/** One deposit = the ETH one wallet sent to the contract in one tx (its Deposited events, added up). */
 export const depKey = (tx, from) => `${String(tx).toLowerCase()}|${String(from).toLowerCase()}`;
 
-/**
- * Verify one deposit transaction.
- * Valid when: tx succeeded, it contains a `token` Transfer to `receiver`,
- * sent from the guest's wallet, totalling >= deposit, inside the deposit window.
- * Every result that found USDC going to the receiver also carries `deposits` (the amount per
- * sender in this tx) and `block`, so what the contract sent back can be paired with it later.
- */
-export async function verifyTx(prov, cfg, txHash, claimedWallet) {
-  const receipt = await prov.getTransactionReceipt(txHash);
-  if (!receipt) return { ok: false, code: "TX_NOT_FOUND", note: "Not found on this chain (wrong network?)" };
-  if (receipt.status !== 1) return { ok: false, code: "TX_FAILED", note: "Transaction reverted" };
+// Explorers of other networks: a tx link from one of them means the ETH was sent on the wrong network.
+// Checked only when the tx is not on the configured chain (a hash is never on two chains in practice).
+export const OTHER_NETWORKS = [
+  [/sepolia\.etherscan\.io/i, "the Sepolia test network"],
+  [/holesky\.etherscan\.io|hoodi\.etherscan\.io/i, "an Ethereum test network"],
+  [/optimistic\.etherscan\.io|optimism/i, "Optimism"],
+  [/arbiscan\.io|arbitrum/i, "Arbitrum"],
+  [/basescan\.org|base\.blockscout/i, "Base"],
+  [/polygonscan\.com/i, "Polygon"],
+  [/lineascan\.build/i, "Linea"],
+  [/scrollscan\.com/i, "Scroll"],
+  [/bscscan\.com/i, "BNB Chain"],
+  [/zksync/i, "zkSync"],
+  [/blastscan\.io/i, "Blast"],
+  [/gnosisscan\.io/i, "Gnosis"],
+];
+/** The network a pasted tx link points at, if it is clearly not Ethereum mainnet ("Arbitrum"…). */
+export function otherNetworkOf(link) {
+  const s = String(link ?? "");
+  return OTHER_NETWORKS.find(([re]) => re.test(s))?.[1] ?? null;
+}
 
+/** The contract's Deposited events in a list of logs, added up per sender (Map sender → { from, amount, logIndex }). */
+export function depositsInLogs(logs, receiver) {
   const bySender = new Map();
-  for (const l of receipt.logs) {
-    if (ethers.getAddress(l.address) !== cfg.token || l.topics[0] !== TRANSFER_TOPIC || l.topics.length !== 3) continue;
-    if (ethers.getAddress(ethers.dataSlice(l.topics[2], 12)) !== cfg.receiver) continue;
+  for (const l of logs) {
+    if (ethers.getAddress(l.address) !== receiver || l.topics[0] !== DEPOSITED_TOPIC || l.topics.length !== 2) continue;
     const from = ethers.getAddress(ethers.dataSlice(l.topics[1], 12));
     const d = bySender.get(from) ?? { from, amount: 0n, logIndex: l.index };
     d.amount += BigInt(l.data);
     d.logIndex = Math.min(d.logIndex, l.index);
     bySender.set(from, d);
   }
+  return bySender;
+}
+
+/**
+ * Verify one deposit transaction.
+ * Valid when: the tx succeeded on this chain, the deposit contract (`receiver`) logged a Deposited
+ * event for the guest's wallet, totalling >= deposit, inside the deposit window.
+ * Every result that found ETH arriving in the contract also carries `deposits` (the amount per
+ * sender in this tx) and `block`, so what the contract sent back can be paired with it later.
+ * `link` is what the guest pasted, used to name the network when the tx is not on this chain.
+ */
+export async function verifyTx(prov, cfg, txHash, claimedWallet, link = "") {
+  const net = cfg.chainName ?? "this network";
+  const receipt = await prov.getTransactionReceipt(txHash);
+  if (!receipt) {
+    if (await prov.getTransaction(txHash))
+      return { ok: false, code: "TX_PENDING", note: "Sent but not confirmed yet. Check again later." };
+    const other = otherNetworkOf(link);
+    if (other)
+      return { ok: false, code: "WRONG_NETWORK", note: `The link is a transaction on ${other}, not ${net}. ETH sent there never reached the deposit contract, and the contract can't send it back. Ask the guest to send a new deposit on ${net} and paste its etherscan.io link.` };
+    return { ok: false, code: "TX_NOT_FOUND", note: `Not found on ${net}. Sent on another network (Arbitrum, Base, Optimism…), or a typo in the link? Ask the guest for their etherscan.io link.` };
+  }
+  const toContract = !!receipt.to && ethers.getAddress(receipt.to) === cfg.receiver;
+  if (receipt.status !== 1)
+    return { ok: false, code: "TX_FAILED", note: toContract
+      ? "The deposit contract refused this payment (0 ETH sent, or deposits were already closed), so no ETH arrived: the guest only paid the network fee. If they still want a spot, they send a new deposit."
+      : "This transaction failed, so no ETH moved: the guest only paid the network fee. If they still want a spot, they send a new deposit." };
+
+  const bySender = depositsInLogs(receipt.logs, cfg.receiver);
   if (!bySender.size)
-    return { ok: false, code: "NO_DEPOSIT_TRANSFER", note: "No USDC transfer to the deposit address in this tx" };
+    return { ok: false, code: "NO_DEPOSIT_TRANSFER", note: toContract || !receipt.to
+      ? "No ETH deposit to the deposit contract in this tx"
+      : `No ETH deposit to the deposit contract in this tx (it went to ${ethers.getAddress(receipt.to)}: wrong address?)` };
 
   const deposits = [...bySender.values()];
   const senders = deposits.map((d) => d.from);
@@ -317,18 +376,16 @@ export async function verifyTx(prov, cfg, txHash, claimedWallet) {
     if (senders.length !== 1) return { ok: false, code: "AMBIGUOUS_SENDER", note: "No wallet given and tx has several senders", ...seen };
     wallet = senders[0];
     inferred = true;
-    // No ETH address on Luma: refunds and payouts would go to whoever sent the USDC. That must be
-    // an ordinary wallet, not a bridge mint (from 0x0) or a contract (bridge, exchange, router…).
-    if (wallet === ethers.ZeroAddress)
-      return { ok: false, code: "UNUSUAL_SENDER", note: "The USDC was minted straight to the deposit address (a bridge?), so there is no sender wallet. Ask the guest for their wallet address and to add it on Luma.", ...seen };
+    // No ETH address on Luma: refunds and payouts would go to whoever sent the ETH. That must be an
+    // ordinary wallet; a contract (an exchange, a relayer, a Safe…) only if the guest says it is theirs.
     if (isContractCode(await prov.getCode(wallet)))
-      return { ok: false, code: "UNUSUAL_SENDER", note: `Sent by a contract (${wallet}: a bridge, an exchange or a smart wallet?) and no ETH address on Luma. Ask the guest which wallet should get refunds and payouts, and to add it on Luma.`, sender: wallet, ...seen };
+      return { ok: false, code: "UNUSUAL_SENDER", note: `Sent by a contract (${wallet}: an exchange, a Safe or another smart wallet?) and no ETH address on Luma. Ask the guest which wallet should get refunds and payouts: if it is that same Safe or smart wallet, they add its address on Luma as their ETH address.`, sender: wallet, ...seen };
   }
   if (wallet === ethers.ZeroAddress)
     return { ok: false, code: "UNUSUAL_SENDER", note: "The ETH address on Luma is the zero address. Ask the guest for their real wallet.", ...seen };
   const mine = bySender.get(wallet);
   if (!mine)
-    return { ok: false, code: "WRONG_SENDER", note: `Deposit came from ${senders.join(" / ")}, not ${wallet}`, sender: senders[0], ...seen };
+    return { ok: false, code: "WRONG_SENDER", note: `Deposit came from ${senders.join(" / ")}, not ${wallet} (sent from an exchange? Refunds and payouts can only go to the wallet that sent the deposit)`, sender: senders[0], ...seen };
 
   const amount = mine.amount;
   const ts = Number((await prov.getBlock(receipt.blockNumber)).timestamp);
@@ -336,7 +393,7 @@ export async function verifyTx(prov, cfg, txHash, claimedWallet) {
   if (ts < cfg.opensAt || ts > cfg.deadline)
     return { ok: false, code: "OUTSIDE_WINDOW", note: `Sent at ${new Date(ts * 1000).toISOString()}`, ...res };
   if (amount < cfg.depositUnits)
-    return { ok: false, code: "AMOUNT_TOO_LOW", note: `Sent ${fmt(amount, cfg.decimals)}, need ${cfg.deposit}. A second transfer can't be added to it: return this one (returns.csv) and ask for one new ${cfg.deposit} USDC transfer.`, ...res };
+    return { ok: false, code: "AMOUNT_TOO_LOW", note: `Sent ${fmt(amount, cfg.decimals)} ETH, need ${cfg.deposit} ETH. A second payment can't be added to it: return this one (returns.csv) and ask for one new ${cfg.deposit} ETH deposit.`, ...res };
   return { ok: true, code: "VERIFIED", note: inferred ? "wallet taken from the transaction sender" : "", ...res };
 }
 
@@ -367,9 +424,9 @@ export async function verifyRegistrations(prov, cfg, rows, { onlyDepositTicket =
     if (!rawTx) { results.push({ ...base, ok: false, code: "NO_TX", note: "Deposit ticket but no tx link" }); continue; }
     if (!txHash) { results.push({ ...base, ok: false, code: "BAD_TX_HASH", note: "Couldn't find a 0x… tx hash in the answer" }); continue; }
 
-    const key = `${txHash}|${claimed ?? ""}`;
+    const key = `${txHash}|${claimed ?? ""}|${otherNetworkOf(rawTx) ?? ""}`;
     if (!cache.has(key))
-      cache.set(key, verifyTx(prov, cfg, txHash, claimed).catch((e) => ({ ok: false, code: "RPC_ERROR", note: e.shortMessage || e.message })));
+      cache.set(key, verifyTx(prov, cfg, txHash, claimed, rawTx).catch((e) => ({ ok: false, code: "RPC_ERROR", note: e.shortMessage || e.message })));
     const res = await cache.get(key);
     results.push({
       ...base,
@@ -390,7 +447,7 @@ export async function verifyRegistrations(prov, cfg, rows, { onlyDepositTicket =
   return { results, columns: col };
 }
 
-// Rows whose own wallet really sent USDC in their tx (whether or not it counts as a deposit).
+// Rows whose own wallet really sent ETH to the contract in their tx (whether or not it counts as a deposit).
 export const MONEY_CODES = new Set(["VERIFIED", "OUTSIDE_WINDOW", "AMOUNT_TOO_LOW"]);
 
 /**
@@ -579,20 +636,42 @@ export function pairReturns(deposits, events, { deposit, prefer = new Set(), sta
   return { byDeposit, unbacked, unpaired };
 }
 
-/** eth_getLogs over a block range in chunks, so RPCs that cap the range still answer. */
-export async function getLogsChunked(prov, filter, fromBlock, toBlock = "latest", step = 50_000) {
+/**
+ * eth_getLogs over a block range in chunks of `step` blocks (cfg.logChunk, 5,000 by default), so
+ * public RPCs that cap the range still answer. A chunk that fails is tried again `retries` times,
+ * waiting a little longer each time (public RPCs sometimes answer "temporarily unavailable"); if it
+ * still fails it is split in two halves (an RPC that wants smaller ranges), down to `minStep` blocks.
+ * Only then does the scan stop, with a message saying what to change.
+ */
+export async function getLogsChunked(prov, filter, fromBlock, toBlock = "latest", step = DEFAULT_LOG_CHUNK,
+  { retries = 3, delayMs = 1000, minStep = 100 } = {}) {
   const latest = toBlock === "latest" ? await prov.getBlockNumber() : Number(toBlock);
   const out = [];
-  for (let start = Number(fromBlock); start <= latest; start += step) {
-    const logs = await prov.getLogs({ ...filter, fromBlock: start, toBlock: Math.min(start + step - 1, latest) });
-    for (const l of logs) out.push(l);
-  }
+  const range = async (from, to) => {
+    let err;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      if (attempt) await new Promise((r) => setTimeout(r, delayMs * 2 ** (attempt - 1)));
+      try {
+        return void out.push(...(await prov.getLogs({ ...filter, fromBlock: from, toBlock: to })));
+      } catch (e) {
+        err = e;
+      }
+    }
+    if (to - from + 1 > minStep) {
+      const mid = from + Math.floor((to - from + 1) / 2);
+      await range(from, mid - 1);
+      return range(mid, to);
+    }
+    throw new Error(`Could not read the contract's history for blocks ${from}–${to} from the RPC after ${retries + 1} tries ` +
+      `(${err?.shortMessage || err?.message}). Try again in a few minutes, or set another "rpcUrl" (or a smaller "logChunk") in the config.`);
+  };
+  for (let start = Number(fromBlock); start <= latest; start += step) await range(start, Math.min(start + step - 1, latest));
   return out;
 }
 
-/** Every token transfer into the receiver within a block range (for cross-checking). */
-export async function incomingTransfers(prov, cfg, fromBlock, toBlock = "latest", step = 50_000) {
-  const logs = await getLogsChunked(prov, { address: cfg.token, topics: [TRANSFER_TOPIC, null, ethers.zeroPadValue(cfg.receiver, 32)] }, fromBlock, toBlock, step);
+/** Every deposit into the contract within a block range: its Deposited events, one entry per event. */
+export async function incomingDeposits(prov, cfg, fromBlock, toBlock = "latest", step = cfg.logChunk ?? DEFAULT_LOG_CHUNK, opts) {
+  const logs = await getLogsChunked(prov, { address: cfg.receiver, topics: [DEPOSITED_TOPIC] }, fromBlock, toBlock, step, opts);
   return logs.map((l) => ({
     tx: l.transactionHash.toLowerCase(),
     from: ethers.getAddress(ethers.dataSlice(l.topics[1], 12)),
