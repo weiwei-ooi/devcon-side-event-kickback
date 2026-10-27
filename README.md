@@ -216,7 +216,7 @@ This setup isn't trustless, but anyone can check it:
 > ⚠️ **Network: Ethereum mainnet only, NOT Arbitrum, Base, Optimism or any other network.** Check that your wallet is on **Ethereum** (chain ID 1) *before* you send. ETH sent on any other network does not reach the deposit contract and may be lost for good.
 >
 > 1. Send **exactly 0.01 ETH on Ethereum mainnet** to `<contract address>`, **from your own wallet**, before **Wed 4 Nov, 18:00 IST**. Send the amount in ETH, not a dollar value, and **only ETH: not USDC or any other token** (a token is not a deposit and books no spot). Don't send it from an exchange, because the refund goes back to the wallet that sent it.
-> 2. Register with the *Committed Spot* ticket. Enter that wallet address and paste the transaction link. It should start with **https://etherscan.io/tx/**. If your link starts with arbiscan.io, basescan.org or anything else, you sent it on the wrong network.
+> 2. Register with the *Committed Spot* ticket. Enter that wallet address and paste the transaction link. It should start with **https://etherscan.io/tx/**.
 > 3. Every registration is reviewed. If you are declined or not admitted from the waitlist, your deposit goes back to the same wallet.
 > 4. If you don't check in, you lose your deposit. If the organisers never post the attendance list, you can withdraw it yourself after 18 Nov.
 > 5. Check in at the door. After the event, everyone who showed up gets their deposit back, plus an equal share of the no-shows' deposits.
