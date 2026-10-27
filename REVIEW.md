@@ -40,6 +40,8 @@ For Wei Wei and the developers reviewing the code before the live deployment.
 
 **Tests (contract, on the v6 code):** `node --test test/contract.test.mjs` 30/30 on a local ganache chain, with mocks of KlerosLiquid and the Dispute Resolver (`test/MockKleros.sol`) and a test wallet that accepts, refuses, burns gas, needs about 66k gas or re-enters (`test/TestWallet.sol`). Every earlier behaviour is ported to ETH and Kleros v1, plus: deposit/receive events and refusals in every phase; refund/sweep/rejectAndRefund never touching the pool, owed, challenge escrow or held shares; refusing and gas-burning recipients (owed + claim) and a heavy smart wallet paid directly; `NotEnoughGas`; reentrancy from recipients; the full Kleros v1 flow (case creation with metaevidence and extra data, evidence under the local ID, appeals funded and withdrawn from funders' wallets, the one-side override, refusal to rule, fee more than doubled, non-payable appeal maths); held cases settled in every order.
 
+**Tests (all suites, after merging contract, scripts, console, guest page and docs):** from a clean build (`rm -rf build && npm run compile`), `npm test` 38/38 (contract 30 + scripts end to end 8), `npm run test:site` 120/120, `npm run test:console` 97/97, all on local ganache.
+
 **Before going live (v6):**
 1. She confirms the deposit amount; set `deposit` in config.json (it is fixed in the contract at deploy).
 2. Re-pin the juror policy and pin `docs/metaevidence.json` (its `fileURI` set to the policy pin first) through Kleros's upload service; set `kleros.policyURI` and `kleros.metaEvidenceURI`.

@@ -55,6 +55,8 @@ const config = {
 write("config.json", config);
 const web = spawn("node", ["scripts/console.mjs", "--config", `${dir}/config.json`, "--out", dir], { cwd: proj, env: { ...process.env, PORT: String(WEB) }, stdio: "ignore" });
 await new Promise((r) => setTimeout(r, 1200));
+// a console left running by an earlier run would answer on the same port with its own config
+if (web.exitCode !== null) throw new Error(`The console server exited at once (port ${WEB} already in use? stop the old one first)`);
 
 const results = [];
 const check = (name, ok, extra = "") => { results.push(ok); console.log(`${ok ? "PASS" : "FAIL"} ${name} ${ok ? "" : extra}`); };
