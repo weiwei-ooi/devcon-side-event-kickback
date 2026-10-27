@@ -19,7 +19,7 @@
   "kleros": {
     "court": 0,
     "jurors": 3,
-    "policyURI": "/ipfs/<CID of docs/attendance-policy.md>",
-    "metaEvidenceURI": "/ipfs/<CID>/metaevidence.json"
+    "policyURI": "",
+    "metaEvidenceURI": ""
   }
 }
