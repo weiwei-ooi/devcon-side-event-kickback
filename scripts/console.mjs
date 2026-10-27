@@ -1,15 +1,21 @@
 #!/usr/bin/env node
-// Serves the owner console at http://localhost:8787 so the organiser can deploy and run
-// owner actions by clicking buttons and confirming in MetaMask. Keys never leave MetaMask.
+// Serves the owner console at http://localhost:8787 so the organiser can deploy and run owner
+// actions by clicking buttons and confirming in her browser wallet. Keys never leave the wallet.
 //
 //   npm run console            (live: config.json, out/)
-//   npm run console:rehearsal  (throwaway contract on Arbitrum One: config.rehearsal.json, out-rehearsal/)
-//   npm run console:testnet    (test network: config.testnet.json, out-testnet/)
+//   npm run console:rehearsal  (throwaway contract on Ethereum mainnet: config.rehearsal.json, out-rehearsal/)
+//
+// Besides the files below, /settings.json is the chosen config as the scripts read it (lib.mjs
+// loadConfig, klerosConfig, deployArgs): network, deposit in wei, Kleros addresses, and the exact
+// constructor arguments, or the reason a deploy would be refused. The page deploys with those, so
+// the console and the scripts always agree on the settings.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { exec } from "node:child_process";
+import { ethers } from "ethers";
+import { loadConfig, klerosConfig, deployArgs, KLEROS } from "./lib.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = Number(process.env.PORT || 8787);
@@ -34,6 +40,41 @@ if (!fs.existsSync(path.join(root, "build/TruthPaysKickback.json"))) {
   process.exit(1);
 }
 
+// The config as the scripts see it, read fresh on every request. `configHash` lets the page check
+// that these settings come from the same config text it was opened with.
+function settings() {
+  const file = path.join(root, CONFIG);
+  let text;
+  try { text = fs.readFileSync(file, "utf8"); } catch { return { error: `${CONFIG} not found. Ask Claude to create it.` }; }
+  const out = { configHash: ethers.id(text) };
+  let cfg, k;
+  try {
+    cfg = loadConfig(file);
+    k = klerosConfig(cfg);
+  } catch (e) {
+    return { ...out, error: `${CONFIG}: ${e.message}` };
+  }
+  Object.assign(out, {
+    chainId: cfg.chainId,
+    chainName: cfg.chainName,
+    rpcUrl: cfg.rpcUrl,
+    explorer: cfg.explorer,
+    symbol: cfg.symbol,
+    deposit: cfg.deposit,
+    depositWei: cfg.depositUnits,
+    poolCap: cfg.poolCap ?? null,
+    poolCapWei: cfg.poolCapUnits ?? null,
+    logChunk: cfg.logChunk,
+    deployBlock: cfg.deployBlock ?? null,
+    kleros: k,
+    knownKleros: KLEROS[cfg.chainId] ?? null,
+  });
+  // the owner is the connected wallet: the page puts it in place of this placeholder
+  try { out.deployArgs = deployArgs(cfg, ethers.ZeroAddress); } catch (e) { out.deployError = e.message; }
+  return out;
+}
+const toJson = (v) => JSON.stringify(v, (_, x) => (typeof x === "bigint" ? x.toString() : x));
+
 http
   .createServer((req, res) => {
     // only this computer's own pages may talk to the console (blocks DNS-rebinding sites)
@@ -46,6 +87,10 @@ http
       return res.writeHead(400).end("bad request");
     }
     if (p === "") p = "console/index.html";
+    if (p === "settings.json") {
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      return res.end(toJson(settings()));
+    }
     if (!ALLOWED.includes(p)) return res.writeHead(404).end("not found");
     // The page always asks for config.json and out/…; serve the chosen config and output folder.
     const file = path.join(root, p === "config.json" ? CONFIG : p.replace(/^out\//, OUT + "/"));
