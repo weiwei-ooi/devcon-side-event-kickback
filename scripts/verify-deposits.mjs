@@ -4,10 +4,11 @@
 //   node scripts/verify-deposits.mjs --guests luma-guests.csv [--config config.json]
 //        [--out out] [--scan-from-block 123456]
 //
-// Reads the Luma guest export, checks every pasted deposit tx on-chain, and sorts the
-// verified payers by the organiser's decision in Luma (approval_status):
+// Reads the Luma guest export, checks every pasted deposit tx on-chain (the deposit contract's own
+// Deposited events: ETH sent with a plain transfer or with deposit()), and sorts the verified payers
+// by the organiser's decision in Luma (approval_status):
 //   out/verified.csv          every guest whose deposit checks out (with their Luma decision)
-//   out/issues.csv            anything that needs a human look (wrong amount, wrong chain…)
+//   out/issues.csv            anything that needs a human look (wrong amount, wrong network…)
 //   out/to-review.csv         verified payers still waiting for the organiser's approve/decline
 //   out/new-stakers.json      approved + verified wallets not yet registered → "Register stakers"
 //   out/refunds.json          declined payers whose deposit is still held → "Refund declined guests"
@@ -22,12 +23,13 @@
 // The contract counts money in total, not per wallet, so this script is what makes sure every
 // wallet it lists still has its own deposit in the contract: what the contract already sent back
 // (Refund declined guests, Return a stray transfer) is paired with each wallet's deposits.
+// Amounts in the CSV files are exact ETH amounts (what to type in the console).
 import fs from "node:fs";
 import path from "node:path";
 import { ethers } from "ethers";
 import {
   args, loadConfig, provider, readCsv, writeCsv, writeJson, verifyRegistrations, resolveClaims,
-  pairReturns, getLogsChunked, incomingTransfers, depKey, isContractCode, safeBatch, loadAbi, fmt, STATUS, MONEY_CODES,
+  pairReturns, getLogsChunked, incomingDeposits, depKey, isContractCode, safeBatch, loadAbi, fmt, fmtEth, STATUS, MONEY_CODES,
 } from "./lib.mjs";
 
 const a = args();
@@ -51,7 +53,7 @@ if (a["scan-from-block"] !== undefined && !/^\d+$/.test(String(a["scan-from-bloc
 }
 let scanFrom = a["scan-from-block"] !== undefined ? Number(a["scan-from-block"]) : cfg.deployBlock;
 if (scanFrom === undefined && cfg.mode) {
-  // live, rehearsal or testnet: a real network, where scanning from block 0 is not an option
+  // live or rehearsal: a real network, where scanning from block 0 is not an option
   console.error(`No "deployBlock" in ${configFile} and no --scan-from-block. Without the deploy block, refunds already sent and ` +
     `deposits nobody claimed can't be checked, so nothing is listed (${cfg.mode} mode). Set "deployBlock" in ${configFile} ` +
     `or pass --scan-from-block <deploy block>.`);
@@ -59,6 +61,18 @@ if (scanFrom === undefined && cfg.mode) {
 }
 
 const prov = provider(cfg);
+
+// The deposit contract. Deposits are its own Deposited events, so without it there is nothing to check.
+const kickbackAddr = cfg.receiver;
+if (!isContractCode(await prov.getCode(kickbackAddr))) {
+  console.error(`No deposit contract at ${kickbackAddr} on ${cfg.chainName}. Set "contract" (and "receiver") in ${configFile} ` +
+    `to the deployed contract, and check that "rpcUrl" is on the right network.`);
+  process.exit(1);
+}
+const { abi } = loadAbi("TruthPaysKickback");
+const c = new ethers.Contract(kickbackAddr, abi, prov);
+const iface = new ethers.Interface(abi);
+
 const rows = readCsv(a.guests);
 console.log(`Loaded ${rows.length} registrations from ${a.guests}`);
 
@@ -66,74 +80,52 @@ const { results, columns } = await verifyRegistrations(prov, cfg, rows);
 console.log(`Columns used: ${JSON.stringify(columns)}`);
 if (!columns.approval) console.warn("⚠️  No approval_status column: every verified payer is treated as pending.");
 
-// The contract (the receiver may also be a Safe/EOA, then there is no on-chain registry)
-const code = await prov.getCode(cfg.receiver);
-const kickbackAddr = cfg.contract ? ethers.getAddress(cfg.contract) : code !== "0x" ? cfg.receiver : null;
-let c = null;
-let iface = null;
 const snapshotBlock = await prov.getBlockNumber();
-if (kickbackAddr) {
-  const { abi } = loadAbi("TruthPaysKickback");
-  c = new ethers.Contract(kickbackAddr, abi, prov);
-  iface = new ethers.Interface(abi);
-}
-if (scanFrom === undefined && kickbackAddr) {
+if (scanFrom === undefined) {
   console.warn('⚠️  No "deployBlock" in the config: scanning from block 0 (only fine on a local test chain).');
   scanFrom = 0;
 }
-if (scanFrom === undefined) console.warn('⚠️  No "deployBlock" in the config: deposits nobody claimed on Luma are NOT being checked.');
 
-// Every deposit we know of: the ones guests pasted, plus every USDC transfer in since the start block.
-const deposits = [];
-let incoming = null;
-if (scanFrom !== undefined) {
-  const perDeposit = new Map(); // one deposit = what one wallet sent in one tx
-  for (const t of await incomingTransfers(prov, cfg, scanFrom, snapshotBlock)) {
-    const k = depKey(t.tx, t.from);
-    const d = perDeposit.get(k) ?? { ...t, amount: 0n };
-    d.amount += t.amount;
-    d.logIndex = Math.min(d.logIndex, t.logIndex);
-    perDeposit.set(k, d);
-  }
-  incoming = [...perDeposit.values()];
-  deposits.push(...incoming);
+// Every deposit we know of: the ones guests pasted, plus every Deposited event since the start block.
+const perDeposit = new Map(); // one deposit = what one wallet sent in one tx
+for (const t of await incomingDeposits(prov, cfg, scanFrom, snapshotBlock)) {
+  const k = depKey(t.tx, t.from);
+  const d = perDeposit.get(k) ?? { ...t, amount: 0n };
+  d.amount += t.amount;
+  d.logIndex = Math.min(d.logIndex, t.logIndex);
+  perDeposit.set(k, d);
 }
+const incoming = [...perDeposit.values()];
+const deposits = [...incoming];
 for (const r of results) for (const d of r.deposits ?? []) deposits.push({ tx: r.tx, from: d.from, amount: d.amount, block: r.block, logIndex: d.logIndex });
 
 // On-chain status of every wallet that sent money, at one block
 const statusOf = new Map(); // lower-case wallet → 0..3 (missing = could not be read)
-const st = (w) => (c ? statusOf.get(String(w).toLowerCase()) : STATUS.None);
-if (c) {
-  const wallets = [...new Set(deposits.map((d) => ethers.getAddress(d.from)))].filter((w) => w !== ethers.ZeroAddress);
-  for (let i = 0; i < wallets.length; i += 10) {
-    await Promise.all(wallets.slice(i, i + 10).map(async (w) => {
-      try {
-        statusOf.set(w.toLowerCase(), Number(await c.status(w, { blockTag: snapshotBlock })));
-      } catch (e) {
-        console.warn(`Could not read status of ${w}: ${e.shortMessage || e.message}`);
-      }
-    }));
-  }
+const st = (w) => statusOf.get(String(w).toLowerCase());
+const senders = [...new Set(deposits.map((d) => ethers.getAddress(d.from)))].filter((w) => w !== ethers.ZeroAddress);
+for (let i = 0; i < senders.length; i += 10) {
+  await Promise.all(senders.slice(i, i + 10).map(async (w) => {
+    try {
+      statusOf.set(w.toLowerCase(), Number(await c.status(w, { blockTag: snapshotBlock })));
+    } catch (e) {
+      console.warn(`Could not read status of ${w}: ${e.shortMessage || e.message}`);
+    }
+  }));
 }
 
 // What the contract sent back to each wallet, and when it registered them. The range starts at the
 // oldest deposit we know of, so no refund of a pasted deposit is missed.
-let events = [];
-if (c) {
-  const from = Math.min(scanFrom ?? Infinity, ...deposits.map((d) => Number(d.block)).filter(Number.isFinite));
-  if (Number.isFinite(from)) {
-    const topics = [["Rejected", "Refunded", "StakerRegistered"].map((n) => iface.getEvent(n).topicHash)];
-    events = (await getLogsChunked(prov, { address: kickbackAddr, topics }, from, snapshotBlock)).map((l) => {
-      const p = iface.parseLog(l);
-      return {
-        type: p.name, wallet: ethers.getAddress(p.args[0]), amount: p.name === "StakerRegistered" ? 0n : p.args[1],
-        block: l.blockNumber, logIndex: l.index, tx: l.transactionHash.toLowerCase(),
-      };
-    });
-  }
-}
+const from = Math.min(scanFrom, ...deposits.map((d) => Number(d.block)).filter(Number.isFinite));
+const topics = [["Rejected", "Refunded", "StakerRegistered"].map((n) => iface.getEvent(n).topicHash)];
+const events = (await getLogsChunked(prov, { address: kickbackAddr, topics }, from, snapshotBlock, cfg.logChunk)).map((l) => {
+  const p = iface.parseLog(l);
+  return {
+    type: p.name, wallet: ethers.getAddress(p.args[0]), amount: p.name === "StakerRegistered" ? 0n : p.args[1],
+    block: l.blockNumber, logIndex: l.index, tx: l.transactionHash.toLowerCase(),
+  };
+});
 // A registered staker can only be refunded while the event is open (before the attendance list).
-const listOpen = c ? Number(await c.phase({ blockTag: snapshotBlock })) === 0 : true;
+const listOpen = Number(await c.phase({ blockTag: snapshotBlock })) === 0;
 const dep = cfg.depositUnits;
 const { byDeposit, unbacked, unpaired } = pairReturns(deposits, events, {
   deposit: dep,
@@ -157,7 +149,7 @@ const refunds = [];
 const toReview = [];
 const returns = [];
 const STRAY = "'Return a stray transfer'";
-const usdc = (x) => `${fmt(x, cfg.decimals)} USDC`;
+const eth = (x) => fmtEth(x);
 // wallets whose registration is backed by one of their own deposits
 const backed = new Set([...byDeposit.values()].filter((d) => d.staked).map((d) => d.from.toLowerCase()));
 const giveBack = (r, code, amount, note) => {
@@ -179,12 +171,12 @@ for (const r of kept) {
     if (s === undefined) continue;
     if (r.code === "AMOUNT_TOO_LOW") {
       if (free === 0n) r.note += " (Already returned.)";
-      giveBack(r, "AMOUNT_TOO_LOW", free, "Short deposit: return it and ask for one new transfer of the full deposit");
+      giveBack(r, "AMOUNT_TOO_LOW", free, "Short deposit: return it and ask for one new payment of the full deposit");
     } else if (r.decision === "declined" && s === STATUS.None && free >= dep) {
       // a declined late payer: rejectAndRefund works for unregistered payers while their money is spare
       refunds.push({ ...r, onchain: "unregistered" });
       r.note += ". Declined: in refunds.json ('Refund declined guests')";
-      giveBack(r, "OVERPAID", free - dep, `Late and overpaid: the rest after 'Refund declined guests' sends back ${cfg.deposit}`);
+      giveBack(r, "OVERPAID", free - dep, `Late and overpaid: the rest after 'Refund declined guests' sends back ${cfg.deposit} ETH`);
     } else {
       giveBack(r, "OUTSIDE_WINDOW", free, r.decision === "declined"
         ? "Late payment, declined"
@@ -212,7 +204,7 @@ for (const r of kept) {
       break;
     case "returned":
       if (r.decision !== "declined")
-        issues.push({ ...r, code: "RETURNED_EARLIER", note: `This deposit was already returned (${STRAY}). The guest must send a new ${cfg.deposit} USDC deposit and paste that link before they can be registered.` });
+        issues.push({ ...r, code: "RETURNED_EARLIER", note: `This deposit was already returned (${STRAY}). The guest must send a new ${cfg.deposit} ETH deposit and paste that link before they can be registered.` });
       giveBack(r, "PARTLY_RETURNED", free, "Rest of a deposit that was partly returned: it can no longer hold a spot");
       used = free;
       break;
@@ -239,8 +231,8 @@ for (const r of kept) {
   // Money beyond one deposit from this tx (an overpayment, or a second deposit of a registered wallet)
   const extra = free - used;
   if (giveBack(r, "OVERPAID", extra, "More than the deposit")) {
-    r.note = [r.note, `overpaid by ${fmt(extra, cfg.decimals)} (return the excess with ${STRAY}; see returns.csv)`].filter(Boolean).join("; ");
-    issues.push({ ...r, code: "OVERPAID", note: `${usdc(extra)} more than the deposit is still held from this payment. Return the excess with ${STRAY} (listed in returns.csv).` });
+    r.note = [r.note, `overpaid by ${fmt(extra, cfg.decimals)} ETH (return the excess with ${STRAY}; see returns.csv)`].filter(Boolean).join("; ");
+    issues.push({ ...r, code: "OVERPAID", note: `${fmt(extra, cfg.decimals)} ETH more than the deposit is still held from this payment. Return the excess with ${STRAY} (listed in returns.csv).` });
   }
 }
 // A second deposit from a wallet already counted for another registration goes back to that wallet.
@@ -251,34 +243,30 @@ const listed = [...newStakers, ...refunds].map((v) => v.wallet.toLowerCase());
 if (new Set(listed).size !== listed.length || listed.includes(ethers.ZeroAddress))
   throw new Error("Internal check failed: a wallet would be listed twice (or is 0x0). Nothing was written; investigate.");
 
-// Deposits nobody's Luma row points at
-let unmatched = null;
-if (incoming) {
-  // A deposit is claimed by a row whose own wallet sent it. A row whose tx came from someone else
-  // (WRONG_SENDER, UNUSUAL_SENDER, AMBIGUOUS_SENDER) claims nothing, so that money is still listed
-  // here; only a row we could not check (RPC_ERROR) keeps its whole tx out until the next run.
-  const claimedDep = new Set(results.filter((r) => MONEY_CODES.has(r.code)).map((r) => depKey(r.tx, r.wallet)));
-  const unchecked = new Set(results.filter((r) => r.code === "RPC_ERROR").map((r) => String(r.tx).toLowerCase()));
-  const pastedBy = new Map(); // tx → the rows with a sender problem that pasted it
-  for (const r of results) if (/_SENDER$/.test(r.code)) {
-    const k = String(r.tx).toLowerCase();
-    pastedBy.set(k, [...(pastedBy.get(k) ?? []), r]);
-  }
-  unmatched = [];
-  for (const t of incoming.filter((x) => !claimedDep.has(depKey(x.tx, x.from)) && !unchecked.has(x.tx))) {
-    const d = byDeposit.get(depKey(t.tx, t.from));
-    const free = d.remaining - (d.staked ? dep : 0n);
-    let status = "open";
-    let note = "";
-    const pasted = pastedBy.get(t.tx);
-    if (free <= 0n) status = d.staked ? "held for a registered staker" : `already refunded (${[...new Set(d.returnedBy)].join(" ")})`;
-    else if (t.from === ethers.ZeroAddress) note = "Minted straight to the contract (a bridge?): don't return it to this address; find out whose it is.";
-    else if (isContractCode(await prov.getCode(t.from))) note = "Sent by a contract (bridge, exchange or smart wallet?): check where it should go before returning it.";
-    else if (free < t.amount) note = `Partly returned already (${[...new Set(d.returnedBy)].join(" ")}).`;
-    if (free > 0n && pasted) note = [`Pasted on Luma by ${pasted.map((r) => `${r.email || r.name} (${r.code})`).join(", ")}: sort that out with the guest first ` +
-      `(if the sender is their own wallet, they put it as their ETH address on Luma and it verifies). Return it only once that's agreed.`, note].filter(Boolean).join(" ");
-    unmatched.push({ status, from: t.from, amount: fmt(t.amount, cfg.decimals), to_return: fmt(free > 0n ? free : 0n, cfg.decimals), units: free > 0n ? free : 0n, block: t.block, tx: t.tx, explorer: `${cfg.explorer}/tx/${t.tx}`, note });
-  }
+// Deposits nobody's Luma row points at.
+// A deposit is claimed by a row whose own wallet sent it. A row whose tx came from someone else
+// (WRONG_SENDER, UNUSUAL_SENDER, AMBIGUOUS_SENDER) claims nothing, so that money is still listed
+// here; only a row we could not check (RPC_ERROR) keeps its whole tx out until the next run.
+const claimedDep = new Set(results.filter((r) => MONEY_CODES.has(r.code)).map((r) => depKey(r.tx, r.wallet)));
+const unchecked = new Set(results.filter((r) => r.code === "RPC_ERROR").map((r) => String(r.tx).toLowerCase()));
+const pastedBy = new Map(); // tx → the rows with a sender problem that pasted it
+for (const r of results) if (/_SENDER$/.test(r.code)) {
+  const k = String(r.tx).toLowerCase();
+  pastedBy.set(k, [...(pastedBy.get(k) ?? []), r]);
+}
+const unmatched = [];
+for (const t of incoming.filter((x) => !claimedDep.has(depKey(x.tx, x.from)) && !unchecked.has(x.tx))) {
+  const d = byDeposit.get(depKey(t.tx, t.from));
+  const free = d.remaining - (d.staked ? dep : 0n);
+  let status = "open";
+  let note = "";
+  const pasted = pastedBy.get(t.tx);
+  if (free <= 0n) status = d.staked ? "held for a registered staker" : `already refunded (${[...new Set(d.returnedBy)].join(" ")})`;
+  else if (isContractCode(await prov.getCode(t.from))) note = "Sent by a contract (an exchange, a Safe or another smart wallet?): check where it should go before returning it.";
+  else if (free < t.amount) note = `Partly returned already (${[...new Set(d.returnedBy)].join(" ")}).`;
+  if (free > 0n && pasted) note = [`Pasted on Luma by ${pasted.map((r) => `${r.email || r.name} (${r.code})`).join(", ")}: sort that out with the guest first ` +
+    `(if the sender is their own wallet, they put it as their ETH address on Luma and it verifies). Return it only once that's agreed.`, note].filter(Boolean).join(" ");
+  unmatched.push({ status, from: t.from, amount: fmt(t.amount, cfg.decimals), to_return: fmt(free > 0n ? free : 0n, cfg.decimals), units: free > 0n ? free : 0n, block: t.block, tx: t.tx, explorer: `${cfg.explorer}/tx/${t.tx}`, note });
 }
 
 // ---------------------------------------------------------------- write everything
@@ -299,37 +287,33 @@ const item = (v) => ({ wallet: v.wallet, name: v.name, email: v.email, onchain: 
 writeJson(`${out}/new-stakers.json`, { ...stamp, items: newStakers.map(item) });
 writeJson(`${out}/refunds.json`, { ...stamp, items: refunds.map(item) });
 
-if (iface) {
-  const chunks = (list) => Array.from({ length: Math.ceil(list.length / 100) }, (_, i) => list.slice(i * 100, i * 100 + 100));
-  writeJson(`${out}/safe-register.json`, safeBatch(cfg, `Truth Pays: register ${newStakers.length} stakers`,
-    chunks(newStakers.map((v) => v.wallet)).map((ch) => ({ to: kickbackAddr, data: iface.encodeFunctionData("registerStakers", [ch]) }))));
-  writeJson(`${out}/safe-refunds.json`, safeBatch(cfg, `Truth Pays: refund ${refunds.length} declined guests`,
-    chunks(refunds.map((v) => v.wallet)).map((ch) => ({ to: kickbackAddr, data: iface.encodeFunctionData("rejectAndRefund", [ch]) }))));
-}
+const chunks = (list) => Array.from({ length: Math.ceil(list.length / 100) }, (_, i) => list.slice(i * 100, i * 100 + 100));
+writeJson(`${out}/safe-register.json`, safeBatch(cfg, `Truth Pays: register ${newStakers.length} stakers`,
+  chunks(newStakers.map((v) => v.wallet)).map((ch) => ({ to: kickbackAddr, data: iface.encodeFunctionData("registerStakers", [ch]) }))));
+writeJson(`${out}/safe-refunds.json`, safeBatch(cfg, `Truth Pays: refund ${refunds.length} declined guests`,
+  chunks(refunds.map((v) => v.wallet)).map((ch) => ({ to: kickbackAddr, data: iface.encodeFunctionData("rejectAndRefund", [ch]) }))));
 
-if (unmatched) {
-  writeCsv(`${out}/unmatched.csv`, unmatched, ["status", "from", "amount", "to_return", "block", "tx", "explorer", "note"]);
-  const open = unmatched.filter((u) => u.status === "open");
-  const total = incoming.reduce((s, t) => s + t.amount, 0n);
-  console.log(`Deposit address received ${incoming.length} deposits (${usdc(total)}); ${open.length} not claimed by any guest and not yet refunded` +
-    `${open.length ? ` (${usdc(open.reduce((s, u) => s + u.units, 0n))})` : ""} → ${out}/unmatched.csv`);
-}
+writeCsv(`${out}/unmatched.csv`, unmatched, ["status", "from", "amount", "to_return", "block", "tx", "explorer", "note"]);
+const open = unmatched.filter((u) => u.status === "open");
+const total = incoming.reduce((s, t) => s + t.amount, 0n);
+console.log(`Deposit contract received ${incoming.length} deposits (${eth(total)}); ${open.length} not claimed by any guest and not yet refunded` +
+  `${open.length ? ` (${eth(open.reduce((s, u) => s + u.units, 0n))})` : ""} → ${out}/unmatched.csv`);
 
 for (const u of unbacked)
   console.warn(`⚠️  ${u.wallet} was registered (tx ${u.tx}) while none of its own deposits was left in the contract: its spot is backed by someone else's money. Investigate before refunding anyone.`);
 for (const u of unpaired)
-  console.warn(`⚠️  ${usdc(u.left)} sent back to ${u.wallet} (tx ${u.tx}) matches no deposit seen from that wallet: either its deposit is ` +
+  console.warn(`⚠️  ${eth(u.left)} sent back to ${u.wallet} (tx ${u.tx}) matches no deposit seen from that wallet: either its deposit is ` +
     `older than the scanned range (check --scan-from-block / deployBlock), or that wallet got back more than it sent (someone else's money).`);
 
 const byCode = issues.reduce((m, i) => ((m[i.code] = (m[i.code] ?? 0) + 1), m), {});
 const live = verified.filter((v) => ["unregistered", "registered", "paid", "refunded, paid again"].includes(v.onchain));
-console.log(`\n✅ Verified deposits:  ${verified.length}  (${live.length} still held: ${usdc(dep * BigInt(live.length))})`);
+console.log(`\n✅ Verified deposits:  ${verified.length}  (${live.length} still held: ${eth(dep * BigInt(live.length))})`);
 console.log(`🕒 Waiting for your decision on Luma: ${toReview.length}`);
 console.log(`🆕 Approved, to register on-chain: ${newStakers.length}`);
 console.log(`↩️  Declined, to refund: ${refunds.length}`);
 console.log(`💸 To give back with "Return a stray transfer" (not covered by "Refund declined guests"): ${returns.length}` +
-  `${returns.length ? ` (${usdc(returns.reduce((s, x) => s + x.units, 0n))})` : ""} → ${out}/returns.csv`);
-for (const x of returns) console.log(`     ${x.to_return} USDC → ${x.wallet}  ${x.name || x.email}  (${x.code})`);
+  `${returns.length ? ` (${eth(returns.reduce((s, x) => s + x.units, 0n))})` : ""} → ${out}/returns.csv`);
+for (const x of returns) console.log(`     ${x.to_return} ETH → ${x.wallet}  ${x.name || x.email}  (${x.code})`);
 console.log(`⚠️  Needs review: ${issues.length}  ${JSON.stringify(byCode)}`);
 console.log(`\nNext: approve or decline the guests in ${out}/to-review.csv on Luma, re-run this, then in the console`);
 console.log(`      click "Register stakers" and "Refund declined guests" (or use ${out}/safe-*.json / owner.mjs),`);

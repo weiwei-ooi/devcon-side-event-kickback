@@ -5,10 +5,10 @@
 //        [--verified out/verified.csv] [--claims out/claims.csv] [--extra-checkins manual.csv]
 //        [--config config.json] [--out out]
 //
-// Matches Luma check-ins against the registered stakers and writes:
+// Matches Luma check-ins against the registered stakers (read from the contract) and writes:
 //   out/attendees.json        staker wallets who checked in
-//   out/payout-plan.json      attendees + the share per person → "Post attendance list" = postAttendance(attendees, share)
-//   out/payout.csv            per-wallet payout
+//   out/payout-plan.json      attendees + the share per person in wei → "Post attendance list" = postAttendance(attendees, share)
+//   out/payout.csv            per-wallet payout (exact ETH)
 //   out/payout-summary.md     numbers to share publicly
 //   out/safe-post-attendance.json  Safe Transaction Builder batch for postAttendance()
 //
@@ -26,7 +26,7 @@ import path from "node:path";
 import { ethers } from "ethers";
 import {
   args, loadConfig, provider, readCsv, writeCsv, writeJson, detectColumns, normAddress,
-  safeBatch, loadAbi, fmt, STATUS, lumaDecision, uncell,
+  safeBatch, loadAbi, fmt, fmtEth, STATUS, lumaDecision, uncell,
 } from "./lib.mjs";
 
 const a = args();
@@ -37,9 +37,11 @@ if (!a.checkins) {
 const cfg = loadConfig(a.config ?? "config.json");
 const out = a.out ?? "out";
 // A run that stops half-way must never leave the previous plan behind for "Post attendance list".
+// (safe-payout-transfers.json came from the old no-contract mode: removed if an old run left one.)
 const OUTPUTS = ["attendees.json", "payout-plan.json", "payout.csv", "payout-summary.md",
   "safe-post-attendance.json", "safe-payout-transfers.json"];
 for (const f of OUTPUTS) fs.rmSync(path.join(out, f), { force: true });
+if (!cfg.contract) throw new Error('Set "contract" in the config: the stakers and the pool are read from the deployed contract.');
 const verifiedFile = a.verified ?? `${out}/verified.csv`;
 const verified = readCsv(verifiedFile);
 // every registration that verified a wallet's deposit, including ones flagged as duplicates
@@ -72,23 +74,21 @@ if (a["extra-checkins"]) {
   }
 }
 
-// Stakers = on-chain registry if a contract is configured (source of truth), else verified.csv
-const contractAddr = cfg.contract ? ethers.getAddress(cfg.contract) : null;
-let stakerWallets = verified.map((v) => ethers.getAddress(v.wallet));
-let onchain = null;
-if (contractAddr) {
-  const { abi } = loadAbi("TruthPaysKickback");
-  const c = new ethers.Contract(contractAddr, abi, provider(cfg));
-  const all = await c.stakers();
-  const st = await Promise.all(all.map((w) => c.status(w)));
-  onchain = [...new Set(all.filter((_, i) => Number(st[i]) === STATUS.Staker).map((w) => ethers.getAddress(w)))];
-  const count = await c.stakerCount();
-  if (BigInt(onchain.length) !== count) throw new Error(`On-chain staker list (${onchain.length}) and stakerCount (${count}) disagree; stop and investigate`);
-  const approved = verified.filter((v) => lumaDecision(v.approval) === "approved").map((v) => ethers.getAddress(v.wallet));
-  const missing = [...new Set(approved)].filter((w) => !onchain.includes(w));
-  if (missing.length) console.warn(`⚠️  ${missing.length} approved wallets with a verified deposit are NOT registered on-chain and can't be paid: ${missing.join(", ")}`);
-  stakerWallets = onchain;
-}
+// Stakers and the deposit come from the contract (the source of truth)
+const contractAddr = ethers.getAddress(cfg.contract);
+const { abi } = loadAbi("TruthPaysKickback");
+const c = new ethers.Contract(contractAddr, abi, provider(cfg));
+const all = await c.stakers();
+const st = await Promise.all(all.map((w) => c.status(w)));
+const stakerWallets = [...new Set(all.filter((_, i) => Number(st[i]) === STATUS.Staker).map((w) => ethers.getAddress(w)))];
+const count = await c.stakerCount();
+if (BigInt(stakerWallets.length) !== count) throw new Error(`On-chain staker list (${stakerWallets.length}) and stakerCount (${count}) disagree; stop and investigate`);
+const deposit = await c.depositAmount();
+if (deposit !== cfg.depositUnits)
+  console.warn(`⚠️  The contract's deposit is ${fmt(deposit)} ETH but the config says ${cfg.deposit} ETH: using the contract's amount. Fix "deposit" in the config.`);
+const approved = verified.filter((v) => lumaDecision(v.approval) === "approved").map((v) => ethers.getAddress(v.wallet));
+const missing = [...new Set(approved)].filter((w) => !stakerWallets.includes(w));
+if (missing.length) console.warn(`⚠️  ${missing.length} approved wallets with a verified deposit are NOT registered on-chain and can't be paid: ${missing.join(", ")}`);
 
 // wallet → its name and email (verified.csv first) and every email whose registration verified it
 const byWallet = new Map();
@@ -118,9 +118,11 @@ for (const w of stakerWallets) {
 }
 
 const n = BigInt(stakerWallets.length);
-const pool = cfg.depositUnits * n;
+const pool = deposit * n;
 const share = attendees.length ? pool / BigInt(attendees.length) : 0n;
 const dust = pool - share * BigInt(attendees.length);
+if (attendees.length && (await c.previewShare(attendees.length)) !== share)
+  throw new Error("The contract computes a different share for this list; stop and investigate (is the config on the right contract?)");
 
 if (!attendees.length) console.warn("⚠️  Nobody on the staker list checked in. Do not pay out; check the export first.");
 writeJson(`${out}/attendees.json`, attendees.map((x) => x.wallet));
@@ -135,12 +137,12 @@ writeJson(`${out}/payout-plan.json`, {
   chainId: Number(cfg.chainId),
   stakers: stakerWallets.length,
   attendees: attendees.map((x) => x.wallet),
-  share: share.toString(),
-  shareUsdc: fmt(share, cfg.decimals),
+  share: share.toString(), // wei: what postAttendance must be given
+  shareEth: fmt(share),
 });
 writeCsv(
   `${out}/payout.csv`,
-  [...attendees.map((x) => ({ ...x, attended: "yes", payout: fmt(share, cfg.decimals) })),
+  [...attendees.map((x) => ({ ...x, attended: "yes", payout: fmt(share) })),
    ...noShows.map((x) => ({ ...x, attended: "no", payout: "0" }))],
   ["name", "email", "wallet", "attended", "payout"]
 );
@@ -152,25 +154,19 @@ const summary = `# Truth Pays: deposit settlement
 | Stakers | ${stakerWallets.length} |
 | Showed up | ${attendees.length} |
 | No-shows | ${noShows.length} |
-| Pool | ${fmt(pool, cfg.decimals)} USDC |
-| Payout per attendee (if nobody is added by a challenge) | ${fmt(share, cfg.decimals)} USDC (deposit ${cfg.deposit} + ${fmt(share - cfg.depositUnits, cfg.decimals)} bonus) |
-| Rounding dust | ${fmt(dust, cfg.decimals)} USDC |
-${contractAddr ? `| Contract | ${cfg.explorer}/address/${contractAddr} |\n` : ""}`;
+| Pool | ${fmtEth(pool)} |
+| Payout per attendee (if nobody is added by a challenge) | ${fmtEth(share)} (deposit ${fmtEth(deposit)} + ${fmtEth(share > deposit ? share - deposit : 0n)} bonus) |
+| Rounding dust | ${fmt(dust)} ETH |
+| Contract | ${cfg.explorer}/address/${contractAddr} |
+`;
 fs.writeFileSync(`${out}/payout-summary.md`, summary);
 console.log(summary);
 
-if (contractAddr && attendees.length) {
-  const { abi } = loadAbi("TruthPaysKickback");
+if (attendees.length) {
   const iface = new ethers.Interface(abi);
   writeJson(`${out}/safe-post-attendance.json`, safeBatch(cfg, `Truth Pays: post ${attendees.length} attendees`, [
     { to: contractAddr, data: iface.encodeFunctionData("postAttendance", [attendees.map((x) => x.wallet), share]) },
   ]));
   console.log(`Next: click "Post attendance list" in the console (reads ${out}/payout-plan.json), or upload ${out}/safe-post-attendance.json in Safe.`);
   console.log(`Then wait 1 day for challenges; click "Release payouts" once none is waiting for a match.`);
-} else if (attendees.length) {
-  // No contract: deposits sit in a Safe. Pay out with one batched Safe tx of USDC transfers.
-  const erc20 = new ethers.Interface(["function transfer(address,uint256)"]);
-  writeJson(`${out}/safe-payout-transfers.json`, safeBatch(cfg, `Truth Pays: pay ${attendees.length} attendees`,
-    attendees.map((x) => ({ to: cfg.token, data: erc20.encodeFunctionData("transfer", [x.wallet, share]) }))));
-  console.log(`No contract configured → upload ${out}/safe-payout-transfers.json in Safe Transaction Builder (from the deposit Safe).`);
 }
