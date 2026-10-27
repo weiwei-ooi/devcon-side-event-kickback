@@ -216,7 +216,7 @@ This setup isn't trustless, but anyone can check it:
 >
 > ⚠️ **Ethereum mainnet only.** ETH sent on any other network may be lost.
 >
-> 1. **Send** exactly 0.01 ETH to **`<contract address>`** from your own wallet, not an exchange. Refunds go back to that wallet. ETH only, not USDC or other tokens.
+> 1. **Send** exactly 0.01 ETH to **`<contract address>`** from your own wallet, not an exchange. Refunds go back to that wallet. We accept <u>ETH only</u> (not USDC or other tokens).
 > 2. **Register** with the *Committed Spot (0.01 ETH)* ticket, use the same wallet and paste your transaction link. It starts with https://etherscan.io/tx/
 > 3. **Check in** at the event to get your 0.01 ETH back, plus an equal share of the no-shows' deposits. No-shows lose their deposit.
 >
