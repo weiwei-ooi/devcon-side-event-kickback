@@ -212,14 +212,24 @@ This setup isn't trustless, but anyone can check it:
 
 ## Guest instructions (for the Luma page)
 
-> **Committed Spot: refundable ETH deposit**
-> ⚠️ **Network: Ethereum mainnet only, NOT Arbitrum, Base, Optimism or any other network.** Check that your wallet is on **Ethereum** (chain ID 1) *before* you send. ETH sent on any other network does not reach the deposit contract and may be lost for good.
+> **Committed Spot: 0.01 ETH refundable deposit**
 >
-> 1. Send **exactly 0.01 ETH on Ethereum mainnet** to `<contract address>`, **from your own wallet**, before **Wed 4 Nov, 18:00 IST**. Send the amount in ETH, not a dollar value, and **only ETH: not USDC or any other token** (a token is not a deposit and books no spot). Don't send it from an exchange, because the refund goes back to the wallet that sent it.
-> 2. Register with the *Committed Spot* ticket. Enter that wallet address and paste the transaction link. It should start with **https://etherscan.io/tx/**.
-> 3. Every registration is reviewed. If you are declined or not admitted from the waitlist, your deposit goes back to the same wallet.
-> 4. If you don't check in, you lose your deposit. If the organisers never post the attendance list, you can withdraw it yourself after 18 Nov.
-> 5. Check in at the door. After the event, everyone who showed up gets their deposit back, plus an equal share of the no-shows' deposits.
-> 6. **Missed at check-in?** The attendance list is published on-chain after the event. If you were there but are not on it, you have 1 day to challenge it from the deposit page with an ETH deposit equal to the Kleros fee (about 0.0162 ETH today). If nobody disputes it within a day, you count as attended and get that ETH back. If someone does, independent Kleros jurors decide from the evidence (photos, messages, hosts' statements). Either side can appeal the jurors' vote to a larger jury from the same page. If one side funds an appeal and the other doesn't, the funded side wins, so watch your case until the final ruling. Everyone else is paid on time; only the challenger's share waits for the final ruling.
+> ⚠️ **Ethereum mainnet only.** ETH sent on any other network may be lost.
+>
+> 1. **Send** exactly 0.01 ETH to **`<contract address>`** from your own wallet, not an exchange. Refunds go back to that wallet. ETH only, not USDC or other tokens.
+> 2. **Register** with the *Committed Spot (0.01 ETH)* ticket, use the same wallet and paste your transaction link. It starts with https://etherscan.io/tx/
+> 3. **Check in** at the event to get your 0.01 ETH back, plus an equal share of the no-shows' deposits. No-shows lose their deposit.
+>
+> - **Deposits close** Wed 4 Nov at 18:00 IST.
+> - **We review every registration.** If you are not approved, your 0.01 ETH goes back to the same wallet.
+> - **Event cancelled?** Every deposit is refunded in full.
+>
+> ⚖️ **Missed at check-in? Challenge it on Kleros.**
+>
+> - After the event, we post the attendance list on-chain.
+> - If you were there but are not on it, challenge it from the deposit page within 1 day. The challenge deposit is the Kleros fee, about 0.0162 ETH.
+> - If nobody disputes it within a day, you count as attended and get that deposit back. If someone does, Kleros jurors decide.
+
+This is the copy on Luma since 27 Oct (she asked for short, clean steps). The deposit page explains the rest live: appeals (fund your side if the other side appeals), payouts for everyone else going ahead during a case, and `emergencyWithdraw` if no list is posted by `claimDeadline`.
 
 (Replace 0.01 ETH with the final `deposit` amount if it changes, and `<contract address>` with the deployed contract.) Most wallets estimate the gas for a transfer to a contract, so a plain send works; a wallet or exchange that uses a fixed 21,000 gas limit fails (`TX_FAILED`, only the network fee is lost). The guest deposit page avoids this by calling `deposit()`.
