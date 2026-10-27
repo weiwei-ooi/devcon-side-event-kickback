@@ -1,0 +1,18 @@
+{
+  "category": "Event attendance",
+  "title": "Truth Pays: did this guest attend the Devcon Mumbai dinner?",
+  "description": "Truth Pays: Queryable Data, Prediction Markets & Onchain Justice was a Devcon Mumbai side event (networking dinner) on Wednesday 4 November 2026, 18:00-22:00 IST, hosted by Kleros, Arkiv (Golem Network) and Web3 Mumbai. Guests with a Committed Spot sent a refundable ETH deposit to the Truth Pays deposit contract on Ethereum mainnet. After the event the organiser published the list of depositors who checked in; everyone on the list shares the whole pool, and no-shows lose their deposit. A depositor left off the list challenged it, saying they attended, and someone matched the challenge, which created this case.\n\nEvery Truth Pays case uses this same description, so the wallet concerned is not written here. Read the \"Challenge details\" evidence in this case: it names the deposit contract, the wallet and this case number, with Etherscan links. You can check it yourself on Etherscan: in the deposit contract's events, the ChallengeMatched event whose arbitratorDisputeID equals this case number names the wallet (staker), and the Challenged event for that wallet shows when the challenge was made. If the evidence and the contract's events disagree, the contract's events are correct.\n\nThe question is about the person who registered on Luma with that wallet. Apply the attached attendance policy. The challenger must show that attendance is more likely than not; a missing Luma check-in is not, by itself, evidence of absence. If the organiser confirms in this case that the person attended, rule Attended. A refusal to arbitrate counts like Did not attend.",
+  "question": "Did the person who registered with the challenged wallet attend the Truth Pays dinner in Mumbai on 4 November 2026 (18:00-22:00 IST)?",
+  "rulingOptions": {
+    "type": "single-select",
+    "titles": ["Attended", "Did not attend"],
+    "descriptions": [
+      "The person who registered with the challenged wallet was present at the venue during the event (18:00-22:00 IST, 4 November 2026). They are added to the attendance list, receive the same share of the pool as every attendee, and receive what is left of both challenge deposits after the Kleros fee.",
+      "That person was not present, or the evidence does not make attendance more likely than not. They stay off the list and lose their event deposit, which is shared among the attendees. Whoever matched the challenge receives what is left of both challenge deposits after the Kleros fee."
+    ]
+  },
+  "fileURI": "/ipfs/REPLACE_WITH_POLICY_PIN",
+  "aliases": {
+    "0x259a1084C2043a7B3b5b288596E05C41b8EFa5d6": "Organiser (Truth Pays owner wallet)"
+  }
+}

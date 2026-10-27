@@ -1,8 +1,54 @@
-# Truth Pays Kickback v5: review summary (26 Oct 2026, deposit 25 USDC on Arbitrum One)
+# Truth Pays Kickback v6: review summary (27 Oct 2026, ETH deposit on Ethereum mainnet)
 
 For Wei Wei and the developers reviewing the code before the live deployment.
 
-## v5: second review round (26 Oct, please review this first)
+## v6: Ethereum mainnet and ETH deposits (27 Oct 2026, please review this first)
+
+**Why.** The organiser's decision on 27 Oct: "Change the chain to Mainnet instead of Arbitrum. Ask deposit in ETH instead of USDC." Deposits move from 25 USDC on Arbitrum One to **native ETH on Ethereum mainnet** (chain ID 1). The amount is `deposit` in the config, 0.01 ETH for now (about $23 on 27 Oct), still to be confirmed by her (0.011 or 0.005 ETH are possible); nothing outside configs, tests and doc examples hard-codes it. Kleros v2 only runs on Arbitrum, so attendance cases now go to **Kleros Court v1** on mainnet through Kleros's general-purpose **Dispute Resolver** (ArbitrableProxy `0x4b89e798b10478a839ea0abcf86c4b94a3c782a4`, arbitrator KlerosLiquid `0x988b3A538b618C7A603e1c11Ab82Cd16dbE28069`, General Court 0, 3 jurors, fee about 0.0162 ETH today, about 3 weeks per round).
+
+**The mechanism is unchanged:** guests deposit, the organiser curates on Luma, verified and approved guests are registered, declined payers get exactly their deposit back, the whole pool is split equally among stakers who checked in, no-shows lose their deposit; 1-day challenge window, 1-day match window, unmatched = attended, matched = Kleros case; an open case only sets aside one share; appeals funded on Kleros by each funder; `emergencyWithdraw`, `cancel`, `claim`, `refund`, `sweep`, two-step ownership.
+
+**Earlier rehearsals and reviews (v1 to v5, sections below) covered the Arbitrum/USDC/Kleros v2 version only.** v6 needs a new review and a new rehearsal on Ethereum mainnet.
+
+**Contract (`contracts/TruthPaysKickback.sol`, v6; solc 0.8.28, optimizer 200, EVM paris; runtime 15,944 bytes)**
+- **Deposits** come in through `receive()` and a payable `deposit()` (same logic): only while the phase is Open (`NotOpen` otherwise, so late ETH stays in the guest's wallet), `msg.value > 0` (`ZeroDeposit`), event `Deposited(from, amount)`. They change no state. The verify script reads `Deposited` events instead of USDC `Transfer` logs. The amount getter is `depositAmount()`; `token()` is gone.
+- **One ETH balance.** Pool ETH, challenge ETH and owed ETH share the contract balance. `reserved() = (Open or Listed ? depositAmount × stakerCount : heldBack) + owedTotal + challengeEscrow`; `spare() = balance − reserved()`. `refund`, `sweep` and `rejectAndRefund` of an unregistered payer can only move spare ETH. `registerStakers` still only checks that the balance covers every staker (counted in total, not per wallet).
+- **Payments.** Batch payments and challenge money (`releasePayouts`, `rejectAndRefund`, `cancel`, `resolveChallenge`, `addAttendees`, surplus refunds in `challenge`/`matchChallenge`) use a low-level call with `PAYOUT_GAS = 100,000` and copy no return data. A failure is recorded in `owed[to]` / `owedTotal` with `PayoutFailed`, and `claim(to)` (all gas forwarded) pays it to any address; `withdrawEth`/`ethOwed` are merged into `claim`/`owed`. If a send fails while less than `PAYOUT_GAS / 63` gas is left, the call reverts with `NotEnoughGas`, so a caller cannot starve a payment into `owed`. `refund`, `claim`, `sweep` and `emergencyWithdraw` forward all gas and revert on failure; their target may not be 0 or the contract itself. `Payout` now logs only pool shares and deposit refunds; `PayoutFailed` covers every failed send.
+- **Reentrancy.** `nonReentrant` is the first modifier on every state-changing function except `deposit`/`receive` (event only) and the ownership functions. `registerStakers` and `rejectAndRefund` refuse `address(this)`.
+- **Kleros v1.** `matchChallenge` sends exactly the fee: `disputeResolver.createDispute{value: cost}(arbitratorExtraData, metaEvidenceURI, 2)` (KlerosLiquid keeps everything sent), then stores the arbitrator dispute ID and the Dispute Resolver's local ID (`externalIDtoLocalID`); `ChallengeMatched` logs both. `resolveChallenge` reads `disputes(localDisputeID)` (`isRuled`, `ruling`); the Dispute Resolver sets `isRuled` only when KlerosLiquid executes the final ruling, and overrides it with the only funded side when exactly one side funded the last appeal round. `appealStatus(staker)` returns `(ruling, start, end, loserEnd, costAttended, costAbsent)` (the `round` value is gone), computed with the Dispute Resolver's `getMultipliers` and saturating maths like its CappedMath. The held-share logic (`heldShare`, `_settleHeldShare`) and the `cost ≤ 2 × deposit` guard are unchanged. The Kleros v2 interfaces, the on-chain dispute-template builder and `disputeKitID` are removed.
+- **Static metaevidence.** One ERC-1497 file per deployment (`docs/metaevidence.json`, `fileURI` = the juror policy), passed to the constructor (`metaEvidenceURI`, `policyURI`) and used for every case. The contract submits no evidence: jurors learn the wallet from the "Challenge details" evidence the console offers to send right after a match, and from the contract's `Challenged` / `ChallengeMatched` events, which the description and the policy point them to (the events prevail if evidence disagrees).
+- **Constructor:** `(depositAmount, eventName, owner, eventStart, claimDeadline, (disputeResolver, extraData, metaEvidenceURI, policyURI))`, extra data = `abi.encode(uint256 court, uint256 jurors)`. It reads `arbitrator()` from the Dispute Resolver. In live mode `deployArgs` refuses unless both URIs are `/ipfs/…` paths, and it always refuses the old Arbitrum/USDC policy pin.
+
+**Scripts, console and guest page.** `scripts/lib.mjs`: `chain: "ethereum"` only, ETH units (18 decimals), `logChunk` (default 5,000 blocks, because free mainnet RPCs only serve old logs in small ranges; default RPC `https://rpc.mevblocker.io`), Kleros v1 addresses and settings. The verify script, payout script, console and guest page move to ETH on mainnet in the same change: deposits from `Deposited` events, Etherscan links, evidence and appeals sent to the Dispute Resolver with `challenges(staker).localDisputeID` from each person's own wallet, the final ruling delivered with KlerosLiquid `passPeriod` then `executeRuling` on the arbitrator dispute ID, case links `https://court.kleros.io/cases/<arbitrator dispute ID>`. The Arbitrum Sepolia test-network mode (`config.testnet.json`, `npm run console:testnet`) is removed.
+
+**Configs.** `config.json` (live), `config.rehearsal.json` (throwaway rehearsal on mainnet, `poolCap` 0.25 ETH) and `config.example.json`: `chain` "ethereum", mevblocker RPC, `logChunk` 5000, `deposit` "0.01", `kleros {court: 0, jurors: 3, policyURI: "", metaEvidenceURI: ""}` until both files are pinned.
+
+**Docs.** `docs/attendance-policy.md` rewritten for Ethereum mainnet, ETH and Kleros v1 appeals (same rules for jurors; how to find the wallet; any side the jurors did not vote for has only the first half of the appeal period; an appeal funded by only one side wins; refusal counts like "Did not attend"). New `docs/metaevidence.json`. README: guest instructions, wrong-network section flipped (Ethereum only; the owner wallet was already used on Arbitrum One, so ETH sent there to the contract address is treated as lost), issue codes for ETH, "How a Kleros case works", trust model, rehearsal.
+
+**Please look at in particular:**
+1. **ETH accounting in one balance:** that `reserved()` counts every liability in every phase (Open, Listed, Finalized with open cases, Cancelled), so `refund`, `sweep` and the unregistered branch of `rejectAndRefund` can never move pool, set-aside, challenge or owed ETH; the `challengeEscrow` bookkeeping in `challenge`, `matchChallenge`, `addAttendees`, `_acceptUnmatched` and `resolveChallenge` (`2 × deposit − fee`).
+2. **The open `receive()`:** anyone can send ETH while Open (it stays spare unless the sender is registered); it is refused afterwards; a recipient re-depositing during a refund batch only adds spare ETH.
+3. **The payout gas stipend:** 100,000 gas per batch payment, `NotEnoughGas`, `owed`/`claim`, gas for a 150-guest `releasePayouts` on mainnet, and griefing by recipients that burn their stipend.
+4. **The Kleros v1 Dispute Resolver integration:** exact-fee `createDispute`, `externalIDtoLocalID`, reading `disputes(localID)`, `appealStatus` against the Dispute Resolver's own `appealCost`/`checkAppealPeriod` (including a tied vote or a refusal, where both sides pay the loser stake), and the trust placed in the Dispute Resolver (its arbitrator is immutable; its governor can change the multipliers).
+5. **The static metaevidence:** whether jurors can reliably tell which wallet a case concerns from the "Challenge details" evidence and the contract's events, and what happens if nobody sends that evidence.
+
+**Known points for the rehearsal and the review:**
+- The Dispute Resolver pays appeal refunds, rewards and fund-appeal overpayments with `send` (2,300 gas) and ignores failures (`ArbitrableProxy.withdrawFeesAndRewards` and `fundAppeal`). A Safe or smart-contract wallet that funds an appeal can lose them. The README tells funders to use a normal wallet.
+- The local Kleros mocks (`test/MockKleros.sol`) follow the deployed KlerosLiquid and Dispute Resolver ABIs, but the indexed flags of the Dispute Resolver's events were written from the ERC-1497/ERC-792 standards: check them against the deployed contract on Etherscan before the console decodes real mainnet logs (in the rehearsal).
+- A challenge matched in the mainnet rehearsal opens a real Kleros General Court case (about 0.0162 ETH, real jurors, about 3 weeks) with whatever metaevidence is set: pin it first, or leave the challenge unmatched.
+- The contract address on mainnet depends on the deploying wallet's transaction count there; the same address on Arbitrum One may already hold an old rehearsal contract. ETH sent on the wrong network is treated as lost (README "Wrong network").
+
+**Tests (contract, on the v6 code):** `node --test test/contract.test.mjs` 30/30 on a local ganache chain, with mocks of KlerosLiquid and the Dispute Resolver (`test/MockKleros.sol`) and a test wallet that accepts, refuses, burns gas, needs about 66k gas or re-enters (`test/TestWallet.sol`). Every earlier behaviour is ported to ETH and Kleros v1, plus: deposit/receive events and refusals in every phase; refund/sweep/rejectAndRefund never touching the pool, owed, challenge escrow or held shares; refusing and gas-burning recipients (owed + claim) and a heavy smart wallet paid directly; `NotEnoughGas`; reentrancy from recipients; the full Kleros v1 flow (case creation with metaevidence and extra data, evidence under the local ID, appeals funded and withdrawn from funders' wallets, the one-side override, refusal to rule, fee more than doubled, non-payable appeal maths); held cases settled in every order.
+
+**Before going live (v6):**
+1. She confirms the deposit amount; set `deposit` in config.json (it is fixed in the contract at deploy).
+2. Re-pin the juror policy and pin `docs/metaevidence.json` (its `fileURI` set to the policy pin first) through Kleros's upload service; set `kleros.policyURI` and `kleros.metaEvidenceURI`.
+3. Short v6 rehearsal on Ethereum mainnet (`npm run console:rehearsal`, 0.25 ETH cap): deploy, deposit, register, refund a declined guest, post list, a challenge left unmatched, release payouts; Zerion accepting `chainId`; the Dispute Resolver's event layout.
+4. Developer review of v6 (`contracts/TruthPaysKickback.sol`, `console/index.html`, `site/index.html`, `scripts/lib.mjs`).
+5. Owner wallet funded with a little ETH on mainnet. Deploy the live contract from `npm run console`, verify the source on Etherscan (`build/TruthPaysKickback.standard-input.json`, 0.8.28, optimizer 200, paris), record `contract`, `receiver`, `deployBlock` and `depositOpensAt` in config.json, update the Luma copy and put the address on Luma while the event stays Private.
+6. Go Public only when the organiser says so.
+
+## v5: second review round (26 Oct, Arbitrum One / USDC version)
 
 Two independent reviews ran on v4 (`423497f`): a multi-agent audit (8 reviewers, each finding re-checked) and a separate read-only review. Nothing critical. The confirmed findings and their fixes:
 
@@ -124,14 +170,14 @@ Tests: 19 contract tests (including every challenge path against a mock DisputeR
 
 Deploy, 25 USDC deposit, verify, decline + refund (`rejectAndRefund`, tx 0x4c738e33…f582), deposit again, register, payout (tx 0x6fcf23b4…6c7d). Every USDC accounted for, contract left at 0, total fees under $0.01. It found one small bug, fixed afterwards: `unmatched.csv` listed an already-refunded deposit as unclaimed. Also added after the rehearsal: "Pay attendees" is greyed out in the console until the event starts and needs PAY typed to confirm (the contract itself already refuses any payout before `eventStart`).
 
-## Known limits (by design, please look at these)
+## Known limits (v2 to v5, Arbitrum/USDC version; see v6 above)
 
 - The contract counts money in total, not per wallet: deposits are plain USDC transfers verified off-chain from the Luma tx links. Only register wallets the verify script lists.
 - Guests who paid but were never registered depend on the organiser to refund them (the console and scripts make this one click).
 - The owner is a single wallet, not a multisig (organiser's choice for a side event).
 - Attendance is published by the organiser from the Luma check-in; stakers left off can challenge on Kleros (see v3 above).
 
-## Before going live
+## Before going live (v3 to v5, Arbitrum/USDC version; superseded by the v6 list above)
 
 1. Short v3 rehearsal on Arbitrum One (`npm run console:rehearsal`, 500 USDC cap, throwaway contract), including one challenge left unmatched.
 2. Developer review of `contracts/TruthPaysKickback.sol` and `console/index.html`.
