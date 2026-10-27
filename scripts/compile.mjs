@@ -7,8 +7,9 @@ import solc from "solc";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const files = {
   "TruthPaysKickback.sol": path.join(root, "contracts/TruthPaysKickback.sol"),
-  "MockUSDC.sol": path.join(root, "test/MockUSDC.sol"),
+  // test stand-ins: Kleros Court v1 (KlerosLiquid + Dispute Resolver) and a wallet contract
   "MockKleros.sol": path.join(root, "test/MockKleros.sol"),
+  "TestWallet.sol": path.join(root, "test/TestWallet.sol"),
 };
 
 const input = {
@@ -18,7 +19,8 @@ const input = {
   ),
   settings: {
     optimizer: { enabled: true, runs: 200 },
-    evmVersion: "paris", // safe across L2s
+    // paris: the settings the contract is verified with on Etherscan (no PUSH0; runs on every test chain)
+    evmVersion: "paris",
     outputSelection: { "*": { "*": ["abi", "evm.bytecode.object"] } },
   },
 };
@@ -29,7 +31,10 @@ for (const e of out.errors || []) console.error(e.formattedMessage);
 if (errors.length) process.exit(1);
 
 fs.mkdirSync(path.join(root, "build"), { recursive: true });
-// For "Verify & Publish" on Arbiscan (Solidity standard-JSON input, compiler v0.8.28)
+// start from an empty build folder, so a contract that was removed (e.g. the old USDC and Kleros v2 mocks) can't linger
+for (const f of fs.readdirSync(path.join(root, "build"))) if (f.endsWith(".json")) fs.rmSync(path.join(root, "build", f));
+// For "Verify & Publish" on Etherscan (Solidity standard-JSON input, compiler v0.8.28,
+// optimizer on with 200 runs, EVM version paris)
 fs.writeFileSync(
   path.join(root, "build", "TruthPaysKickback.standard-input.json"),
   JSON.stringify({ ...input, sources: { "TruthPaysKickback.sol": input.sources["TruthPaysKickback.sol"] } }, null, 2)

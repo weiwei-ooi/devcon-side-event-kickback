@@ -1,7 +1,7 @@
 {
   "name": "truth-pays-kickback",
   "version": "2.0.0",
-  "description": "Kickback-style refundable USDC deposits for Luma events",
+  "description": "Kickback-style refundable ETH deposits on Ethereum mainnet for Luma events, with Kleros attendance challenges",
   "scripts": {
     "compile": "node scripts/compile.mjs",
     "test": "node --test --test-concurrency=1 --test-timeout=600000 test/contract.test.mjs test/kickback.test.mjs",
@@ -10,7 +10,6 @@
     "deploy": "node scripts/deploy.mjs",
     "owner": "node scripts/owner.mjs",
     "console": "node scripts/console.mjs",
-    "console:testnet": "node scripts/console.mjs --config config.testnet.json --out out-testnet",
     "console:rehearsal": "node scripts/console.mjs --config config.rehearsal.json --out out-rehearsal",
     "site": "node scripts/build-site.mjs",
     "test:site": "node test/site.e2e.mjs",

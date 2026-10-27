@@ -1,24 +1,25 @@
 {
   "eventName": "Truth Pays: REHEARSAL",
-  "chain": "arbitrum",
-  "rpcUrl": "https://arb1.arbitrum.io/rpc",
-  "deposit": "25",
+  "chain": "ethereum",
+  "rpcUrl": "https://rpc.mevblocker.io",
+  "logChunk": 5000,
+  "deposit": "0.01",
   "receiver": "0x0000000000000000000000000000000000000001",
   "contract": "",
-  "depositOpensAt": "2026-10-23T00:00:00+05:30",
+  "depositOpensAt": "2026-10-27T00:00:00+05:30",
   "depositDeadline": "2026-11-04T18:00:00+05:30",
   "depositTicketPattern": "deposit|commit|stake",
   "columns": {},
-  "eventStart": "2026-10-23T00:00:00+05:30",
-  "claimDeadline": "2026-11-06T00:00:00+05:30",
+  "eventStart": "2026-10-27T00:00:00+05:30",
+  "claimDeadline": "2026-11-10T00:00:00+05:30",
   "owner": "0x259a1084C2043a7B3b5b288596E05C41b8EFa5d6",
   "mode": "rehearsal",
-  "poolCap": "500",
+  "poolCap": "0.25",
   "deployBlock": "",
   "kleros": {
-    "court": 1,
+    "court": 0,
     "jurors": 3,
-    "disputeKit": 1,
-    "policyURI": "/ipfs/QmZMDkYNHVH5bZNPwNnav1ZoziRgL57zE6pTmwo5dqGGGg"
+    "policyURI": "",
+    "metaEvidenceURI": ""
   }
 }

@@ -1,4 +1,4 @@
-// Shared helpers: config, CSV I/O, Luma column detection, deposit verification.
+// Shared helpers: config, Kleros settings, CSV I/O, Luma column detection, deposit verification.
 import fs from "node:fs";
 import path from "node:path";
 import { parse } from "csv-parse/sync";
@@ -6,15 +6,19 @@ import { ethers } from "ethers";
 
 export const TRANSFER_TOPIC = ethers.id("Transfer(address,address,uint256)");
 
-// Native USDC addresses (Circle). Pick the chain in config.json.
+// The deposit is native ETH on Ethereum mainnet (27 Oct 2026: moved from 25 USDC on Arbitrum One).
+// A local test chain uses another "chain" name and sets "chainId" (and "rpcUrl") itself.
 export const CHAINS = {
-  arbitrum: { chainId: 42161, usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", explorer: "https://arbiscan.io" },
-  base: { chainId: 8453, usdc: "0x833589fCD6eDb6E08f4c7C32D09f71B4cE5DdA02", explorer: "https://basescan.org" },
-  optimism: { chainId: 10, usdc: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85", explorer: "https://optimistic.etherscan.io" },
-  ethereum: { chainId: 1, usdc: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", explorer: "https://etherscan.io" },
-  // Test network: free test ETH and test USDC (faucet.circle.com), for rehearsals only.
-  "arbitrum-sepolia": { chainId: 421614, usdc: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d", explorer: "https://sepolia.arbiscan.io" },
+  ethereum: { chainId: 1, name: "Ethereum mainnet", explorer: "https://etherscan.io" },
 };
+export const SYMBOL = "ETH";
+export const DECIMALS = 18;
+/** Public RPC that answers eth_getLogs on old block ranges in 5,000-block chunks (publicnode only serves
+ * recent blocks, flashbots returned nothing on old ranges). Scripts scan logs in `logChunk` blocks with retries. */
+export const DEFAULT_RPC = "https://rpc.mevblocker.io";
+export const DEFAULT_LOG_CHUNK = 5000;
+/** Sanity cap: a deposit above this is almost surely a stale amount (e.g. "25" from the USDC days). */
+export const MAX_DEPOSIT_ETH = "1";
 
 // ---------------------------------------------------------------- args / config
 
@@ -42,24 +46,57 @@ function parseDate(cfg, key) {
   return Math.floor(t / 1000);
 }
 
+/** An ETH amount from the config ("0.01") in wei. */
+function parseEth(cfg, key, file) {
+  const v = String(cfg[key] ?? "").trim();
+  let wei;
+  try {
+    wei = ethers.parseEther(v);
+  } catch {
+    throw new Error(`"${key}" in ${file} must be an amount of ETH such as "0.01" (got "${cfg[key] ?? ""}")`);
+  }
+  return wei;
+}
+
+/**
+ * Reads a config file (config.json live, config.rehearsal.json rehearsal) and adds what every
+ * script needs: chainId, explorer, symbol/decimals (always ETH / 18), the deposit and pool cap in
+ * wei (depositUnits, poolCapUnits), the deposit address (receiver), the deposit window and contract
+ * times in unix seconds, deployBlock and logChunk.
+ */
 export function loadConfig(file = "config.json") {
   const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (cfg.token || cfg.tokenDecimals)
+    throw new Error(`${file} still has "token"/"tokenDecimals": deposits are in ETH now. Remove them and set "deposit" in ETH (e.g. "0.01").`);
+  const chain = CHAINS[cfg.chain];
+  if (!chain && !cfg.chainId)
+    throw new Error(`Unknown chain "${cfg.chain}" in ${file}: use "ethereum" (Ethereum mainnet), or set "chainId" for a local test chain`);
+  const chainId = Number(cfg.chainId ?? chain.chainId);
+  if (chain && chainId !== chain.chainId) throw new Error(`"chainId" ${chainId} in ${file} does not match chain "${cfg.chain}" (${chain.chainId})`);
+
+  const depositUnits = parseEth(cfg, "deposit", file);
+  if (depositUnits <= 0n) throw new Error(`"deposit" in ${file} must be more than 0 ETH`);
+  if (depositUnits > ethers.parseEther(MAX_DEPOSIT_ETH))
+    throw new Error(`"deposit" in ${file} is ${cfg.deposit} ETH: more than ${MAX_DEPOSIT_ETH} ETH looks like a mistake (an old USDC amount?)`);
+  const poolCapUnits = cfg.poolCap ? parseEth(cfg, "poolCap", file) : undefined;
+
   const opensAt = parseDate(cfg, "depositOpensAt");
   const deadline = parseDate(cfg, "depositDeadline");
   const eventStartTs = parseDate(cfg, "eventStart");
   const claimDeadlineTs = parseDate(cfg, "claimDeadline");
   if (cfg.contract && cfg.receiver && cfg.contract.toLowerCase() !== cfg.receiver.toLowerCase())
     throw new Error('"receiver" and "contract" in the config must be the same address (the deployed contract)');
-  const chain = CHAINS[cfg.chain];
-  if (!chain && !cfg.token) throw new Error(`Unknown chain "${cfg.chain}" and no token address set`);
-  const decimals = cfg.tokenDecimals ?? 6;
+  const logChunk = Number(cfg.logChunk);
   return {
     ...cfg,
-    chainId: cfg.chainId ?? chain?.chainId,
-    token: ethers.getAddress(cfg.token ?? chain.usdc),
+    chainId,
+    chainName: cfg.chainName ?? chain?.name ?? String(cfg.chain ?? "custom network"),
+    rpcUrl: cfg.rpcUrl || (chain ? DEFAULT_RPC : ""),
     explorer: cfg.explorer ?? chain?.explorer ?? "",
-    decimals,
-    depositUnits: ethers.parseUnits(String(cfg.deposit), decimals),
+    symbol: SYMBOL,
+    decimals: DECIMALS,
+    depositUnits,
+    poolCapUnits,
     receiver: ethers.getAddress(cfg.contract || cfg.receiver),
     opensAt: opensAt ?? 0,
     deadline: deadline ?? Infinity,
@@ -67,7 +104,7 @@ export function loadConfig(file = "config.json") {
     eventStartTs,
     claimDeadlineTs,
     deployBlock: cfg.deployBlock ? Number(cfg.deployBlock) : undefined,
-    poolCapUnits: cfg.poolCap ? ethers.parseUnits(String(cfg.poolCap), decimals) : undefined,
+    logChunk: Number.isInteger(logChunk) && logChunk > 0 ? logChunk : DEFAULT_LOG_CHUNK,
     columns: cfg.columns ?? {},
   };
 }
@@ -75,47 +112,89 @@ export function loadConfig(file = "config.json") {
 export const MIN_SETTLEMENT_WINDOW = 7 * 24 * 3600; // must match the contract
 export const CHALLENGE_PERIOD = 24 * 3600; // must match the contract
 export const MATCH_PERIOD = 24 * 3600; // must match the contract
+export const PAYOUT_GAS = 100_000; // must match the contract: gas a batch payment may use in the recipient
 
-// Kleros v2 on Arbitrum One. Disputes go through the DisputeResolver, a general-purpose arbitrable
-// that Kleros Court accepts (the court only takes disputes from whitelisted contracts).
-// Source: @kleros/kleros-v2-contracts deployments (arbitrum).
+// Kleros Court v1 on Ethereum mainnet. Cases go through Kleros's general-purpose Dispute Resolver
+// (ArbitrableProxy), whose arbitrator is KlerosLiquid. Evidence, appeals and appeal withdrawals are
+// sent to the Dispute Resolver with the case's local ID; passPeriod / executeRuling go to KlerosLiquid
+// with the arbitrator dispute ID. Case page: <court>/cases/<arbitrator dispute ID>.
 export const KLEROS = {
-  42161: { disputeResolver: "0xb5526D022962A1fFf6eD32C93e8b714c901F4323", klerosCore: "0x991d2df165670b9cac3B022f4B68D65b664222ea", evidenceModule: "0x48e052B4A6dC4F30e90930F1CeaAFd83b3981EB3", court: "https://v2.kleros.builders" },
-  421614: { disputeResolver: "0xed31bEE8b1F7cE89E93033C0d3B2ccF4cEb27652", klerosCore: "0xE8442307d36e9bf6aB27F1A009F95CE8E11C3479", court: "https://v2-testnet.kleros.builders" },
+  1: {
+    disputeResolver: "0x4b89e798b10478a839ea0abcf86c4b94a3c782a4",
+    arbitrator: "0x988b3A538b618C7A603e1c11Ab82Cd16dbE28069",
+    court: "https://court.kleros.io",
+  },
 };
+// Kleros's IPFS upload service (POST multipart/form-data, field "data"; add ?operation=evidence&pinToGraph=false)
+// and the gateway that serves the pinned files.
+export const KLEROS_IPFS_UPLOAD = "https://kleros-api.netlify.app/.netlify/functions/upload-to-ipfs";
+export const KLEROS_IPFS_GATEWAY = "https://cdn.kleros.link";
+// Ruling options of an attendance case: 0 = refused to arbitrate (counts like "did not attend").
+export const RULINGS = { refused: 0, attended: 1, absent: 2 };
+// KlerosLiquid periods (disputes(id).period)
+export const KLEROS_PERIODS = ["evidence", "commit", "vote", "appeal", "execution"];
 
-/** Kleros settings from config.kleros, with Arbitrum defaults: General Court (1), 3 jurors, classic dispute kit (1). */
+/** "/ipfs/<CIDv0 or CIDv1>" with an optional "/file" path, as Kleros expects for policies and (meta)evidence. */
+export const IPFS_PATH_RE = /^\/ipfs\/(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{58,})(\/[^\s]+)?$/;
+export const isIpfsPath = (v) => IPFS_PATH_RE.test(String(v ?? ""));
+// Pins that describe an earlier version (Arbitrum One, USDC, Kleros v2) and must not be used any more.
+export const STALE_PINS = ["QmZMDkYNHVH5bZNPwNnav1ZoziRgL57zE6pTmwo5dqGGGg"];
+
+/**
+ * Kleros settings from config.kleros, with mainnet defaults: General Court (0), 3 jurors.
+ * Returns { disputeResolver, arbitrator, court, jurors, extraData, policyURI, metaEvidenceURI,
+ * courtUrl, ipfsUpload, ipfsGateway }. `kleros.disputeResolver` / `kleros.arbitrator` override the
+ * addresses (local tests); `arbitrator` is "" when unknown (the contract's `arbitrator()` has it).
+ */
 export function klerosConfig(cfg) {
   const k = cfg.kleros ?? {};
   const known = KLEROS[Number(cfg.chainId)] ?? {};
-  const disputeResolver = k.disputeResolver ?? known.disputeResolver;
+  const disputeResolver = k.disputeResolver || known.disputeResolver;
   if (!disputeResolver) throw new Error('Set "kleros.disputeResolver" in the config for this network');
-  const court = k.court ?? 1, jurors = k.jurors ?? 3, disputeKit = k.disputeKit ?? 1;
+  const arbitrator = k.arbitrator || known.arbitrator || "";
+  const court = Number(k.court ?? 0), jurors = Number(k.jurors ?? 3);
+  if (!Number.isInteger(court) || court < 0) throw new Error(`"kleros.court" must be a court number such as 0 (got ${k.court})`);
+  if (!Number.isInteger(jurors) || jurors < 1) throw new Error(`"kleros.jurors" must be a whole number of jurors such as 3 (got ${k.jurors})`);
   return {
-    disputeResolver: ethers.getAddress(disputeResolver),
-    court, jurors, disputeKit,
-    extraData: ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256", "uint256"], [court, jurors, disputeKit]),
+    disputeResolver: ethers.getAddress(String(disputeResolver).toLowerCase()),
+    arbitrator: arbitrator ? ethers.getAddress(String(arbitrator).toLowerCase()) : "",
+    court,
+    jurors,
+    extraData: ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256"], [court, jurors]),
     policyURI: k.policyURI ?? "",
-    courtUrl: k.courtUrl ?? known.court ?? "https://v2.kleros.builders",
-    evidenceModule: k.evidenceModule ?? known.evidenceModule ?? "",
+    metaEvidenceURI: k.metaEvidenceURI ?? "",
+    courtUrl: k.courtUrl || known.court || "https://court.kleros.io",
+    ipfsUpload: k.ipfsUpload || KLEROS_IPFS_UPLOAD,
+    ipfsGateway: k.ipfsGateway || KLEROS_IPFS_GATEWAY,
   };
 }
 
-/** Constructor arguments for TruthPaysKickback, checked before anything is sent. */
+/**
+ * Constructor arguments for TruthPaysKickback, checked before anything is sent:
+ * [depositAmount (wei), eventName, owner, eventStart, claimDeadline,
+ *  [disputeResolver, extraData, metaEvidenceURI, policyURI]].
+ * In live mode both the policy and the metaevidence must be pinned IPFS paths.
+ */
 export function deployArgs(cfg, owner) {
   const { eventStartTs: start, claimDeadlineTs: end } = cfg;
   if (!start || !end)
     throw new Error('Set "eventStart" and "claimDeadline" in the config (ISO dates with timezone)');
   if (end < start + MIN_SETTLEMENT_WINDOW) throw new Error("claimDeadline must be at least 7 days after eventStart");
+  if (!(typeof cfg.depositUnits === "bigint" && cfg.depositUnits > 0n)) throw new Error("No deposit amount: load the config with loadConfig()");
   const k = klerosConfig(cfg);
-  if (cfg.mode === "live" && !/^\/ipfs\/\S+/.test(k.policyURI))
-    throw new Error('Set "kleros.policyURI" to the IPFS path of docs/attendance-policy.md (e.g. /ipfs/Qm…) before the live deploy');
-  return [cfg.token, cfg.depositUnits, cfg.eventName ?? "Truth Pays", owner, start, end, [k.disputeResolver, k.extraData, k.policyURI]];
+  for (const [key, v] of [["policyURI", k.policyURI], ["metaEvidenceURI", k.metaEvidenceURI]]) {
+    if (STALE_PINS.some((p) => String(v).includes(p)))
+      throw new Error(`"kleros.${key}" (${v}) describes the old Arbitrum/USDC version. Pin the updated file and set its new path.`);
+    if (cfg.mode === "live" && !isIpfsPath(v))
+      throw new Error(`Set "kleros.${key}" to the IPFS path of the pinned file (e.g. /ipfs/Qm…${key === "metaEvidenceURI" ? "/metaevidence.json" : ""}) before the live deploy`);
+  }
+  return [cfg.depositUnits, cfg.eventName ?? "Truth Pays", owner, start, end, [k.disputeResolver, k.extraData, k.metaEvidenceURI, k.policyURI]];
 }
 
-// Contract Status enum
+// Contract enums
 export const STATUS = { None: 0, Staker: 1, Paid: 2, Rejected: 3 };
 export const PHASES = ["Open", "Listed", "Finalized", "Cancelled"];
+export const CHALLENGE_STATE = { None: 0, Waiting: 1, Disputed: 2, Resolved: 3 };
 
 export function provider(cfg) {
   const url = process.env.RPC_URL || cfg.rpcUrl;
@@ -194,7 +273,7 @@ export function normAddress(value) {
   }
 }
 
-export const fmt = (units, decimals = 6) => ethers.formatUnits(units, decimals);
+export const fmt = (units, decimals = DECIMALS) => ethers.formatUnits(units, decimals);
 
 // ---------------------------------------------------------------- verification
 

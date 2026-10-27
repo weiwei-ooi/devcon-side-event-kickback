@@ -1,8 +1,9 @@
 {
   "eventName": "Truth Pays: Devcon Mumbai 2026",
-  "chain": "arbitrum",
-  "rpcUrl": "https://arb1.arbitrum.io/rpc",
-  "deposit": "25",
+  "chain": "ethereum",
+  "rpcUrl": "https://rpc.mevblocker.io",
+  "logChunk": 5000,
+  "deposit": "0.01",
   "receiver": "0xDEPLOYED_CONTRACT_ADDRESS",
   "contract": "0xDEPLOYED_CONTRACT_ADDRESS",
   "owner": "0xOWNER_WALLET (the organiser's dedicated wallet)",
@@ -16,9 +17,9 @@
   "mode": "live",
   "deployBlock": "",
   "kleros": {
-    "court": 1,
+    "court": 0,
     "jurors": 3,
-    "disputeKit": 1,
-    "policyURI": ""
+    "policyURI": "/ipfs/<CID of docs/attendance-policy.md>",
+    "metaEvidenceURI": "/ipfs/<CID>/metaevidence.json"
   }
 }
