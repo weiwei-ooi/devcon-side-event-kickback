@@ -2,12 +2,13 @@
 // Builds the hosted admin panel: the owner console (console/index.html) as a static page anyone can
 // open, for any event, with their own browser wallet. No server, no config file, no private key.
 //
-//   node scripts/build-admin.mjs --out <dir> [--config config.json] [--guest-page ../event/]
+//   node scripts/build-admin.mjs --out <dir> [--config config.json] [--guest-page ../event/] [--no-default-event]
 //
 // Writes exactly four files to <dir>:
 //   index.html      the console in "hosted" mode, with its settings baked in (network, RPC, Kleros
 //                   contracts and services, the generic juror policy and case description template,
-//                   and the config's contract as the event it opens by default)
+//                   and the config's contract as the event it opens by default, unless
+//                   --no-default-event: the public panel for any organiser opens only the event in its link)
 //   ethers.min.js   ethers (ES module build), from node_modules
 //   core.mjs        scripts/core.mjs: the same checks as the scripts (Luma list, payouts, deploy)
 //   kickback.json   the compiled contract (ABI and bytecode), to read events and create new ones
@@ -27,7 +28,7 @@ const fail = (msg) => {
   process.exit(1);
 };
 const a = args();
-if (!a.out || a.out === true) fail("Usage: node scripts/build-admin.mjs --out <dir> [--config config.json] [--guest-page ../event/]");
+if (!a.out || a.out === true) fail("Usage: node scripts/build-admin.mjs --out <dir> [--config config.json] [--guest-page ../event/] [--no-default-event]");
 const out = path.resolve(a.out);
 const guestPage = typeof a["guest-page"] === "string" ? a["guest-page"] : "../event/";
 const baked = bakedGuestPageAbove(out);
@@ -77,9 +78,9 @@ try {
   fail(e.message);
 }
 
-// the event the panel opens when its link names none: the config's deployed contract, if any
+// the event the panel opens when its link names none: the config's deployed contract, if any (none with --no-default-event)
 const deployBlock = Number(cfg.deployBlock || 0);
-const defaultEvent = ethers.isAddress(cfg.contract ?? "") && Number.isInteger(deployBlock) && deployBlock > 0
+const defaultEvent = !a["no-default-event"] && ethers.isAddress(cfg.contract ?? "") && Number.isInteger(deployBlock) && deployBlock > 0
   ? { contract: ethers.getAddress(cfg.contract), deployBlock } : null;
 
 const HOSTED = {

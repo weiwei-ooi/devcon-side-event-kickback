@@ -109,6 +109,11 @@ check("built from config.json: Ethereum mainnet, Kleros's Dispute Resolver and c
   HL?.chainId === 1 && HL.rpcUrl === live.rpcUrl && HL.kleros.disputeResolver.toLowerCase() === core.KLEROS[1].disputeResolver.toLowerCase() &&
   HL.kleros.arbitrator === core.KLEROS[1].arbitrator && HL.defaultEvent?.contract === ethers.getAddress(live.contract) && HL.defaultEvent?.deployBlock === live.deployBlock && HL.policy.uri === POLICY,
   b.stderr + JSON.stringify(HL?.defaultEvent));
+// the public panel for any organiser: same settings, no default event
+b = build(BUILD, "--out", path.join(tmp, "public"), "--no-default-event");
+const HP = b.status === 0 ? hostedOf(fs.readFileSync(path.join(tmp, "public", "index.html"), "utf8")) : null;
+check("--no-default-event: built from config.json but opens only the event in its link",
+  HP?.chainId === 1 && HP.defaultEvent === null && HP.policy.uri === POLICY && /No default event/.test(b.stdout), b.stderr + JSON.stringify(HP?.defaultEvent));
 b = build(BUILD);
 check("build-admin needs --out", b.status !== 0 && /Usage: node scripts\/build-admin\.mjs --out <dir>/.test(b.stderr), b.stderr);
 const badCfg = path.join(tmp, "bad.json");
