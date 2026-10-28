@@ -655,6 +655,37 @@ test("late payers, failed and wrong-network txs, contract senders (exchanges, Sa
   assert.deepEqual(s.returnsOf(), [["OVERPAID", lea, "0.005"]]);
 });
 
+test("several tx links in one answer: the one that is a deposit counts; two deposits need a decision; unclaimed deposits name the guest who mentioned or sent them", async () => {
+  const s = await scenario();
+  const [raj, dua, nia] = await Promise.all([guests[0], guests[1], guests[2]].map((g) => g.getAddress()));
+  // Raj's first plain send ran out of gas (21,000), the second went through: he pastes both links
+  const bad = await failedPayment(guests[0], s.kAddr, U(25), 21_000);
+  const good = await s.pay(guests[0], 25);
+  // Dua paid twice and pasted both
+  const d1 = await s.pay(guests[1], 25), d2 = await s.pay(guests[1], 25);
+  // Nia paid but pasted a link that does not exist; her ETH address on Luma sent the real deposit
+  const nTx = await s.pay(guests[2], 25);
+  const lines = [
+    `Raj,raj@x.io,${T25},approved,,${raj},"first one failed https://etherscan.io/tx/${bad} then https://etherscan.io/tx/${good}"`,
+    `Dua,dua@x.io,${T25},approved,,${dua},"${d1} and ${d2}"`,
+    `Nia,nia@x.io,${T25},approved,,${nia},${"0x" + "ab".repeat(32)}`,
+  ];
+  await s.verify(lines);
+  assert.deepEqual(s.wallets("new-stakers.json"), [raj]);
+  const v = s.csv("verified.csv").find((r) => r.email === "raj@x.io");
+  assert.equal(v.tx, good.toLowerCase());
+  assert.match(v.note, /2 tx links pasted; checked/);
+  const issues = s.csv("issues.csv");
+  const dIssue = issues.find((i) => i.email === "dua@x.io");
+  assert.equal(dIssue.code, "MULTIPLE_TX");
+  assert.match(dIssue.note, /Pasted 2 deposits that each verify.*Ask the guest which one/);
+  assert.equal(issues.find((i) => i.email === "nia@x.io").code, "TX_NOT_FOUND");
+  // nothing of Raj's is listed to give back; Dua's two and Nia's deposit are, each naming the guest
+  assert.equal(s.umRow(good), undefined);
+  for (const t of [d1, d2]) assert.match(s.umRow(t).note, /This tx link is in the Luma answers of dua@x\.io: ask them about it before returning it/);
+  assert.match(s.umRow(nTx).note, /Sent from the ETH address nia@x\.io gave on Luma: ask them for this tx link instead of returning it/);
+});
+
 test("a copied tx link never knocks out the real guest, and build-payout still pays them", async () => {
   const s = await scenario();
   const [sam, sue, eve, zed, ali] = await Promise.all(guests.slice(0, 5).map((g) => g.getAddress()));
@@ -812,7 +843,7 @@ test("deploy.mjs: ETH deposit and Kleros v1 settings from the config; live mode 
   assert.equal(await k.depositAmount(), U(25));
   assert.equal(await k.owner(), await owner.getAddress());
   // each case's description: the repo's template, with the event name, deposit, policy and organiser filled in
-  const cfgT = caseTemplate({ eventName: "Truth Pays: test", depositUnits: U(25), explorer: "https://etherscan.io", owner: await owner.getAddress(), kleros: { policyURI: POLICY } });
+  const cfgT = caseTemplate({ eventName: "Truth Pays: test", depositUnits: U(25), explorer: "https://example.org", owner: await owner.getAddress(), kleros: { policyURI: POLICY } });
   const [pieces, slots] = await k.metaEvidenceTemplate();
   assert.deepEqual([[...pieces], slots], [cfgT.pieces, cfgT.slots]);
   const someone = await guests[3].getAddress();

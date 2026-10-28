@@ -8,3 +8,5 @@ site/dist/
 build/
 # developer lists for owner.mjs (wallet addresses)
 wallets*.json
+# mainnet-fork test (test/fork.e2e.mjs)
+config.fork-e2e.json

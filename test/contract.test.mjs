@@ -543,6 +543,44 @@ test("worst case: 150 attendees whose wallets burn all their gas still fit in on
   console.log(`  gas with 150 gas-burning wallets (limit ${LIMIT}, cap ${TX_GAS_CAP}): ${gas.join(", ")}`);
 });
 
+test("unmatched challenges from gas-burning wallets: settled one by one first (console, owner.mjs), the payout then fits in one mainnet transaction", async () => {
+  const N = 75;
+  const LIMIT = (TX_GAS_CAP * 10n) / 13n;
+  const BIG = { gasLimit: 12_000_000 };
+  const caller = guests[157];
+  // 75 attendees and 75 stakers left off the list, all wallets that burn their whole PAYOUT_GAS
+  const factory = await deploy("GasBurners", owner);
+  const ws = [...(await factory.make.staticCall(N))];
+  await send(factory.make(N, BIG));
+  const cs = [];
+  for (let i = 0; i < N; ++i) cs.push(await deploy("TestWallet", owner));
+  const kick = await freshKick({ startIn: 1 });
+  await send(owner.sendTransaction({ to: kick.target, value: D * BigInt(2 * N) }));
+  const all = [...ws, ...cs.map((w) => w.target)];
+  for (let i = 0; i < all.length; i += 50) await send(kick.registerStakers(all.slice(i, i + 50), BIG));
+  await warp(2);
+  await send(kick.postAttendance(ws, 2n * D, BIG));
+  // every one left off challenges, nobody matches
+  for (const w of cs) {
+    await send(w.exec(kick.target, kickIface.encodeFunctionData("challenge"), { value: FEE }));
+    await send(w.setMode(MODE.BurnGas));
+  }
+  await warp(DAY + 10);
+  // accepting them all inside releasePayouts (each burns its gas twice: the deposit back, then the share) would not fit
+  await assert.rejects(kick.connect(caller).releasePayouts.staticCall({ gasLimit: LIMIT }));
+  let worst = 0n;
+  for (const w of cs) {
+    const r = await send(kick.connect(caller).resolveChallenge(w.target, { gasLimit: 1_000_000 }));
+    if (r.gasUsed > worst) worst = r.gasUsed;
+  }
+  assert.equal(await kick.pendingChallenges(), 0n);
+  const r = await send(kick.connect(caller).releasePayouts({ gasLimit: LIMIT }));
+  assert.equal(logsOf(r, kick, "PayoutFailed").length, 2 * N);
+  assert.equal(await kick.payoutShare(), D);
+  assert.equal(await kick.owedTotal(), BigInt(2 * N) * D + BigInt(N) * FEE);
+  console.log(`  gas: settle one unmatched challenge <= ${worst}, then release ${2 * N} = ${r.gasUsed} (limit ${LIMIT})`);
+});
+
 // ------------------------------------------------------------------ Kleros challenges
 
 async function listed(slice, attendingCount) {

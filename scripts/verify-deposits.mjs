@@ -29,7 +29,7 @@ import path from "node:path";
 import { ethers } from "ethers";
 import {
   args, loadConfig, provider, readCsv, writeCsv, writeJson, verifyRegistrations, resolveClaims,
-  pairReturns, getLogsChunked, incomingDeposits, depKey, isContractCode, safeBatch, loadAbi, fmt, fmtEth, STATUS, MONEY_CODES,
+  pairReturns, getLogsChunked, incomingDeposits, depKey, isContractCode, safeBatch, loadAbi, fmt, fmtEth, STATUS, MONEY_CODES, normAddress,
 } from "./lib.mjs";
 
 const a = args();
@@ -254,9 +254,19 @@ if (new Set(listed).size !== listed.length || listed.includes(ethers.ZeroAddress
 // Deposits nobody's Luma row points at.
 // A deposit is claimed by a row whose own wallet sent it. A row whose tx came from someone else
 // (WRONG_SENDER, UNUSUAL_SENDER, AMBIGUOUS_SENDER) claims nothing, so that money is still listed
-// here; only a row we could not check (RPC_ERROR) keeps its whole tx out until the next run.
+// here; only a row we could not check yet (RPC_ERROR, TX_PENDING, or TX_NOT_FOUND although the
+// deposit is there by now) keeps its whole tx out until the next run.
 const claimedDep = new Set(results.filter((r) => MONEY_CODES.has(r.code)).map((r) => depKey(r.tx, r.wallet)));
-const unchecked = new Set(results.filter((r) => r.code === "RPC_ERROR").map((r) => String(r.tx).toLowerCase()));
+const unchecked = new Set(results.filter((r) => ["RPC_ERROR", "TX_PENDING", "TX_NOT_FOUND"].includes(r.code)).map((r) => String(r.tx).toLowerCase()));
+// Luma answers that mention a deposit's tx, and the ETH addresses guests gave: a deposit nobody
+// claimed may still be a guest's (a second link they pasted, or a send they never pasted)
+const mentions = (tx) => rows.filter((row) => Object.values(row).some((v) => String(v ?? "").toLowerCase().includes(tx)));
+const statedBy = new Map();
+for (const row of rows) {
+  const w = columns.wallet ? normAddress(row[columns.wallet]) : null;
+  if (w) statedBy.set(w.toLowerCase(), [...(statedBy.get(w.toLowerCase()) ?? []), row]);
+}
+const rowName = (row) => (columns.email && row[columns.email]) || (columns.name && row[columns.name]) || "a guest";
 const pastedBy = new Map(); // tx → the rows with a sender problem that pasted it
 for (const r of results) if (/_SENDER$/.test(r.code)) {
   const k = String(r.tx).toLowerCase();
@@ -272,6 +282,11 @@ for (const t of incoming.filter((x) => !claimedDep.has(depKey(x.tx, x.from)) && 
   if (free <= 0n) status = d.staked ? "held for a registered staker" : `already refunded (${[...new Set(d.returnedBy)].join(" ")})`;
   else if (isContractCode(await prov.getCode(t.from))) note = "Sent by a contract (an exchange, a Safe or another smart wallet?): check where it should go before returning it.";
   else if (free < t.amount) note = `Partly returned already (${[...new Set(d.returnedBy)].join(" ")}).`;
+  if (free > 0n && !pasted) {
+    const seen = mentions(t.tx), owners = statedBy.get(t.from.toLowerCase()) ?? [];
+    if (seen.length) note = [`This tx link is in the Luma answers of ${seen.map(rowName).join(", ")}: ask them about it before returning it (it may be their deposit).`, note].filter(Boolean).join(" ");
+    else if (owners.length) note = [`Sent from the ETH address ${owners.map(rowName).join(", ")} gave on Luma: ask them for this tx link instead of returning it.`, note].filter(Boolean).join(" ");
+  }
   if (free > 0n && pasted) note = [`Pasted on Luma by ${pasted.map((r) => `${r.email || r.name} (${r.code})`).join(", ")}: sort that out with the guest first ` +
     `(if the sender is their own wallet, they put it as their ETH address on Luma and it verifies). Return it only once that's agreed.`, note].filter(Boolean).join(" ");
   unmatched.push({ status, from: t.from, amount: fmt(t.amount, cfg.decimals), to_return: fmt(free > 0n ? free : 0n, cfg.decimals), units: free > 0n ? free : 0n, block: t.block, tx: t.tx, explorer: `${cfg.explorer}/tx/${t.tx}`, note });

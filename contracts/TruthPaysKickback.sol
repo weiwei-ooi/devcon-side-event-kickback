@@ -253,9 +253,12 @@ contract TruthPaysKickback {
     /// 16,777,216 gas, whatever the block limit. A recipient that burns its whole allowance costs
     /// the batch about 65,000 gas (the allowance, plus recording the payment in `owed`), so a
     /// payout, a lost case's split or a cancellation over 150 such wallets needs about 12.6 million
-    /// gas, and the console's 30% margin on top still stays under 2^24 (tested). A wallet that
-    /// needs more is not lost: its payment waits in `owed` for `claim`, which forwards all the gas
-    /// the caller sends.
+    /// gas, and the console's 30% margin on top still stays under 2^24 (tested). `releasePayouts`
+    /// also accepts the unmatched challenges whose match window ended, paying each its challenge
+    /// deposit back: with many of those from such wallets, settle them one by one first with
+    /// `resolveChallenge` (the console and owner.mjs do), and the payout then fits (tested). A
+    /// wallet that needs more is not lost: its payment waits in `owed` for `claim`, which forwards
+    /// all the gas the caller sends.
     uint256 public constant PAYOUT_GAS = 40_000;
 
     /// @notice The deposit per guest, in wei (0.01 ETH = 10000000000000000).

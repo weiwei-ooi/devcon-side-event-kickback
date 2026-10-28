@@ -178,9 +178,23 @@ switch (cmd) {
   case "resolve":
     await send("resolveChallenge", ethers.getAddress(a.staker));
     break;
-  case "release":
+  case "release": {
+    // releasePayouts accepts every unmatched challenge whose match window ended and pays its deposit
+    // back. Settle those one by one first: many of them from wallets that burn their whole PAYOUT_GAS
+    // could push the payout batch past the 2^24 gas a transaction may use.
+    if (!signer) throw new Error("Set PRIVATE_KEY of the owner wallet");
+    await c.releasePayouts.staticCall(); // stops early: too early, or a challenge still waiting for a match
+    const now = BigInt((await prov.getBlock("latest")).timestamp);
+    for (const w of await c.challengers()) {
+      const ch = await c.challenges(w);
+      if (Number(ch.state) === 1 && now > ch.matchEndsAt) {
+        console.log(`Settling ${w}'s unmatched challenge (counts as attended)`);
+        await send("resolveChallenge", w);
+      }
+    }
     await send("releasePayouts");
     break;
+  }
   case "refund":
     await send("refund", ethers.getAddress(a.to), ethers.parseEther(String(a.amount)));
     break;

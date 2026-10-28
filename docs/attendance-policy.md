@@ -45,6 +45,7 @@ Each dispute has its own case description, which names the wallet concerned and 
 - Each answer needs the Kleros appeal fee plus a stake set by the Dispute Resolver. Today that is the fee plus 100% for the answer the jurors voted for, and the fee plus 200% for any other answer.
 - If both answers are fully funded, a new, larger jury decides the same question under this same policy, and the parties can add evidence for the new round.
 - **If only one answer is fully funded when the appeal period ends, that answer wins the case, whatever the jurors voted.** If neither is fully funded, the vote stands.
+- "Refuse to arbitrate" (option 0) can be funded like an answer, under the same rules. If it is the only answer fully funded, it wins, and it counts like "Did not attend" (see below).
 - Only the **final ruling** counts: the ruling in force once the last appeal period has ended. Earlier votes do not change the attendance list, the payouts or the challenge deposits.
 - Appeal money is separate from the challenge deposits. Each funder pays it directly to the Dispute Resolver from their own wallet, and the Dispute Resolver returns it, or pays rewards, to that funder under its own appeal rules.
 

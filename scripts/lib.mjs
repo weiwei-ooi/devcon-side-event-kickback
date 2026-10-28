@@ -379,6 +379,8 @@ export function extractTxHash(value) {
   const m = String(value ?? "").match(TX_HASH_RE);
   return m ? m[0].toLowerCase() : null;
 }
+/** Every tx hash in an answer, in order, without repeats ("first one failed: …/tx/0xA, then …/tx/0xB"). */
+export const extractTxHashes = (value) => [...new Set((String(value ?? "").match(new RegExp(TX_HASH_RE.source, "g")) ?? []).map((h) => h.toLowerCase()))];
 
 export function normAddress(value) {
   const m = String(value ?? "").match(/0x[a-fA-F0-9]{40}/);
@@ -548,10 +550,28 @@ export async function verifyRegistrations(prov, cfg, rows, { onlyDepositTicket =
     if (!rawTx) { results.push({ ...base, ok: false, code: "NO_TX", note: "Deposit ticket but no tx link" }); continue; }
     if (!txHash) { results.push({ ...base, ok: false, code: "BAD_TX_HASH", note: "Couldn't find a 0x… tx hash in the answer" }); continue; }
 
-    const key = `${txHash}|${claimed ?? ""}|${otherNetworkOf(rawTx) ?? ""}`;
-    if (!cache.has(key))
-      cache.set(key, verifyTx(prov, cfg, txHash, claimed, rawTx).catch((e) => ({ ok: false, code: "RPC_ERROR", note: e.shortMessage || e.message })));
-    const res = await cache.get(key);
+    const check = (h) => {
+      const key = `${h}|${claimed ?? ""}|${otherNetworkOf(rawTx) ?? ""}`;
+      if (!cache.has(key))
+        cache.set(key, verifyTx(prov, cfg, h, claimed, rawTx).catch((e) => ({ ok: false, code: "RPC_ERROR", note: e.shortMessage || e.message })));
+      return cache.get(key);
+    };
+    // Several links in one answer (a failed send, then a good one): use the one that is this guest's
+    // deposit. If more than one is, a person decides which (the others are given back).
+    let txUsed = txHash;
+    let res = await check(txHash);
+    const hashes = extractTxHashes(rawTx);
+    if (hashes.length > 1) {
+      const checked = await Promise.all(hashes.map(async (h) => ({ h, res: await check(h) })));
+      const good = checked.filter((c) => c.res.ok);
+      const money = checked.filter((c) => MONEY_CODES.has(c.res.code));
+      const pick = good[0] ?? money[0] ?? checked[0];
+      txUsed = pick.h;
+      res = pick.res;
+      if (good.length > 1)
+        res = { ...res, ok: false, code: "MULTIPLE_TX", note: `Pasted ${good.length} deposits that each verify (${good.map((c) => c.h).join(", ")}). Ask the guest which one is their deposit, then keep that link on Luma: the other is listed in unmatched.csv to give back.` };
+      else if (hashes.length > 1) res = { ...res, note: [res.note, `${hashes.length} tx links pasted; checked ${txUsed}`].filter(Boolean).join("; ") };
+    }
     results.push({
       ...base,
       ok: res.ok,
@@ -562,7 +582,8 @@ export async function verifyRegistrations(prov, cfg, rows, { onlyDepositTicket =
       wallet: res.wallet ?? claimed ?? "",
       amount: res.amount !== undefined ? fmt(res.amount, cfg.decimals) : "",
       sent_at: res.ts ? new Date(res.ts * 1000).toISOString() : "",
-      explorer: cfg.explorer ? `${cfg.explorer}/tx/${txHash}` : "",
+      tx: txUsed,
+      explorer: cfg.explorer ? `${cfg.explorer}/tx/${txUsed}` : "",
       block: res.block ?? "",
       code: res.code,
       note: [res.note, res.inferred && res.code !== "VERIFIED" ? "wallet taken from the transaction sender" : ""].filter(Boolean).join("; "),
