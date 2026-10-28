@@ -2,7 +2,8 @@
 // stand-ins for Kleros Court v1 (KlerosLiquid and the Dispute Resolver, test/MockKleros.sol) and a
 // stand-in for Kleros's IPFS upload service (the page's requests are intercepted, never sent):
 // deploy (constructor arguments from the scripts' own settings) → register → post attendance list →
-// a guest challenges → the owner disputes it and sends the "Challenge details" in one click →
+// a guest challenges → its case description (written by the contract) is saved on IPFS → the owner
+// disputes it → the optional "Challenge details" →
 // evidence (text, link, file) → Kleros rules; appeals are funded and collected on the Dispute
 // Resolver from the owner wallet (never through the deposit contract) → deliver the final ruling →
 // settle → release payouts. Also: deploy refuses a changed config and a live config without the
@@ -19,6 +20,7 @@ const proj = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..")
 const req = createRequire(path.join(proj, "package.json"));
 const ganache = req("ganache");
 const { ethers } = req("ethers");
+const { loadConfig, deployArgs, ipfsCidV0 } = await import(path.join(proj, "scripts/lib.mjs"));
 let chromium;
 try { ({ chromium } = req("playwright")); } catch { ({ chromium } = createRequire("/opt/node-tools/node_modules/")("playwright")); }
 const E = (x) => ethers.parseEther(String(x));
@@ -27,7 +29,6 @@ const keys = Array.from({ length: 5 }, (_, i) => "0x" + (i + 7).toString(16).pad
 const RPC = 18747, WEB = 18787, DAY = 86400;
 const KGAS = { gasLimit: 500000 }; // the Kleros stand-ins' test hooks: ganache under-estimates them
 const POLICY = "/ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG/attendance-policy.md";
-const META = "/ipfs/QmT78zSuBmuS4z925WZfrqQ1qHaJ56DQaTfyMUF7F8ff5o/metaevidence.json";
 const EXTRA = ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256"], [0, 3]);
 const server = ganache.server({ logging: { quiet: true }, chain: { chainId: 1337 }, wallet: { accounts: keys.map((k) => ({ secretKey: k, balance: "0x56BC75E2D63100000" })) } });
 await server.listen(RPC);
@@ -51,7 +52,7 @@ const config = {
   receiver: "0x0000000000000000000000000000000000000001",
   eventStart: new Date((now - 60) * 1000).toISOString(), claimDeadline: new Date((now + 9 * DAY) * 1000).toISOString(),
   owner: await addr(owner), mode: "live",
-  kleros: { court: 0, jurors: 3, disputeResolver: proxy.target, arbitrator: liquid.target, policyURI: POLICY, metaEvidenceURI: META },
+  kleros: { court: 0, jurors: 3, disputeResolver: proxy.target, arbitrator: liquid.target, policyURI: POLICY },
 };
 write("config.json", config);
 const web = spawn("node", ["scripts/console.mjs", "--config", `${dir}/config.json`, "--out", dir], { cwd: proj, env: { ...process.env, PORT: String(WEB) }, stdio: "ignore" });
@@ -96,9 +97,21 @@ await page.route(new RegExp(`127\\.0\\.0\\.1:${RPC}`), async (route) => {
   return route.fulfill({ response: res, body: JSON.stringify(json) });
 });
 // Kleros's IPFS upload service, simulated: each upload gets a new CID and answers like the real one
-// ({ cids: ["ipfs://<cid>/<file name>"] }). `ipfsFail` makes the next uploads fail with an HTTP 500.
+// ({ cids: ["ipfs://<cid>/<file name>"] }). A case description (metaevidence.json) gets its real CIDv0
+// and no file name ({ cids: ["/ipfs/<cid>"] }), as the real service answered for the pinned docs. The
+// gateway (cdn.kleros.link) serves what was uploaded. `ipfsFail` makes the next uploads fail with an HTTP 500.
 const uploads = [];
+const stored = new Map();
 let ipfsFail = false;
+const fileOf = (buf) => { // the uploaded file's bytes, from the multipart body
+  const head = buf.indexOf("\r\n\r\n", buf.indexOf("filename=")) + 4;
+  return buf.subarray(head, buf.indexOf("\r\n--", head));
+};
+await page.route(/cdn\.kleros\.link/, async (route) => {
+  const p = new URL(route.request().url()).pathname;
+  const cors = { "access-control-allow-origin": "*" };
+  return stored.has(p) ? route.fulfill({ status: 200, headers: cors, body: stored.get(p) }) : route.fulfill({ status: 404, headers: cors, body: "not found" });
+});
 const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 const fakeCid = (n) => "Qm" + Array.from({ length: 44 }, (_, i) => B58[(n * 7 + i * 13 + 5) % 58]).join("");
 await page.route(/kleros-api\.netlify\.app/, async (route) => {
@@ -107,9 +120,11 @@ await page.route(/kleros-api\.netlify\.app/, async (route) => {
   const cors = { "access-control-allow-origin": "*" };
   if (ipfsFail) return route.fulfill({ status: 500, headers: cors, body: "upstream error" });
   const file = body.match(/filename="([^"]+)"/)?.[1] ?? "file";
-  const p = `/ipfs/${fakeCid(uploads.length)}/${file}`;
-  uploads.push({ url: r.url(), method: r.method(), body, file, path: p });
-  return route.fulfill({ status: 200, headers: { ...cors, "content-type": "application/json" }, body: JSON.stringify({ message: "File has been stored successfully", cids: ["ipfs:/" + p.slice(5)] }) });
+  const content = fileOf(r.postDataBuffer());
+  const p = file === "metaevidence.json" ? `/ipfs/${ipfsCidV0(content)}` : `/ipfs/${fakeCid(uploads.length)}/${file}`;
+  uploads.push({ url: r.url(), method: r.method(), body, file, path: p, content: content.toString("utf8") });
+  stored.set(p, content);
+  return route.fulfill({ status: 200, headers: { ...cors, "content-type": "application/json" }, body: JSON.stringify({ message: "File has been stored successfully", cids: [file === "metaevidence.json" ? p : "ipfs:/" + p.slice(5)] }) });
 });
 // confirm() → yes; prompt() → the word it asks for. A queued answer overrides: false = Cancel, a string = typed.
 const dialogs = [], answers = [];
@@ -131,21 +146,21 @@ const skew = async (secs) => { await prov.send("evm_increaseTime", [secs]); awai
 const nonce = () => prov.getTransactionCount(me);
 const open = async () => { await page.goto(`http://localhost:${WEB}/`); await page.waitForTimeout(800); };
 
-// a live config without the pinned case description (metaevidence) cannot be deployed
+// a live config without the pinned juror policy cannot be deployed
 const cfgPath = path.join(proj, dir, "config.json");
-write("config.json", { ...config, kleros: { ...config.kleros, metaEvidenceURI: "" } });
+write("config.json", { ...config, kleros: { ...config.kleros, policyURI: "" } });
 await open();
-check("missing metaevidence shown before the deploy", /Ready to deploy\?\s*No: Set "kleros\.metaEvidenceURI"/.test(await txt("deployInfo")), await txt("deployInfo"));
+check("missing juror policy shown before the deploy", /Ready to deploy\?\s*No: Set "kleros\.policyURI"/.test(await txt("deployInfo")), await txt("deployInfo"));
 await page.click("#connect"); await page.waitForTimeout(500);
 let n0 = await nonce();
-check("live deploy refused without the pinned metaevidence", await click("deploy", /Not deployed: Set "kleros\.metaEvidenceURI"/), await logText());
-check("nothing deployed without the metaevidence", (await nonce()) === n0);
+check("live deploy refused without the pinned juror policy", await click("deploy", /Not deployed: Set "kleros\.policyURI"/), await logText());
+check("nothing deployed without the juror policy", (await nonce()) === n0);
 write("config.json", config);
 
 await open();
-check("config shows Kleros Court, ETH deposit and the pinned files",
+check("config shows Kleros Court, ETH deposit, the pinned policy and the case description template",
   /Kleros Court \(General Court\), 3 jurors/.test(await txt("deployInfo")) && /0\.01 ETH per guest/.test(await txt("deployInfo")) &&
-  (await txt("deployInfo")).includes(POLICY) && (await txt("deployInfo")).includes(META) && !/Ready to deploy/.test(await txt("deployInfo")), await txt("deployInfo"));
+  (await txt("deployInfo")).includes(POLICY) && /one per Kleros case, written by the contract from docs\/metaevidence\.template\.json/.test(await txt("deployInfo")) && !/Ready to deploy/.test(await txt("deployInfo")), await txt("deployInfo"));
 check("connect", await click("connect", /ETH on/) || /ETH on/.test(await txt("who")), await txt("who"));
 
 // F12: the config changed on disk after the page loaded (e.g. another console on the same port) → refuse
@@ -161,13 +176,15 @@ const deployMsg = dialogs.find((m) => /Deploy a new deposit contract/.test(m)) ?
 // (a local chain always shows as a local test chain, like the banner; config.json shows LIVE, the rehearsal REHEARSAL)
 check("deploy confirm shows mode, event name, policy, case description, ETH deposit and IST times",
   /Mode: LOCAL TEST CHAIN/.test(deployMsg) && /LOCAL TEST CHAIN/.test(await txt("banner")) && /Event name: Console E2E\n/.test(deployMsg) &&
-  deployMsg.includes(`Juror policy: ${POLICY}`) && deployMsg.includes(`Case description for jurors: ${META}`) && /Kleros Court, General Court, 3 jurors/.test(deployMsg) &&
+  deployMsg.includes(`Juror policy: ${POLICY}`) && deployMsg.includes("Case description for jurors: one per case, from docs/metaevidence.template.json") && /Kleros Court, General Court, 3 jurors/.test(deployMsg) &&
   /Deposit: 0\.01 ETH per guest/.test(deployMsg) && /Attendance list from: .+ IST/.test(deployMsg) && /List by: .+ IST/.test(deployMsg), deployMsg);
 const kAddr = await page.inputValue("#addr");
 const kick = new ethers.Contract(kAddr, load("TruthPaysKickback").abi, owner);
 check("deployed with the configured Dispute Resolver and its court", (await kick.disputeResolver()) === proxy.target && (await kick.arbitrator()) === liquid.target);
-check("deployed with the policy, the metaevidence and court 0 / 3 jurors",
-  (await kick.policyURI()) === POLICY && (await kick.metaEvidenceURI()) === META && (await kick.arbitratorExtraData()) === EXTRA);
+const [, , , , , [, , tplPieces, tplSlots]] = deployArgs(loadConfig(cfgPath), ethers.ZeroAddress);
+const [kPieces, kSlots] = await kick.metaEvidenceTemplate();
+check("deployed with the policy, the case description template and court 0 / 3 jurors",
+  (await kick.policyURI()) === POLICY && JSON.stringify([...kPieces]) === JSON.stringify(tplPieces) && kSlots === tplSlots && (await kick.arbitratorExtraData()) === EXTRA);
 check("deployed with the deposit in wei, the owner and the dates", (await kick.depositAmount()) === E("0.01") && (await kick.owner()) === me &&
   Number(await kick.eventStart()) === Math.floor(Date.parse(config.eventStart) / 1000) && Number(await kick.claimDeadline()) === Math.floor(Date.parse(config.claimDeadline) / 1000));
 const stored = await page.evaluate(() => Object.entries(localStorage).map(([k, v]) => k + "=" + v).join(";"));
@@ -266,12 +283,30 @@ const challengeTx = (await (await kick.connect(g3).challenge({ value: await kick
 await page.click("#refresh"); await page.waitForTimeout(800);
 check("challenge listed with the Kleros fee as deposit", /waiting for a match/.test(await txt("challenges")) && /Challenge deposit\s*0\.0162 ETH \(the Kleros fee\)/.test(await txt("challenges")), await txt("challenges"));
 await page.fill("#chAddr", cai);
+// the case description (the contract's own text: event, wallet, contract) is linked in the list, not on IPFS yet
+const [caseText, caseUri] = await kick.caseMetaEvidence(cai);
+await page.waitForTimeout(500);
+check("case description linked in the challenge list, not on IPFS yet",
+  (await page.locator("#challenges a", { hasText: "case description" }).getAttribute("href")) === `https://cdn.kleros.link${caseUri}` && /not on IPFS yet/.test(await txt("challenges")), await txt("challenges"));
+check("case description names the event, the wallet and the deposit contract",
+  JSON.parse(caseText).question.includes(cai) && caseText.includes(kAddr) && caseText.includes('\\"Console E2E\\"') && JSON.parse(caseText).fileURI === POLICY, caseText.slice(0, 400));
+ipfsFail = true;
+check("publish case description: a failed upload says so", await click("publishCase", /Could not upload "metaevidence\.json" to IPFS/), await logText());
+ipfsFail = false;
+check("publish case description", await click("publishCase", /Case description for 0x\w+…\w+ saved on IPFS: https:\/\/cdn\.kleros\.link\/ipfs\/Qm/), await logText());
+check("published through Kleros's service (operation=file): exactly the contract's text, at the contract's IPFS address",
+  uploads.length === 2 && /operation=file/.test(uploads[1].url) && uploads[1].file === "metaevidence.json" && uploads[1].content === caseText && uploads[1].path === caseUri, JSON.stringify(uploads[1] ?? {}).slice(0, 300));
+uploads.length = 0;
+await page.click("#refresh"); await page.waitForTimeout(800);
+check("challenge list shows it on IPFS", /case description ↗ \(on IPFS ✓\)/.test(await txt("challenges")), await txt("challenges"));
 n0 = await nonce();
-check("dispute (match) from console, then the challenge details in one click", await click("matchOne", /Challenge details sent to Kleros case #1000/), await logText());
-check("dispute prompt shows the ETH deposit (and no missing-description warning)", /You send 0\.0162 ETH/.test(dialogs.find((m) => /Dispute the claim of/.test(m)) ?? "") && !/no case description/.test(dialogs.find((m) => /Dispute the claim of/.test(m)) ?? "x no case description"), dialogs.join(" | "));
-check("details offered right after the dispute", dialogs.some((m) => /Send the "Challenge details" to the jurors of Kleros case #1000 now\?/.test(m) && m.includes(cai)));
-check("two transactions: the dispute, then the evidence", (await nonce()) === n0 + 2);
+check("dispute (match) from console", await click("matchOne", /Sent to Kleros: case #1000.*names/), await logText());
+check("dispute prompt shows the ETH deposit", /You send 0\.0162 ETH/.test(dialogs.find((m) => /Dispute the claim of/.test(m)) ?? ""), dialogs.join(" | "));
+check("dispute: the case description was already on IPFS, so nothing uploaded again; one transaction", uploads.length === 0 && (await nonce()) === n0 + 1 && /is on IPFS/.test(await logText()), await logText());
 const localID = (await kick.challenges(cai)).localDisputeID;
+check("Kleros case created with this case's own description", (await proxy.queryFilter(proxy.filters.MetaEvidence(localID)))[0]?.args._evidence === caseUri);
+// the optional "Challenge details": case number and transaction links
+check("send challenge details (optional)", await click("sendDetails", /Challenge details sent to Kleros case #1000/), await logText());
 const evidenceOf = async (group) => proxy.queryFilter(proxy.filters.Evidence(null, group));
 let evs = await evidenceOf(localID);
 const details = uploads[0] ? JSON.parse(uploads[0].body.slice(uploads[0].body.indexOf("{"), uploads[0].body.lastIndexOf("}") + 1)) : {};
@@ -280,12 +315,11 @@ check("challenge details uploaded through Kleros's service as an evidence JSON",
 check("challenge details name the staker, the contract and where to check",
   /Challenge details/.test(details.name) && details.description?.includes(`This case is about the wallet ${cai}`) && details.description.includes(kAddr) &&
   /Challenged and ChallengeMatched events/.test(details.description) && details.description.includes(me) && details.description.includes(`/tx/${challengeTx}`), JSON.stringify(details));
-check("challenge details name the Kleros case number (as the case description and the policy promise) and the Dispute Resolver's number",
+check("challenge details name the Kleros case number and the Dispute Resolver's number",
   details.description?.includes(`It is Kleros case #1000 (https://court.kleros.io/cases/1000), number ${localID} in Kleros's Dispute Resolver`) &&
   /The ChallengeMatched event for \S+ names Kleros case #1000\./.test(details.description), JSON.stringify(details));
 check("challenge details on Kleros under the local ID, from the owner", localID !== 1000n && evs.length === 1 && evs[0].args._party === me && evs[0].args._evidence === uploads[0].path,
   `local ${localID}: ` + evs.map((e) => `${e.args._party} ${e.args._evidence}`).join("; "));
-check("Kleros case created with the metaevidence", (await proxy.queryFilter(proxy.filters.MetaEvidence(localID)))[0]?.args._evidence === META);
 await page.waitForTimeout(500);
 check("Kleros case link shown", /Kleros case #1000/.test(await txt("challenges")), await txt("challenges"));
 check("case link goes to court.kleros.io", (await page.locator("#challenges a", { hasText: "Kleros case #1000" }).getAttribute("href")) === "https://court.kleros.io/cases/1000");

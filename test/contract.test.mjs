@@ -4,7 +4,8 @@
 // aside for open Kleros cases (fair in any settlement order), ETH accounting (refund / sweep only
 // touch spare ETH), wallets that refuse ETH or burn gas, reentrancy, emergency exit, two-step
 // ownership, a 150-guest run, the worst 150-wallet batches inside one mainnet transaction's gas cap
-// (EIP-7825), and tokens sent by mistake (returnToken).
+// (EIP-7825), tokens sent by mistake (returnToken), and each case's own description (metaevidence)
+// with its IPFS path computed on-chain exactly as `ipfs add` does.
 // Local in-memory chain (ganache) with stand-ins for KlerosLiquid and the Dispute Resolver.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -14,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import ganache from "ganache";
 import { ethers } from "ethers";
+import { caseTemplate, renderCase, ipfsCidV0, ipfsPathOf } from "../scripts/lib.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const load = (n) => JSON.parse(fs.readFileSync(path.join(root, "build", `${n}.json`), "utf8"));
@@ -28,7 +30,7 @@ const FEE_PER_JUROR = E("0.005");
 const FEE = 3n * FEE_PER_JUROR; // Kleros fee for 3 jurors: the challenge deposit
 const EXTRA = ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256"], [0, 3]); // General Court, 3 jurors
 const POLICY = "/ipfs/QmPolicyForTests/attendance-policy.md";
-const META = "/ipfs/QmMetaEvidenceForTests/metaevidence.json";
+let TPL; // the case description template (docs/metaevidence.template.json, as deployArgs builds it)
 const MAX = ethers.MaxUint256;
 // the Kleros stand-ins' transactions also get an explicit gas limit (see the estimate margin in `before`)
 const KGAS = { gasLimit: 500_000 };
@@ -86,7 +88,7 @@ async function freshKick({ startIn = 3600, deadlineIn = 3600 * 24 * 14 } = {}) {
   const t = await now();
   return deploy("TruthPaysKickback", owner, D, "Truth Pays", await addr(owner), t + startIn, t + deadlineIn, arb());
 }
-const arb = () => [proxy.target, EXTRA, META, POLICY];
+const arb = (t = TPL) => [proxy.target, EXTRA, t.pieces, t.slots, POLICY];
 // post the list, let the 1-day challenge window pass, release
 async function settle(kick, att, share) {
   await send(kick.postAttendance(att, share));
@@ -130,6 +132,7 @@ before(async () => {
   liquid = await deploy("MockKlerosLiquid", owner);
   await send(liquid.setFeeForJuror(FEE_PER_JUROR, KGAS));
   proxy = await deploy("MockArbitrableProxy", owner, liquid.target);
+  TPL = caseTemplate({ eventName: "Truth Pays", depositUnits: D, explorer: "https://etherscan.io", owner: await addr(owner), kleros: { policyURI: POLICY } });
 });
 after(async () => server && (await server.close()));
 
@@ -142,8 +145,8 @@ test("constructor: checks the times, deposit, owner and Dispute Resolver, and re
   for (const bad of [
     [D, "x", o, t + 100, t + 100, arb()],
     [D, "x", o, t + 100, t + 100 + W - 1, arb()],
-    [D, "x", o, t + 100, t + 100 + W, [ethers.ZeroAddress, EXTRA, META, POLICY]],
-    [D, "x", o, t + 100, t + 100 + W, [o, EXTRA, META, POLICY]], // a wallet, not a Dispute Resolver
+    [D, "x", o, t + 100, t + 100 + W, [ethers.ZeroAddress, EXTRA, TPL.pieces, TPL.slots, POLICY]],
+    [D, "x", o, t + 100, t + 100 + W, [o, EXTRA, TPL.pieces, TPL.slots, POLICY]], // a wallet, not a Dispute Resolver
     [0n, "x", o, t + 100, t + 100 + W, arb()],
     [D, "x", ethers.ZeroAddress, t + 100, t + 100 + W, arb()],
   ]) {
@@ -156,7 +159,8 @@ test("constructor: checks the times, deposit, owner and Dispute Resolver, and re
   assert.equal(await k.disputeResolver(), proxy.target);
   assert.equal(await k.arbitrator(), liquid.target);
   assert.equal(await k.arbitratorExtraData(), EXTRA);
-  assert.equal(await k.metaEvidenceURI(), META);
+  const [pieces, slots] = await k.metaEvidenceTemplate();
+  assert.deepEqual([[...pieces], slots], [TPL.pieces, TPL.slots]);
   assert.equal(await k.policyURI(), POLICY);
   assert.equal(await k.PAYOUT_GAS(), 40_000n);
   assert.equal(await k.RULING_OPTIONS(), 2n);
@@ -610,14 +614,21 @@ test("matched challenge opens a Kleros v1 case through the Dispute Resolver; pay
   assert.equal(await kick.challengeEscrow(), FEE);
   const [ev] = logsOf(r, kick, "ChallengeMatched");
   assert.deepEqual([...ev.args], [await addr(g), await addr(m), c.arbitratorDisputeID, c.localDisputeID]);
-  // the Dispute Resolver opened the case with the static metaevidence, 2 ruling options and the court settings
+  // the Dispute Resolver opened the case with this case's own description, 2 ruling options and the court settings
   const pd = await proxy.disputes(c.localDisputeID);
   assert.equal(pd.disputeIDOnArbitratorSide, c.arbitratorDisputeID);
   assert.equal(pd.arbitratorExtraData, EXTRA);
   assert.equal(pd.isRuled, false);
   assert.equal(await proxy.numberOfRulingOptions(c.localDisputeID), 2n);
   const [meta] = logsOf(r, proxy, "MetaEvidence");
-  assert.deepEqual([...meta.args], [c.localDisputeID, META]);
+  const [text, uri] = await kick.caseMetaEvidence(await addr(g));
+  assert.equal(text, renderCase(TPL, await addr(g), kick.target));
+  assert.equal(uri, ipfsPathOf(text));
+  assert.deepEqual([...meta.args], [c.localDisputeID, uri]);
+  const json = JSON.parse(text);
+  assert.ok(json.question.includes(await addr(g)) && json.description.includes(kick.target), "names the wallet and the deposit contract");
+  assert.equal(json.fileURI, POLICY);
+  assert.ok(r.gasUsed < 800_000n, `matchChallenge used ${r.gasUsed} gas`); // about 650,000 with this template
   const [disp] = logsOf(r, proxy, "Dispute");
   assert.deepEqual([...disp.args], [liquid.target, c.arbitratorDisputeID, c.localDisputeID, c.localDisputeID]);
   const ld = await liquid.disputes(c.arbitratorDisputeID);
@@ -1140,4 +1151,68 @@ test("reentrancy: a recipient calling back into the contract is refused, and its
   assert.equal(await kick.owedTotal(), 0n);
   await walletReverts(w4, kick, "claim", [w4.target], "NothingToClaim");
   assert.equal(await bal(kick), 0n);
+});
+
+test("case description: bad templates are refused at deployment; the template is kept as contract code", async () => {
+  const t = await now();
+  const { abi, bytecode } = load("TruthPaysKickback");
+  const f = new ethers.ContractFactory(abi, bytecode, owner);
+  const o = await addr(owner);
+  const W = 7 * DAY;
+  const enc = (pieces, slots) => ethers.getBytes(ethers.AbiCoder.defaultAbiCoder().encode(["string[]", "bytes"], [pieces, slots])).length;
+  // the longest template the contract can keep: abi.encode(pieces, slots) under 24,576 bytes (contract code limit)
+  const fill = (n) => "x".repeat(n);
+  let n = 24_576 - enc(["", ""], "0x01");
+  while (enc([fill(n), ""], "0x01") >= 24_576) n -= 1;
+  for (const bad of [
+    { pieces: ["a", "b"], slots: "0x" }, // one piece too many
+    { pieces: ["a", "b"], slots: "0x0101" }, // one piece too few
+    { pieces: ["a", "b"], slots: "0x02" }, // never names the wallet
+    { pieces: ["a", "b"], slots: "0x03" }, // unknown value
+    { pieces: [fill(n + 1), ""], slots: "0x01" }, // over the contract code limit
+  ]) {
+    await assert.rejects(f.deploy(D, "x", o, t + 100, t + 100 + W, arb(bad)));
+    owner.reset();
+  }
+  const k = await f.deploy(D, "x", o, t + 100, t + 100 + W, arb({ pieces: [fill(n), ""], slots: "0x01" }));
+  await k.waitForDeployment();
+  const [text, uri] = await k.caseMetaEvidence(await addr(guests[0]));
+  assert.equal(text, fill(n) + (await addr(guests[0])));
+  assert.equal(uri, ipfsPathOf(text));
+  // the store holds the template after a STOP byte (0x00), so calling it does nothing
+  const store = await k.metaEvidenceStore();
+  const code = await prov.getCode(store);
+  assert.equal(code.slice(0, 4), "0x00");
+  assert.equal(ethers.dataSlice(code, 1), ethers.AbiCoder.defaultAbiCoder().encode(["string[]", "bytes"], [[fill(n), ""], "0x01"]));
+  const r = await send(guests[0].sendTransaction({ to: store, data: "0x1234", gasLimit: 100_000 }));
+  assert.equal(r.status, 1);
+});
+
+test("case description: the IPFS path matches `ipfs add` (known vectors, varint boundaries) and every wallet is checksummed", async () => {
+  // a known `ipfs add` result (the docs/ files pinned through Kleros's upload service on 27 Oct matched too)
+  assert.equal(ipfsCidV0("hello world\n"), "QmT78zSuBmuS4z925WZfrqQ1qHaJ56DQaTfyMUF7F8ff5o");
+  const t = await now();
+  const o = await addr(owner);
+  const g = await addr(guests[0]);
+  // text sizes around the protobuf varint boundaries: of the text (128, 16384) and of the UnixFS node (128, 16384)
+  for (const size of [42, 121, 122, 127, 128, 129, 16_375, 16_376, 16_383, 16_384]) {
+    const k = await deploy("TruthPaysKickback", owner, D, "x", o, t + 100, t + 100 + 7 * DAY, arb({ pieces: ["p".repeat(size - 42), ""], slots: "0x01" }));
+    const [text, uri] = await k.caseMetaEvidence(g);
+    assert.equal(ethers.toUtf8Bytes(text).length, size);
+    assert.equal(uri, "/ipfs/" + ipfsCidV0(text), `size ${size}`);
+  }
+  // non-ASCII text is hashed as UTF-8 bytes, like a file
+  const k2 = await deploy("TruthPaysKickback", owner, D, "x", o, t + 100, t + 100 + 7 * DAY, arb({ pieces: ["Mumbai — ₹ ", " / ", "."], slots: "0x0102" }));
+  const [t2, u2] = await k2.caseMetaEvidence(g);
+  assert.equal(t2, `Mumbai — ₹ ${ethers.getAddress(g)} / ${k2.target}.`);
+  assert.equal(u2, ipfsPathOf(t2));
+  // EIP-55 checksums for many wallets (mixed-case patterns), the same as ethers.getAddress
+  const kick = await freshKick();
+  for (let i = 0; i < 40; i++) {
+    const w = ethers.getAddress(ethers.dataSlice(ethers.keccak256(ethers.toUtf8Bytes(`wallet ${i}`)), 12));
+    const [text, uri] = await kick.caseMetaEvidence(w);
+    assert.equal(text, renderCase(TPL, w, kick.target));
+    assert.equal(uri, ipfsPathOf(text));
+  }
+  for (const w of [ethers.ZeroAddress, "0xffffffffffffffffffffffffffffffffffffffff"]) assert.equal((await kick.caseMetaEvidence(w))[0], renderCase(TPL, w, kick.target));
 });

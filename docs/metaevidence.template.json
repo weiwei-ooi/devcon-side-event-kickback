@@ -1,0 +1,19 @@
+{
+  "category": "Event attendance",
+  "title": "Did wallet {{wallet}} attend Truth Pays (Devcon Mumbai, 4 November 2026)?",
+  "description": "This case is about one guest of Truth Pays: Queryable Data, Prediction Markets & Onchain Justice, a Devcon Mumbai side event (networking dinner) on Wednesday 4 November 2026, 18:00-22:00 IST, at the venue announced to registered guests on Luma (planned: Hitchki, Bandra Kurla Complex (BKC), Mumbai), hosted by Kleros, Arkiv (Golem Network) and Web3 Mumbai. The deposit contract calls it \"{{eventName}}\".\n\nThe guest concerned is the person who registered for the event on Luma with the wallet {{wallet}}. To book a Committed Spot, they sent a refundable deposit of {{deposit}} from that wallet to the event's deposit contract {{contract}} on Ethereum mainnet. After the event, the organiser published the list of depositors who checked in: everyone on the list shares the whole pool, and no-shows lose their deposit. This wallet was left off the list. The person behind it challenged the list, saying they attended, and someone matched the challenge, which created this case.\n\nThe deposit contract wrote this description itself, from a template fixed when it was deployed, filling in the wallet and its own address, so neither side chose the wording. You can check it on Etherscan ({{explorer}}/address/{{contract}}#events): the Challenged event for {{wallet}} shows when the challenge was made, and the ChallengeMatched event for it carries this case's number (arbitratorDisputeID).\n\nOnly the wallet is recorded on-chain, not the person's name: the parties' evidence (photos, messages, the Luma registration, the organiser's door records) links the wallet to a person. Apply the attached attendance policy. The challenger must show that attendance is more likely than not; a missing Luma check-in is not, by itself, evidence of absence. If the organiser confirms in this case that the person attended, rule Attended. A refusal to arbitrate counts like Did not attend.",
+  "question": "Did the person who registered on Luma with wallet {{wallet}} attend Truth Pays in Mumbai on 4 November 2026 (18:00-22:00 IST)?",
+  "rulingOptions": {
+    "type": "single-select",
+    "titles": ["Attended", "Did not attend"],
+    "descriptions": [
+      "The person who registered with wallet {{wallet}} was present at the venue during the event (18:00-22:00 IST, 4 November 2026). They are added to the attendance list, receive the same share of the pool as every attendee, and receive what is left of both challenge deposits after the Kleros fee.",
+      "That person was not present, or the evidence does not make attendance more likely than not. Wallet {{wallet}} stays off the list and loses its event deposit, which is shared among the attendees. Whoever matched the challenge receives what is left of both challenge deposits after the Kleros fee."
+    ]
+  },
+  "fileURI": "{{policyURI}}",
+  "aliases": {
+    "{{wallet}}": "Challenger (the guest's wallet)",
+    "{{owner}}": "Organiser (Truth Pays owner wallet)"
+  }
+}

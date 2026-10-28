@@ -87,8 +87,8 @@
     <p>During the 1-day window only. If they already challenged and nobody matched, their ETH deposit goes back to them.</p>
     <div class="row"><input id="addAddrs" placeholder="Wallet 0x… (several: separate with commas)"><button class="secondary" id="addAtt" disabled>Add to the list</button></div>
     <h2 style="margin-top:14px">Dispute or settle one challenge</h2>
-    <p><b>Dispute</b> = you believe this person did not attend: you match their ETH deposit and Kleros jurors decide (about 3 weeks per round; the challenger's share is set aside until the final ruling). Right after, the console offers to send the jurors the <b>Challenge details</b>: which wallet the case is about and where to check it on Etherscan. Say yes: the jurors need it. <b>Settle</b> = close a challenge that was not matched in time, or whose Kleros ruling is in.</p>
-    <div class="row"><input id="chAddr" placeholder="Challenger wallet 0x…"><button class="secondary" id="matchOne" disabled>Dispute (send to Kleros)</button><button class="secondary" id="resolveOne" disabled>Settle</button></div>
+    <p><b>Dispute</b> = you believe this person did not attend: you match their ETH deposit and Kleros jurors decide (about 3 weeks per round; the challenger's share is set aside until the final ruling). Each case has its own <b>case description</b>, written by the contract: it names the event, the challenged wallet and the deposit contract. The console saves it on IPFS (where the jurors read it) before sending the dispute; <b>Publish case description</b> does that on its own for the wallet above, if the challenge list shows it is not on IPFS yet. <b>Settle</b> = close a challenge that was not matched in time, or whose Kleros ruling is in.</p>
+    <div class="row"><input id="chAddr" placeholder="Challenger wallet 0x…"><button class="secondary" id="matchOne" disabled>Dispute (send to Kleros)</button><button class="secondary" id="resolveOne" disabled>Settle</button><button class="secondary" id="publishCase" disabled>Publish case description</button></div>
     <h2 style="margin-top:14px">Appeal a Kleros ruling</h2>
     <p>After each jury vote there is an appeal window (a few days, shown in the challenge list). Anyone can chip in ETH for either answer. <b>Fund appeal</b> sends it from your wallet straight to Kleros (its Dispute Resolver, which runs the appeal crowdfunding), never through the deposit contract, and Kleros records it under your wallet. The answer the jurors voted for must raise the appeal fee plus 1× and has the whole window; the other answer must raise the fee plus 2× and only has the first half of the window. Only when both answers are fully funded does a new, larger jury vote again. After the final ruling, <b>Collect appeal rewards</b> takes back from Kleros what it owes this wallet: ETH back plus a reward for the answer that won, or a refund for an answer that was never fully funded (nothing for a funded answer that lost). Uses the challenger wallet above. Fund from an ordinary wallet like this one, not a Safe or other smart-contract wallet: Kleros pays appeal money back with a basic transfer that such wallets may not accept.</p>
     <p class="warn"><b>Defend your side.</b> If only one answer is fully funded when the window closes, that answer wins the case, whatever the jurors voted. After every vote, watch the challenge list until the appeal window ends, and fund your side if the other side starts funding.</p>
@@ -98,7 +98,7 @@
     <p>For the challenger wallet above, while the case is open. Write what happened (door records, who saw them). You can attach a file (a photo or a PDF, up to 5 MB) or paste a link. The console stores the evidence on IPFS (a public file network) through Kleros's upload service, then adds it to the case. Evidence is public and permanent.</p>
     <div class="row"><input id="evTitle" placeholder="Title, e.g. Door list and host statement" style="flex:1 1 100%"></div>
     <div class="row" style="margin-top:6px"><input id="evText" placeholder="Description"><input id="evLink" placeholder="Link to a file (optional)" style="flex:0 1 240px"></div>
-    <div class="row" style="margin-top:6px"><input id="evFile" type="file" style="flex:1 1 220px"><button class="secondary" id="submitEvidence" disabled>Submit evidence</button><button class="secondary" id="sendDetails" disabled>Send challenge details</button></div>
+    <div class="row" style="margin-top:6px"><input id="evFile" type="file" style="flex:1 1 220px"><button class="secondary" id="submitEvidence" disabled>Submit evidence</button><button class="secondary" id="sendDetails" disabled>Send challenge details (optional)</button></div>
     <h2 style="margin-top:14px">Release payouts</h2>
     <p>Splits the whole pool equally between everyone on the final list. You must type PAY to confirm. Only possible once.</p>
     <div class="row"><button id="release" disabled>Release payouts</button><span id="relInfo" class="mono"></span></div>
@@ -145,7 +145,7 @@ const OWNER_BUTTONS = ["register", "refundDeclined", "postList", "addAtt", "remo
 // Since EIP-7825 (Fusaka) one Ethereum transaction may use at most 2^24 gas, whatever the block limit:
 // a higher gas limit is refused by the network, so the 30% margin never goes above it.
 const TX_GAS_CAP = 16_777_216n;
-const ANYONE_BUTTONS = ["matchOne", "resolveOne", "release", "fundAppeal", "deliverRuling", "collectAppeal", "submitEvidence", "sendDetails"]; // any wallet can do these
+const ANYONE_BUTTONS = ["matchOne", "resolveOne", "publishCase", "release", "fundAppeal", "deliverRuling", "collectAppeal", "submitEvidence", "sendDetails"]; // any wallet can do these
 // Kleros Court v1 on Ethereum mainnet. Cases are opened through Kleros's Dispute Resolver
 // (ArbitrableProxy), the arbitrable side of every case; its arbitrator is KlerosLiquid (the court).
 //  - Dispute Resolver, with the case's local ID (challenges(staker).localDisputeID): evidence,
@@ -302,7 +302,8 @@ async function init() {
   // (a local chain mines a block only per transaction: no cached block number, which could leave a
   // receipt waiting for a block that never comes, and no 4-second wait between polls)
   const local = chain.chainId !== MAINNET;
-  rp = new ethers.JsonRpcProvider(chain.rpc, chain.chainId, { staticNetwork: true, ...(local ? { cacheTimeout: -1, pollingInterval: 250 } : {}) });
+  // (no cache on mainnet either: a balance read right after a transaction must not be the one from before it)
+  rp = new ethers.JsonRpcProvider(chain.rpc, chain.chainId, { staticNetwork: true, cacheTimeout: -1, ...(local ? { pollingInterval: 250 } : {}) });
 
   // anything but Ethereum mainnet is a local test chain (the tests); the rehearsal runs on mainnet
   mode = cfg.mode === "rehearsal" ? "rehearsal" : local ? "local" : "live";
@@ -322,7 +323,7 @@ async function init() {
     ["List by", end ? when(end) + " (if no list by then, guests can withdraw their own deposit)" : "missing in config", end ? "" : "err"],
     ["Challenges", `Kleros Court${k.court === 0 ? " (General Court)" : `, court ${k.court}`}, ${k.jurors} jurors, through Kleros's Dispute Resolver ${short(k.disputeResolver)}`],
     ["Juror policy", k.policyURI || "(not set yet)", k.policyURI ? "mono" : "warn"],
-    ["Case description", k.metaEvidenceURI || "(not set yet)", k.metaEvidenceURI ? "mono" : "warn"],
+    ["Case description", `one per Kleros case, written by the contract from ${k.metaEvidenceTemplate} (names the event, the challenged wallet and the contract)`],
     ["Owner", "the wallet you connect"],
     ...(settings.deployError ? [["Ready to deploy?", "No: " + settings.deployError, "err"]] : []),
   ]);
@@ -505,7 +506,7 @@ async function deploy() {
   const s = await getJson("/settings.json");
   if (s.configHash !== ethers.id(cfgText)) throw new Error("The console's settings changed since this page was opened. Reload the page (and check the banner) before continuing.");
   if (s.error || s.deployError) throw new Error(`Not deployed: ${s.error || s.deployError} Ask Claude to fix the config.`);
-  const [depositWei, name, , startS, endS, [resolver, extraData, metaEvidenceURI, policyURI]] = s.deployArgs;
+  const [depositWei, name, , startS, endS, [resolver, extraData, pieces, slots, policyURI]] = s.deployArgs;
   const start = Number(startS), end = Number(endS);
   if (end < start + MIN_WINDOW) throw new Error("The settlement deadline must be at least 7 days after the event start. Ask Claude to fix the config.");
   if (cfg.owner && cfg.owner.toLowerCase() !== account.toLowerCase())
@@ -514,9 +515,9 @@ async function deploy() {
   if (s.knownKleros && resolver.toLowerCase() !== s.knownKleros.disputeResolver.toLowerCase())
     throw new Error(`The config names ${resolver} as Kleros's Dispute Resolver, not the known address ${s.knownKleros.disputeResolver}. Ask Claude to fix the config.`);
   const k = s.kleros;
-  if (!confirm(`Deploy a new deposit contract on ${chain.name}?\n\nMode: ${MODE_NAMES[mode]}\nEvent name: ${name}\nDeposit: ${ethers.formatEther(depositWei)} ETH per guest\nAttendance list from: ${ist(start)} (event start)\nList by: ${ist(end)} (if no list by then, each guest can withdraw their own deposit)\nJuror policy: ${policyURI || "(none)"}\nCase description for jurors: ${metaEvidenceURI || "(none)"}\nChallenges: Kleros Court, ${k.court === 0 ? "General Court" : "court " + k.court}, ${k.jurors} jurors (Dispute Resolver ${short(resolver)})\nOwner: ${account}\n\nNone of this can be changed after the deploy.`)) return;
+  if (!confirm(`Deploy a new deposit contract on ${chain.name}?\n\nMode: ${MODE_NAMES[mode]}\nEvent name: ${name}\nDeposit: ${ethers.formatEther(depositWei)} ETH per guest\nAttendance list from: ${ist(start)} (event start)\nList by: ${ist(end)} (if no list by then, each guest can withdraw their own deposit)\nJuror policy: ${policyURI || "(none)"}\nCase description for jurors: one per case, from ${k.metaEvidenceTemplate} (names the event, the challenged wallet and this contract)\nChallenges: Kleros Court, ${k.court === 0 ? "General Court" : "court " + k.court}, ${k.jurors} jurors (Dispute Resolver ${short(resolver)})\nOwner: ${account}\n\nNone of this can be changed after the deploy.`)) return;
   const f = new ethers.ContractFactory(artifact.abi, artifact.bytecode);
-  const dtx = await f.getDeployTransaction(BigInt(depositWei), name, account, start, end, [resolver, extraData, metaEvidenceURI, policyURI]);
+  const dtx = await f.getDeployTransaction(BigInt(depositWei), name, account, start, end, [resolver, extraData, pieces, slots, policyURI]);
   await checkConfigFresh(); // again: the confirm box may have stayed open a long time
   const at = Math.floor(Date.now() / 1000);
   // remembered as soon as it is sent: a timed-out deploy may still go through
@@ -549,7 +550,7 @@ async function refresh() {
     ["Registered stakers", String(count)],
     ...(state.phase >= 1 ? [["On the attendance list", String(attCount)]] : []),
     ["Deposit", eth(dep)],
-    ["Staked pool", eth(dep * count)],
+    ["Staked pool", state.phase >= 2 ? (state.phase === 2 ? "paid out" : "refunded") : eth(dep * count)],
     ["ETH in contract", eth(bal)],
     ["Unclaimed payouts", eth(owedTotal), owedTotal > 0n ? "warn" : ""],
     ...(escrow > 0n ? [["Challenge deposits held", eth(escrow)]] : []),
@@ -566,10 +567,19 @@ async function refresh() {
     ["Pending challenges", String(state.pendingCh), state.pendingCh ? "warn" : ""],
     ...(heldBack > 0n ? [["Set aside for open Kleros cases", eth(heldBack), "warn"]] : []),
   ];
+  const nowS = Math.floor(Date.now() / 1000);
   for (const ch of state.challenges) {
     let v = CH_STATES[ch.state];
-    if (ch.state === 1) v += `, match by ${when(ch.matchEndsAt)}`;
+    if (ch.state === 1) v = nowS <= ch.matchEndsAt ? `${v}, match by ${when(ch.matchEndsAt)}` : "nobody matched in time: counts as attended (Settle, or it settles at payout)";
     if (ch.state >= 2 && ch.matched) v = [v + ", ", link(caseUrl(ch.disputeID), `Kleros case #${ch.disputeID} ↗`)];
+    if (ch.state === 1 || ch.state === 2) {
+      const d = await caseDescription(ch.wallet).catch(() => null);
+      if (d) {
+        const note = document.createElement("span");
+        caseDescNote(note, d.uri);
+        v = [v].flat().concat(", ", link(settings.kleros.ipfsGateway + d.uri, "case description ↗"), note);
+      }
+    }
     if (ch.state === 2) {
       ch.appeal = await appealInfo(ch).catch(() => null);
       v = [v].flat().concat(". " + describeAppeal(ch.appeal));
@@ -766,22 +776,21 @@ async function matchOne() {
   await refresh();
   const ch = state.challenges.find((x) => x.wallet === w);
   if (!ch || ch.state !== 1) throw new Error(`${short(w)} has no challenge waiting for a match.`);
-  // every case uses the contract's case description (metaevidence); without one, real jurors get no question
-  const noMeta = !(await new ethers.Contract(contractAddr(), artifact.abi, rp).metaEvidenceURI());
-  const metaWarn = noMeta ? `\n\n⚠ This contract has no case description for the jurors (it was deployed without kleros.metaEvidenceURI).${chain.chainId === MAINNET ? " This opens a REAL Kleros case on Ethereum mainnet that jurors cannot understand, and the Kleros fee is spent anyway. In a rehearsal, better let the match window run out instead." : ""}` : "";
-  const typed = prompt(`Dispute the claim of ${w} that they attended?\nYou send ${eth(ch.deposit)}. Kleros jurors decide (about 3 weeks per round). Their share of the pool is set aside until the final ruling; everyone else is paid as usual.\nIf jurors say they attended, they get your deposit; if not, you get theirs (minus the Kleros fee).${metaWarn}\n\nType DISPUTE to continue.`);
+  const rehearsal = mode === "rehearsal" ? "\n\nREHEARSAL: this still opens a REAL Kleros case on Ethereum mainnet (real jurors, the fee is spent, about 3 weeks)." : "";
+  const typed = prompt(`Dispute the claim of ${w} that they attended?\nYou send ${eth(ch.deposit)}. Kleros jurors decide (about 3 weeks per round). Their share of the pool is set aside until the final ruling; everyone else is paid as usual.\nIf jurors say they attended, they get your deposit; if not, you get theirs (minus the Kleros fee).${rehearsal}\n\nType DISPUTE to continue.`);
   if (typed !== "DISPUTE") { log("Dispute not sent."); return; }
   await klerosContracts(true); // the case opens at the contract's Dispute Resolver: check it is Kleros's
+  // the jurors read the case description on IPFS: save it there before the case opens
+  try { await publishCaseOf(w); }
+  catch (e) {
+    log("✗ " + explain(e), "err");
+    if (!confirm(`The case description for ${w} could not be saved on IPFS, so the jurors could not read it yet.\n\nSend the dispute anyway? You (or anyone) can save it later with "Publish case description". Cancel to try again in a minute.`)) { log("Dispute not sent."); return; }
+  }
   const r = await sendTx("dispute a challenge", { ...call("matchChallenge", [w]), value: ch.deposit });
   const m = parsed(r).find((x) => x.name === "ChallengeMatched");
   const id = m ? m.args.arbitratorDisputeID : null;
-  log(`✅ Sent to Kleros${id === null ? "" : `: case #${id}, ${caseUrl(id)}`}.`, "ok");
+  log(`✅ Sent to Kleros${id === null ? "" : `: case #${id}, ${caseUrl(id)}`}. The jurors read its case description, which names ${w}.`, "ok");
   await refresh();
-  // the jurors only learn from evidence which wallet the case is about: offer it right away
-  if (confirm(`Send the "Challenge details" to the jurors of Kleros case #${id ?? "?"} now?\n\nThey say which wallet the case is about (${w}), that it challenged the attendance list, and where to check it on Etherscan. Jurors need this to decide. It is public and permanent. One more confirmation in your wallet.`)) {
-    try { await sendChallengeDetails(w); }
-    catch (e) { log("✗ " + explain(e) + '\nThe dispute itself went through. Send the details later with "Send challenge details".', "err"); }
-  } else log('Challenge details not sent. Send them soon with "Send challenge details": jurors need to know which wallet the case is about.', "warn");
 }
 
 async function resolveOne() {
@@ -986,12 +995,12 @@ function ipfsPathFrom(j) {
 }
 // Pins a file on IPFS through Kleros's upload service (the one Kleros's own apps use), so the court
 // site can show it to jurors. Returns its "/ipfs/…" path.
-async function uploadToIpfs(blob, filename) {
+async function uploadToIpfs(blob, filename, operation = "evidence") {
   const fd = new FormData();
   fd.append("data", blob, filename);
   const fail = (why) => new Error(`Could not upload "${filename}" to IPFS through Kleros's upload service (${why}). Nothing was sent to Kleros. Try again in a minute; if it keeps failing, ask Claude.`);
   let r;
-  try { r = await fetch(`${settings.kleros.ipfsUpload}?operation=evidence&pinToGraph=false`, { method: "POST", body: fd }); }
+  try { r = await fetch(`${settings.kleros.ipfsUpload}?operation=${operation}&pinToGraph=false`, { method: "POST", body: fd }); }
   catch { throw fail("no connection"); }
   if (!r.ok) throw fail(`error ${r.status}`);
   let j;
@@ -999,6 +1008,59 @@ async function uploadToIpfs(blob, filename) {
   const p = ipfsPathFrom(j);
   if (!p) throw fail("no IPFS address in its answer");
   return p;
+}
+
+// ------------------------------------------------------------ each case's own description (metaevidence)
+// The contract writes it from the template fixed at deploy (event, challenged wallet, deposit contract):
+// caseMetaEvidence(wallet) gives the text and its IPFS address, which the contract computes the way
+// `ipfs add` does (and Kleros's upload service) and sends to Kleros when the challenge is matched. The
+// jurors read it from IPFS, so it must be saved there: the console does it before a dispute, and on
+// "Publish case description". Saving the same text again changes nothing.
+function cidV0(bytes) {
+  const varint = (n) => { const o = []; while (n >= 0x80) { o.push((n & 0x7f) | 0x80); n = Math.floor(n / 128); } o.push(n); return o; };
+  const size = varint(bytes.length);
+  const file = ethers.getBytes(ethers.concat([new Uint8Array([0x08, 0x02, 0x12, ...size]), bytes, new Uint8Array([0x18, ...size])]));
+  const node = ethers.concat([new Uint8Array([0x0a, ...varint(file.length)]), file]);
+  return ethers.encodeBase58(ethers.concat(["0x1220", ethers.sha256(node)]));
+}
+async function caseDescription(w) {
+  const [text, uri] = await new ethers.Contract(contractAddr(), artifact.abi, rp).caseMetaEvidence(w);
+  const bytes = ethers.toUtf8Bytes(text);
+  if ("/ipfs/" + cidV0(bytes) !== uri) throw new Error(`The contract's case description for ${w} does not match its IPFS address ${uri}. Ask Claude.`);
+  return { bytes, uri };
+}
+const casesOnIpfs = new Set(); // IPFS addresses seen on IPFS (or saved there) since the page was opened
+async function caseOnIpfs(uri) {
+  if (casesOnIpfs.has(uri)) return true;
+  try {
+    const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 8000);
+    const r = await fetch(settings.kleros.ipfsGateway + uri, { signal: ctl.signal });
+    clearTimeout(t);
+    if (r.ok && "/ipfs/" + cidV0(new Uint8Array(await r.arrayBuffer())) === uri) { casesOnIpfs.add(uri); return true; }
+  } catch {}
+  return false;
+}
+async function publishCaseOf(w) {
+  const { bytes, uri } = await caseDescription(w);
+  const where = settings.kleros.ipfsGateway + uri;
+  if (await caseOnIpfs(uri)) { log(`Case description for ${short(w)} is on IPFS: ${where}`); return uri; }
+  const p = await uploadToIpfs(new Blob([bytes], { type: "application/json" }), "metaevidence.json", "file");
+  if (p !== uri) throw new Error(`Kleros's upload service saved the case description at ${p}, not at ${uri} where the contract points. Ask Claude.`);
+  casesOnIpfs.add(uri);
+  log(`✅ Case description for ${short(w)} saved on IPFS: ${where}`, "ok");
+  return uri;
+}
+async function publishCase() {
+  const w = chTarget();
+  await refresh();
+  const ch = state.challenges.find((x) => x.wallet === w);
+  if (!ch) throw new Error(`${short(w)} has not challenged the list.`);
+  await publishCaseOf(w);
+  await refresh();
+}
+// in the challenge list: whether the case description is on IPFS yet (checked in the background)
+function caseDescNote(el, uri) {
+  caseOnIpfs(uri).then((ok) => { el.textContent = ok ? " (on IPFS ✓)" : ' (⚠ not on IPFS yet: press "Publish case description")'; el.className = ok ? "" : "warn"; });
 }
 
 // Uploads the ERC-1497 evidence JSON and adds it to the case: submitEvidence(localDisputeID, path)
@@ -1036,8 +1098,8 @@ async function submitEvidence() {
   for (const id of ["evTitle", "evText", "evLink", "evFile"]) $(id).value = "";
 }
 
-// "Challenge details": which wallet the case is about and where to check it. The case description
-// (metaevidence) is the same for every case, so this is how jurors learn who is concerned.
+// "Challenge details" (optional): the case description already names the wallet and the contract; this
+// evidence adds the Kleros case number and the transaction links.
 async function challengeDetails(ch) {
   const c = new ethers.Contract(contractAddr(), artifact.abi, rp);
   // one search over all of this contract's events (a few hundred at most), then pick the three needed;
@@ -1071,7 +1133,7 @@ async function sendChallengeDetails(w) {
 async function sendDetails() {
   await preflight();
   const w = chTarget();
-  if (!confirm(`Send the "Challenge details" for ${w} to the Kleros jurors?\n\nThey say which wallet the case is about and where to check it on Etherscan. Send them once per case (the console sends them right after a dispute when you say yes). It is public and permanent.`)) { log("Challenge details not sent."); return; }
+  if (!confirm(`Send the "Challenge details" for ${w} to the Kleros jurors?\n\nOptional: the case description already names the event and this wallet. The details add the Kleros case number and the transaction links on Etherscan. Send them at most once per case. They are public and permanent.`)) { log("Challenge details not sent."); return; }
   await sendChallengeDetails(w);
 }
 
@@ -1141,6 +1203,7 @@ function applyButtons() {
   if (!listed || now > state.windowEnd) $("addAtt").disabled = true;
   if (!listed) $("matchOne").disabled = true;
   if (!state.challenges.some((x) => x.state === 1 || x.state === 2)) $("resolveOne").disabled = true;
+  if (!state.challenges.some((x) => x.state === 1 || x.state === 2)) $("publishCase").disabled = true;
   const disputed = state.challenges.some((x) => x.state === 2);
   if (!disputed) for (const id of ["fundAppeal", "deliverRuling", "submitEvidence", "sendDetails"]) $(id).disabled = true;
   if (!state.challenges.some((x) => x.matched)) $("collectAppeal").disabled = true;
@@ -1168,7 +1231,7 @@ const wrap = (fn) => async () => {
     if (account) { $("deploy").disabled = false; $("refresh").disabled = false; }
   }
 };
-for (const [id, fn] of Object.entries({ connect, deploy, refresh, register, refundDeclined, removeOne, refundOne, returnTokens, postList, addAtt, matchOne, resolveOne, release, fundAppeal, deliverRuling, collectAppeal, submitEvidence, sendDetails, sweep, cancel })) $(id).onclick = wrap(fn);
+for (const [id, fn] of Object.entries({ connect, deploy, refresh, register, refundDeclined, removeOne, refundOne, returnTokens, postList, addAtt, matchOne, resolveOne, publishCase, release, fundAppeal, deliverRuling, collectAppeal, submitEvidence, sendDetails, sweep, cancel })) $(id).onclick = wrap(fn);
 init().catch((e) => log(explain(e), "err"));
 </script>
 </body>

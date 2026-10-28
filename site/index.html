@@ -282,12 +282,13 @@ const CONFIG = {
 };
 /*END CONFIG*/
 const $ = (id) => document.getElementById(id);
-// The deposit contract (TruthPaysKickback v6)
+// The deposit contract (TruthPaysKickback v7)
 const SEL = { depositAmount: "0x419759f5", deposit: "0xd0e30db0", eventStart: "0x202887e7", claimDeadline: "0x3ba86c44", phase: "0xb1c9fe6e",
   stakerCount: "0xdff69787", status: "0x645b8b1b", owed: "0xdf18e047", claim: "0x1e83409a", emergencyWithdraw: "0x6ff1c9bc",
   attended: "0x48c17fb6", challengeEndsAt: "0x765be13f", challenges: "0x08b43a19", challengeDeposit: "0x0d13fd7b", challengers: "0x8f59ca25",
   challenge: "0xd2ef7398", matchChallenge: "0x6d6df455", resolveChallenge: "0x32064dac",
-  disputeResolver: "0xf5a3f4af", arbitrator: "0x6cc6cde1", appealStatus: "0x17e411d5", releasePayouts: "0x766f8426" };
+  disputeResolver: "0xf5a3f4af", arbitrator: "0x6cc6cde1", appealStatus: "0x17e411d5", releasePayouts: "0x766f8426",
+  caseMetaEvidence: "0x6b4249be" }; // caseMetaEvidence(address staker) -> (string text, string uri): the case's own description
 // Kleros Court v1 on Ethereum mainnet. Evidence, appeals and appeal withdrawals go to Kleros's Dispute Resolver
 // (ArbitrableProxy) with the case's local ID, straight from the guest's own wallet, never through the deposit contract,
 // so Kleros pays refunds and rewards back to the wallet that sent the money.
@@ -752,8 +753,9 @@ async function loadOpenChallenges() {
   for (const a of list) {
     const ch = await call(c, SEL.challenges + pad(a));
     const st = Number(wordAt(ch, 0));
-    if (st === 1) rows.push(`<li><span class="mark">·</span><span class="mono">${esc(a)}</span><span>&nbsp;waiting for a match until ${ist(wordAt(ch, 2))}</span></li>`);
-    if (st === 2) rows.push(`<li><span class="mark">·</span><span class="mono">${esc(a)}</span><span>&nbsp;${caseA(wordAt(ch, 4))}</span></li>`);
+    const ends = Number(wordAt(ch, 2));
+    const what = st === 2 ? caseA(wordAt(ch, 4)) : ends >= Math.floor(Date.now() / 1000) ? `waiting for a match until ${ist(ends)}` : "nobody matched in time: counts as attended";
+    if (st === 1 || st === 2) rows.push(`<li><span class="mark">·</span><span><span class="mono">${esc(a)}</span> ${what}</span></li>`);
   }
   $("open-ch-list").innerHTML = rows.join("");
   $("open-ch").hidden = !rows.length;
@@ -778,6 +780,56 @@ async function klerosContracts() {
   const [r, a] = await Promise.all([call(CONFIG.contract, SEL.disputeResolver), call(CONFIG.contract, SEL.arbitrator)]);
   return (klerosAt = { proxy: addrAt(r, 0), court: addrAt(a, 0) });
 }
+
+// ---- each Kleros case's own description (ERC-1497 metaevidence), written by the deposit contract: caseMetaEvidence(staker)
+// returns the text, which names the event and the wallet, and its IPFS address. The contract computes that address
+// the way `ipfs add` does (and so Kleros's upload service), and sends it to Kleros when the challenge is matched.
+// The text must be on IPFS for the jurors to read it: the page saves it there when a guest challenges, before a
+// match, and whenever someone checks a wallet with an open challenge. Saving the same text again changes nothing.
+const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+function returnedBytes(hex, i) { // the i-th string or bytes value an eth_call returned
+  const h = (hex || "").replace(/^0x/, "");
+  const off = Number(big("0x" + h.slice(i * 64, i * 64 + 64))) * 2;
+  const len = Number(big("0x" + h.slice(off, off + 64)));
+  const out = new Uint8Array(len);
+  for (let j = 0; j < len; j++) out[j] = parseInt(h.substr(off + 64 + j * 2, 2), 16);
+  return out;
+}
+// "Qm…": the CIDv0 `ipfs add` gives these bytes (one block: a dag-pb node holding a UnixFS file), as in the contract
+async function cidV0(bytes) {
+  const varint = (n) => { const o = []; while (n >= 0x80) { o.push((n & 0x7f) | 0x80); n = Math.floor(n / 128); } o.push(n); return o; };
+  const join = (...parts) => { const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0)); let k = 0; for (const p of parts) { out.set(p, k); k += p.length; } return out; };
+  const size = varint(bytes.length);
+  const file = join([0x08, 0x02, 0x12, ...size], bytes, [0x18, ...size]);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", join([0x0a, ...varint(file.length)], file)));
+  let x = 0x1220n, s = "";
+  for (const b of digest) x = (x << 8n) | BigInt(b);
+  while (x > 0n) { s = B58[Number(x % 58n)] + s; x /= 58n; }
+  return s;
+}
+async function caseDescription(staker) {
+  const r = await call(CONFIG.contract, SEL.caseMetaEvidence + pad(staker));
+  const text = returnedBytes(r, 0), uri = new TextDecoder().decode(returnedBytes(r, 1));
+  if ("/ipfs/" + (await cidV0(text)) !== uri) throw new Error("the case description doesn't match its IPFS address");
+  return { text, uri };
+}
+const casesSaved = new Set();
+// Makes sure the case description of `staker` is on IPFS; resolves to its address ("/ipfs/Qm…"), or throws.
+async function saveCaseDescription(staker) {
+  const { text, uri } = await caseDescription(staker);
+  if (casesSaved.has(uri)) return uri;
+  try {
+    const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 8000);
+    const r = await fetch(CONFIG.ipfsGateway + uri, { signal: ctl.signal });
+    clearTimeout(t);
+    if (r.ok && "/ipfs/" + (await cidV0(new Uint8Array(await r.arrayBuffer()))) === uri) { casesSaved.add(uri); return uri; }
+  } catch {}
+  const p = await ipfsUpload(new Blob([text], { type: "application/json" }), "metaevidence.json", "file");
+  if (p !== uri) throw new Error(`the upload service saved it at ${p}, not at ${uri}`);
+  casesSaved.add(uri);
+  return uri;
+}
+const caseDescA = (uri) => `<a href="${esc(CONFIG.ipfsGateway + uri)}" target="_blank" rel="noopener">case description</a>`;
 
 // ---- evidence: an ERC-1497 JSON file { name, description, fileURI? } saved on IPFS through Kleros's upload service,
 // then submitEvidence(localDisputeID, "/ipfs/<cid>/evidence.json") on the Dispute Resolver from the guest's wallet
@@ -830,7 +882,7 @@ async function sendEvidence() {
   let proxy;
   try { ({ proxy } = await klerosContracts()); }
   catch (e) { setNote(out, "bad", `Couldn't reach Ethereum mainnet right now (${esc(e.message)}). Nothing was sent. Try again in a minute.`); return; }
-  // the case is about the staker, which the jurors can't see in the shared case description: say it in every piece of evidence
+  // the case description names the wallet too; repeating it keeps each piece of evidence clear on its own
   const description = `${text}\n\n(Case about the guest wallet ${evCase.staker}, deposit contract ${CONFIG.contract} on Ethereum mainnet.)`;
   let uri, fileURI = link ? (/^https:\/\//.test(link) ? link : toIpfsPath(link) || link) : "";
   try {
@@ -992,6 +1044,12 @@ async function lookup() {
     const sentLink = latest ? ` Deposit: ${txA(latest)}.` : "";
     const now = Math.floor(Date.now() / 1000);
     const kleros = ch.state >= 2 ? ` ${caseA(ch.caseId)} (evidence goes there).` : "";
+    // an open challenge: link its case description and make sure it is on IPFS for the jurors
+    let caseDesc = "";
+    if (ch.state === 1 || ch.state === 2) {
+      try { caseDesc = ` Jurors read this ${caseDescA((await caseDescription(addr)).uri)}.`; } catch {}
+      saveCaseDescription(addr).catch(() => {});
+    }
     let kind = "", text = "", ruled = false;
     if (status === 0) {
       if (phase !== PHASE.Open) { text = "No confirmed spot for this wallet."; }
@@ -1009,17 +1067,29 @@ async function lookup() {
         const cost = big(await call(c, SEL.challengeDeposit));
         kind = "warn";
         text = `Not on the attendance list. If you were at the event, you can challenge until ${ist(windowEnd)} with a deposit of ${esc(eth(cost))} (the Kleros fee). If nobody matches it within 1 day, you count as attended and get the ETH back. If someone does, Kleros jurors decide.`;
-        showAction(`Challenge (${eth(cost)})`, () => sendTx({ onlyFrom: addr, data: SEL.challenge, value: cost, out, done: "Challenge sent. Check back here: if nobody matches it within 1 day, you count as attended." }));
+        showAction(`Challenge (${eth(cost)})`, async () => {
+          if (!(await sendTx({ onlyFrom: addr, data: SEL.challenge, value: cost, out, done: "Challenge sent. Check back here: if nobody matches it within 1 day, you count as attended." }))) return;
+          loadOpenChallenges().catch(() => {});
+          // the jurors' case description (it names the event and this wallet) goes on IPFS now, before anyone matches
+          try { const uri = await saveCaseDescription(addr); out.insertAdjacentHTML("beforeend", ` The ${caseDescA(uri)} jurors would read is saved on IPFS.`); }
+          catch (e) { out.insertAdjacentHTML("beforeend", ` (Couldn't save the case description on IPFS yet: ${esc(e.message)}. Check this wallet again later and it will retry.)`); }
+        });
       } else if (ch.state === 0) { kind = "bad"; text = `Not on the attendance list, and the challenge window closed at ${ist(windowEnd)}. This spot counts as a no-show.`; }
       else if (ch.state === 1 && now <= ch.matchEndsAt) {
         kind = "warn";
-        text = `Challenge open: this guest says they attended. If nobody matches the ${esc(eth(ch.deposit))} deposit by ${ist(ch.matchEndsAt)}, they count as attended. If you know they were not there, you can dispute it: you send the same deposit and Kleros jurors decide (the winner gets the remaining ETH; about 3 weeks, and this guest's share is set aside until the final ruling).`;
-        showAction(`Dispute this claim (${eth(ch.deposit)})`, () => sendTx({ data: SEL.matchChallenge + pad(addr), value: ch.deposit, out, done: "Dispute created on Kleros. Check this wallet again to send your evidence: say what shows this guest was not there." }));
+        text = `Challenge open: this guest says they attended. If nobody matches the ${esc(eth(ch.deposit))} deposit by ${ist(ch.matchEndsAt)}, they count as attended. If you know they were not there, you can dispute it: you send the same deposit and Kleros jurors decide (the winner gets the remaining ETH; about 3 weeks, and this guest's share is set aside until the final ruling).${caseDesc}`;
+        showAction(`Dispute this claim (${eth(ch.deposit)})`, async () => {
+          // the case description must be readable on IPFS before the case opens
+          setNote(out, "", "Saving the case description on IPFS (Kleros's file storage)…");
+          try { await saveCaseDescription(addr); }
+          catch (e) { setNote(out, "bad", `Couldn't save the case description on IPFS, so nothing was sent: ${esc(e.message)}. Try again in a minute.`); return; }
+          if (await sendTx({ data: SEL.matchChallenge + pad(addr), value: ch.deposit, out, done: "Dispute created on Kleros. Check this wallet again to send your evidence: say what shows this guest was not there." })) loadOpenChallenges().catch(() => {});
+        });
       } else if (ch.state === 1) {
         kind = "good"; text = "Nobody matched the challenge in time, so this guest counts as attended. Anyone can settle it now (it also happens automatically at payout).";
         showAction("Settle challenge", () => sendTx({ data: SEL.resolveChallenge + pad(addr), out, done: "Settled: on the attendance list, and the ETH deposit went back." }));
       } else if (ch.state === 2) {
-        kind = "warn"; text = `In a Kleros dispute.${kleros} ${phase === PHASE.Finalized ? "Everyone else has been paid; this guest's share is set aside until the final ruling." : "If payouts are released first, this guest's share is set aside until the final ruling."}`;
+        kind = "warn"; text = `In a Kleros dispute.${kleros}${caseDesc} ${phase === PHASE.Finalized ? "Everyone else has been paid; this guest's share is set aside until the final ruling." : "If payouts are released first, this guest's share is set aside until the final ruling."}`;
         const settle = () => sendTx({ data: SEL.resolveChallenge + pad(addr), out, done: "Settled according to the Kleros ruling." });
         let a = null;
         try { a = await caseInfo(ch, addr); } catch {}

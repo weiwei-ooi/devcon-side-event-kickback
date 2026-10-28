@@ -6,6 +6,9 @@
 //   node scripts/owner.mjs status                        (read-only, no key needed)
 //   node scripts/owner.mjs challenges                    (read-only list, with Kleros case links)
 //   node scripts/owner.mjs case --staker 0x…             (read-only: appeal period and costs of a Kleros case)
+//   node scripts/owner.mjs case-description --staker 0x… (read-only: writes the case's description to
+//                                                         out/case-<wallet>.json and prints its IPFS path; publish
+//                                                         that exact file to IPFS, e.g. Kleros's upload service)
 //   PRIVATE_KEY=0x… node scripts/owner.mjs register        [--file out/new-stakers.json]
 //   PRIVATE_KEY=0x… node scripts/owner.mjs refund-declined [--file out/refunds.json]
 //   PRIVATE_KEY=0x… node scripts/owner.mjs refund --to 0x… --amount 0.005   (spare ETH only)
@@ -19,7 +22,7 @@
 //   PRIVATE_KEY=0x… node scripts/owner.mjs sweep --to 0x…
 import fs from "node:fs";
 import { ethers } from "ethers";
-import { args, loadConfig, provider, loadAbi, fmt, fmtEth, klerosConfig, gasLimitFor, PHASES } from "./lib.mjs";
+import { args, loadConfig, provider, loadAbi, fmt, fmtEth, klerosConfig, gasLimitFor, ipfsPathOf, PHASES } from "./lib.mjs";
 
 const CHALLENGE_STATES = ["None", "Waiting for a match", "In a Kleros dispute", "Resolved"];
 
@@ -158,6 +161,18 @@ switch (cmd) {
       appeal: end ? { from: iso(start), until: iso(end), losingSideUntil: iso(loserEnd), costAttended: fmtEth(costAttended), costAbsent: fmtEth(costAbsent) }
         : "not in the appeal period",
     });
+    break;
+  }
+  case "case-description": {
+    if (!a.staker) throw new Error("--staker 0x… is required");
+    const staker = ethers.getAddress(a.staker);
+    const [text, uri] = await c.caseMetaEvidence(staker);
+    if (ipfsPathOf(text) !== uri) throw new Error(`The contract's IPFS path ${uri} does not match its text (${ipfsPathOf(text)}). Stopped.`);
+    const out = a.out ?? "out";
+    fs.mkdirSync(out, { recursive: true });
+    const file = `${out}/case-${staker}.json`;
+    fs.writeFileSync(file, text); // exactly the contract's bytes: the IPFS path depends on every one
+    console.log(`${file}\n${uri}\n${klerosConfig(cfg).ipfsGateway}${uri}`);
     break;
   }
   case "resolve":

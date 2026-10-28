@@ -2,8 +2,11 @@
 // (from the contract's own Deposited events), chunked log scans with retries.
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse } from "csv-parse/sync";
 import { ethers } from "ethers";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 // A deposit is the contract's own Deposited event (receive() or deposit()): `from` is the wallet that
 // sent the ETH (a Safe or smart wallet shows up as its own address), `amount` is in wei.
@@ -152,17 +155,114 @@ export const KLEROS_PERIODS = ["evidence", "commit", "vote", "appeal", "executio
 /** "/ipfs/<CIDv0 or CIDv1>" with an optional "/file" path, as Kleros expects for policies and (meta)evidence. */
 export const IPFS_PATH_RE = /^\/ipfs\/(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{58,})(\/[^\s]+)?$/;
 export const isIpfsPath = (v) => IPFS_PATH_RE.test(String(v ?? ""));
-// Pins that describe an earlier version (Arbitrum One, USDC, Kleros v2) and must not be used any more.
-export const STALE_PINS = ["QmZMDkYNHVH5bZNPwNnav1ZoziRgL57zE6pTmwo5dqGGGg"];
+// Pins that describe an earlier version and must not be used any more: the policy for Arbitrum One,
+// USDC and Kleros v2; the v6 policy and the v6 metaevidence shared by every case (wallet not named).
+export const STALE_PINS = [
+  "QmZMDkYNHVH5bZNPwNnav1ZoziRgL57zE6pTmwo5dqGGGg",
+  "QmWzCbhNEaySZ8EtFgPKuq4AYCtJba962S4VT77AGdw25B",
+  "QmXAtWkxqrYPhriV4s1r7cQktEfF3498M6tmhKjXtvFUgU",
+];
+
+// ---------------------------------------------------------------- case description (per-case metaevidence)
+// Each Kleros case gets its own ERC-1497 metaevidence, written by the contract from a template fixed at
+// deployment (kleros.metaEvidenceTemplate, default docs/metaevidence.template.json). Placeholders:
+//  - filled here, before the deploy: {{eventName}}, {{deposit}} ("0.01 ETH"), {{policyURI}}, {{owner}}
+//    (the organiser's wallet, config "owner"), {{explorer}} ("https://etherscan.io");
+//  - filled by the contract for each case: {{wallet}} (the challenged wallet) and {{contract}} (the
+//    deposit contract), both as checksummed addresses. The template is passed as the text pieces
+//    between them plus one slot byte per value (1 wallet, 2 contract).
+export const SLOT = { wallet: 1, contract: 2 };
+const RUNTIME_SLOTS = { "{{wallet}}": SLOT.wallet, "{{contract}}": SLOT.contract };
+export const MAX_METAEVIDENCE_BYTES = 262_144; // one IPFS block: the CID formula below (and the contract's) needs that
+export const MAX_TEMPLATE_BYTES = 24_575; // the contract keeps abi.encode(pieces, slots) as contract code (24 KB limit)
+export const DEFAULT_METAEVIDENCE_TEMPLATE = "docs/metaevidence.template.json";
+
+/** The CIDv0 ("Qm...") `ipfs add` gives these bytes with its default settings, for up to one block
+ * (256 KiB): sha256 of a dag-pb node holding a UnixFS file, as a base58 multihash. Same as the contract. */
+export function ipfsCidV0(data) {
+  const bytes = typeof data === "string" ? ethers.toUtf8Bytes(data) : ethers.getBytes(data);
+  if (bytes.length > MAX_METAEVIDENCE_BYTES) throw new Error("More than one IPFS block (256 KiB)");
+  const varint = (n) => { const o = []; while (n >= 0x80) { o.push((n & 0x7f) | 0x80); n >>>= 7; } o.push(n); return o; };
+  const size = varint(bytes.length);
+  const file = ethers.concat([new Uint8Array([0x08, 0x02, 0x12, ...size]), bytes, new Uint8Array([0x18, ...size])]);
+  const node = ethers.concat([new Uint8Array([0x0a, ...varint(ethers.getBytes(file).length)]), file]);
+  return ethers.encodeBase58(ethers.concat(["0x1220", ethers.sha256(node)]));
+}
+/** "/ipfs/<CIDv0>" of a text, as the contract's caseMetaEvidence computes it. */
+export const ipfsPathOf = (text) => "/ipfs/" + ipfsCidV0(text);
+
+/** A case description from the template pieces: what the contract's caseMetaEvidence(wallet) returns. */
+export function renderCase({ pieces, slots }, wallet, contract) {
+  const values = ethers.getBytes(slots);
+  let out = pieces[0];
+  values.forEach((v, i) => {
+    out += ethers.getAddress(v === SLOT.wallet ? wallet : contract) + pieces[i + 1];
+  });
+  return out;
+}
+
+/**
+ * The case description template for the deploy: reads kleros.metaEvidenceTemplate, fills the
+ * deploy-time placeholders and splits it at {{wallet}} / {{contract}}. Checks that a sample case is
+ * valid ERC-1497 JSON that names the wallet, points to the juror policy and fits one IPFS block.
+ * Returns { file, pieces, slots (hex), sample (a case for sample addresses) }.
+ */
+export function caseTemplate(cfg, owner) {
+  const k = cfg.kleros ?? {};
+  const file = path.resolve(ROOT, k.metaEvidenceTemplate || DEFAULT_METAEVIDENCE_TEMPLATE);
+  let raw;
+  try { raw = fs.readFileSync(file, "utf8"); } catch { throw new Error(`Case description template not found: ${file} ("kleros.metaEvidenceTemplate")`); }
+  const organiser = cfg.owner && ethers.isAddress(cfg.owner) ? ethers.getAddress(cfg.owner) : owner && owner !== ethers.ZeroAddress ? ethers.getAddress(owner) : "";
+  // values go inside JSON strings, so they are escaped as JSON
+  const deployTime = {
+    "{{eventName}}": cfg.eventName ?? "Truth Pays",
+    "{{deposit}}": `${ethers.formatEther(cfg.depositUnits)} ${SYMBOL}`,
+    "{{policyURI}}": k.policyURI ?? "",
+    "{{owner}}": organiser,
+    "{{explorer}}": cfg.explorer ?? "",
+  };
+  const text = raw.replace(/\{\{\w+\}\}/g, (m) => {
+    if (m in RUNTIME_SLOTS) return m;
+    if (!(m in deployTime)) throw new Error(`Unknown placeholder ${m} in ${path.basename(file)}`);
+    if (m === "{{owner}}" && !organiser) throw new Error(`Set "owner" in the config: the case description (${path.basename(file)}) names the organiser's wallet`);
+    return JSON.stringify(String(deployTime[m])).slice(1, -1);
+  });
+  const pieces = [], slots = [];
+  let rest = text;
+  for (let m; (m = /\{\{(wallet|contract)\}\}/.exec(rest)); ) {
+    pieces.push(rest.slice(0, m.index));
+    slots.push(RUNTIME_SLOTS[m[0]]);
+    rest = rest.slice(m.index + m[0].length);
+  }
+  pieces.push(rest);
+  if (!slots.includes(SLOT.wallet)) throw new Error(`${path.basename(file)} must name the challenged wallet ({{wallet}})`);
+  const t = { pieces, slots: ethers.hexlify(new Uint8Array(slots)) };
+  const sampleWallet = "0x00000000000000000000000000000000000000aa", sampleContract = "0x00000000000000000000000000000000000000cc";
+  const sample = renderCase(t, sampleWallet, sampleContract);
+  if (ethers.getBytes(ethers.AbiCoder.defaultAbiCoder().encode(["string[]", "bytes"], [t.pieces, t.slots])).length > MAX_TEMPLATE_BYTES)
+    throw new Error(`${path.basename(file)} is too long: the contract can keep about 24 KB of template`);
+  let meta;
+  try { meta = JSON.parse(sample); } catch (e) { throw new Error(`${path.basename(file)} is not valid JSON once filled in: ${e.message}`); }
+  const wallet = ethers.getAddress(sampleWallet);
+  for (const key of ["title", "question"])
+    if (typeof meta[key] !== "string" || !meta[key].includes(wallet)) throw new Error(`${path.basename(file)}: "${key}" must name the wallet ({{wallet}})`);
+  if (typeof meta.description !== "string" || !meta.description) throw new Error(`${path.basename(file)}: "description" is missing`);
+  if (!Array.isArray(meta.rulingOptions?.titles) || meta.rulingOptions.titles.length !== 2)
+    throw new Error(`${path.basename(file)}: "rulingOptions.titles" must list the 2 answers (1 attended, 2 did not attend)`);
+  if ((meta.fileURI ?? "") !== (k.policyURI ?? "")) throw new Error(`${path.basename(file)}: "fileURI" must be the juror policy ("{{policyURI}}")`);
+  return { file, ...t, sample };
+}
 
 /**
  * Kleros settings from config.kleros, with mainnet defaults: General Court (0), 3 jurors.
- * Returns { disputeResolver, arbitrator, court, jurors, extraData, policyURI, metaEvidenceURI,
+ * Returns { disputeResolver, arbitrator, court, jurors, extraData, policyURI, metaEvidenceTemplate,
  * courtUrl, ipfsUpload, ipfsGateway }. `kleros.disputeResolver` / `kleros.arbitrator` override the
  * addresses (local tests); `arbitrator` is "" when unknown (the contract's `arbitrator()` has it).
  */
 export function klerosConfig(cfg) {
   const k = cfg.kleros ?? {};
+  if (k.metaEvidenceURI)
+    throw new Error('"kleros.metaEvidenceURI" is gone (v7): each case gets its own description from "kleros.metaEvidenceTemplate". Remove it.');
   const known = KLEROS[Number(cfg.chainId)] ?? {};
   const disputeResolver = k.disputeResolver || known.disputeResolver;
   if (!disputeResolver) throw new Error('Set "kleros.disputeResolver" in the config for this network');
@@ -177,7 +277,7 @@ export function klerosConfig(cfg) {
     jurors,
     extraData: ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256"], [court, jurors]),
     policyURI: k.policyURI ?? "",
-    metaEvidenceURI: k.metaEvidenceURI ?? "",
+    metaEvidenceTemplate: k.metaEvidenceTemplate || DEFAULT_METAEVIDENCE_TEMPLATE,
     courtUrl: k.courtUrl || known.court || "https://court.kleros.io",
     ipfsUpload: k.ipfsUpload || KLEROS_IPFS_UPLOAD,
     ipfsGateway: k.ipfsGateway || KLEROS_IPFS_GATEWAY,
@@ -187,8 +287,9 @@ export function klerosConfig(cfg) {
 /**
  * Constructor arguments for TruthPaysKickback, checked before anything is sent:
  * [depositAmount (wei), eventName, owner, eventStart, claimDeadline,
- *  [disputeResolver, extraData, metaEvidenceURI, policyURI]].
- * In live mode both the policy and the metaevidence must be pinned IPFS paths.
+ *  [disputeResolver, extraData, metaEvidenceTemplate pieces, metaEvidenceSlots, policyURI]].
+ * In live mode the policy must be a pinned IPFS path. The case description template is checked by
+ * caseTemplate (the organiser it names is config "owner", which must be the deploying wallet).
  */
 export function deployArgs(cfg, owner) {
   const { eventStartTs: start, claimDeadlineTs: end } = cfg;
@@ -197,13 +298,14 @@ export function deployArgs(cfg, owner) {
   if (end < start + MIN_SETTLEMENT_WINDOW) throw new Error("claimDeadline must be at least 7 days after eventStart");
   if (!(typeof cfg.depositUnits === "bigint" && cfg.depositUnits > 0n)) throw new Error("No deposit amount: load the config with loadConfig()");
   const k = klerosConfig(cfg);
-  for (const [key, v] of [["policyURI", k.policyURI], ["metaEvidenceURI", k.metaEvidenceURI]]) {
-    if (STALE_PINS.some((p) => String(v).includes(p)))
-      throw new Error(`"kleros.${key}" (${v}) describes the old Arbitrum/USDC version. Pin the updated file and set its new path.`);
-    if (cfg.mode === "live" && !isIpfsPath(v))
-      throw new Error(`Set "kleros.${key}" to the IPFS path of the pinned file (e.g. /ipfs/Qm…${key === "metaEvidenceURI" ? "/metaevidence.json" : ""}) before the live deploy`);
-  }
-  return [cfg.depositUnits, cfg.eventName ?? "Truth Pays", owner, start, end, [k.disputeResolver, k.extraData, k.metaEvidenceURI, k.policyURI]];
+  if (STALE_PINS.some((p) => String(k.policyURI).includes(p)))
+    throw new Error(`"kleros.policyURI" (${k.policyURI}) is an earlier version of the juror policy. Pin docs/attendance-policy.md and set its new path.`);
+  if (cfg.mode === "live" && !isIpfsPath(k.policyURI))
+    throw new Error('Set "kleros.policyURI" to the IPFS path of the pinned juror policy (e.g. /ipfs/Qm…) before the live deploy');
+  if (cfg.owner && owner && owner !== ethers.ZeroAddress && ethers.isAddress(cfg.owner) && ethers.getAddress(cfg.owner) !== ethers.getAddress(owner))
+    throw new Error(`The deploying wallet ${owner} is not the owner in the config (${cfg.owner})`);
+  const t = caseTemplate(cfg, owner);
+  return [cfg.depositUnits, cfg.eventName ?? "Truth Pays", owner, start, end, [k.disputeResolver, k.extraData, t.pieces, t.slots, k.policyURI]];
 }
 
 // Contract enums

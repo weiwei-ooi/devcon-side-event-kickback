@@ -4,10 +4,9 @@ This policy applies to disputes created by the Truth Pays deposit contract on Et
 
 ## Which wallet a dispute is about
 
-Every dispute uses the same case description, so the wallet is not written in it. To find it:
+Each dispute has its own case description, which names the wallet concerned and the deposit contract. The deposit contract writes it when the challenge is matched, from a template fixed when the contract was deployed, so neither side chooses the wording.
 
-- Read the **"Challenge details"** evidence in the case. It names the deposit contract, the wallet concerned and the Kleros case number, with Etherscan links.
-- Or check it yourself on Etherscan: open the deposit contract's events and find the `ChallengeMatched` event whose `arbitratorDisputeID` is this case's number. Its `staker` field is the wallet concerned. The `Challenged` event for the same wallet shows when the challenge was made.
+- To check it on Etherscan: open the deposit contract's events and find the `ChallengeMatched` event whose `arbitratorDisputeID` is this case's number. Its `staker` field is the wallet concerned. The `Challenged` event for the same wallet shows when the challenge was made.
 - If the evidence and the contract's events disagree, the contract's events are correct.
 
 ## The event

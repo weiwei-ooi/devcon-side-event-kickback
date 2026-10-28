@@ -43,7 +43,7 @@ interface IERC20Transfer {
     function transfer(address to, uint256 amount) external returns (bool);
 }
 
-/// @title TruthPaysKickback (v6)
+/// @title TruthPaysKickback (v7)
 /// @notice Kickback-style refundable ETH deposits for an IRL event on Ethereum mainnet, with
 /// attendance challenges decided by Kleros Court.
 ///
@@ -65,7 +65,7 @@ interface IERC20Transfer {
 ///  5. Match window (1 day from each challenge): anyone (usually the organiser) who disagrees
 ///     calls `matchChallenge` with the same deposit. The Kleros fee is paid from the two deposits:
 ///     the contract opens the case with `disputeResolver.createDispute{value: fee}(extraData,
-///     metaEvidenceURI, 2)` and stores Kleros's case number (`arbitratorDisputeID`, shown at
+///     caseMetaEvidence(staker).uri, 2)` and stores Kleros's case number (`arbitratorDisputeID`, shown at
 ///     court.kleros.io/cases/<id>) and the Dispute Resolver's own number for it (`localDisputeID`).
 ///     Ruling options: 1 = attended, 2 = did not attend; 0 = refused to arbitrate, which counts
 ///     like "did not attend". If nobody matches, the challenger counts as attended and gets their
@@ -75,10 +75,14 @@ interface IERC20Transfer {
 ///     appeal money passes through this contract. Evidence: `submitEvidence(localDisputeID,
 ///     "/ipfs/<cid>/<file>.json")`. Appeals: `fundAppeal(localDisputeID, side)`; contributors
 ///     collect with `withdrawFeesAndRewardsForAllRounds(localDisputeID, contributor, [1, 2])`.
-///     `appealStatus` shows the deadlines and the amount each side needs. Every case uses the same
-///     static metaevidence (`metaEvidenceURI`, an ERC-1497 file whose fileURI is the juror policy,
-///     `policyURI`). This contract submits no evidence: jurors learn which wallet a case is about
-///     from the `Challenged` and `ChallengeMatched` events and from the parties' evidence.
+///     `appealStatus` shows the deadlines and the amount each side needs.
+///     Each case has its own case description (ERC-1497 metaevidence, whose fileURI is the juror
+///     policy, `policyURI`), written by this contract from the template fixed at deployment: it
+///     names the event, the challenged wallet and this contract. `caseMetaEvidence(staker)` returns
+///     the exact text and its IPFS path ("/ipfs/Qm..."), computed here the way `ipfs add` does with
+///     its default settings, so neither side chooses the wording and anyone can publish the file
+///     (Kleros's IPFS upload service gives the same path). The path is sent to Kleros when the
+///     challenge is matched; the console and the guest page publish the text before that.
 ///     Only the final ruling counts: the Dispute Resolver records it when KlerosLiquid delivers it
 ///     after the last appeal period (`passPeriod`, then `executeRuling`, both open to anyone),
 ///     including its override when only one side funded the last appeal (that side wins).
@@ -156,6 +160,7 @@ contract TruthPaysKickback {
     error NotAppealable(address staker);
     error ZeroDeposit();
     error NotEnoughGas();
+    error BadMetaEvidenceTemplate();
 
     // ------------------------------------------------------------------ events
     event Deposited(address indexed from, uint256 amount);
@@ -221,7 +226,11 @@ contract TruthPaysKickback {
     struct Arbitration {
         IArbitrableProxy disputeResolver;
         bytes extraData; // abi.encode(uint256 subcourtID, uint256 minJurors), e.g. General Court (0), 3 jurors
-        string metaEvidenceURI; // ERC-1497 metaevidence for every case, e.g. /ipfs/Qm.../metaevidence.json
+        // The case description (ERC-1497 metaevidence) as text pieces with a value between each two:
+        // pieces[0] + value(slots[0]) + pieces[1] + ... + pieces[n]. Slot 1 is the challenged wallet,
+        // slot 2 this contract, each written as a checksummed 0x address. At least one slot 1.
+        string[] metaEvidenceTemplate;
+        bytes metaEvidenceSlots;
         string policyURI; // the attendance policy jurors apply (the metaevidence's fileURI), e.g. /ipfs/Qm...
     }
 
@@ -229,6 +238,9 @@ contract TruthPaysKickback {
     uint256 public constant RULING_ATTENDED = 1;
     uint256 public constant RULING_ABSENT = 2;
     uint256 public constant RULING_OPTIONS = 2;
+    /// @notice Values written into the case description template (`metaEvidenceSlots`).
+    uint8 public constant SLOT_STAKER = 1;
+    uint8 public constant SLOT_CONTRACT = 2;
     uint256 public constant CHALLENGE_PERIOD = 1 days;
     uint256 public constant MATCH_PERIOD = 1 days;
     /// @notice Minimum time between the event start and the deadline, so a late list is still possible.
@@ -257,7 +269,10 @@ contract TruthPaysKickback {
     /// @notice Kleros Court (KlerosLiquid), read from the Dispute Resolver at deployment.
     IKlerosLiquid public immutable arbitrator;
     bytes public arbitratorExtraData;
-    string public metaEvidenceURI;
+    /// @notice Holds the case description template (`abi.encode(pieces, slots)`) as its code, after a
+    /// STOP byte so it can never run: reading code back costs a few thousand gas, where storage would
+    /// cost one read per 32 bytes on every match. See `metaEvidenceTemplate()`.
+    address public immutable metaEvidenceStore;
     string public policyURI;
     string public eventName;
 
@@ -316,7 +331,17 @@ contract TruthPaysKickback {
         disputeResolver = arbitration_.disputeResolver;
         arbitrator = court;
         arbitratorExtraData = arbitration_.extraData;
-        metaEvidenceURI = arbitration_.metaEvidenceURI;
+        string[] memory pieces = arbitration_.metaEvidenceTemplate;
+        bytes memory slots = arbitration_.metaEvidenceSlots;
+        require(pieces.length == slots.length + 1, BadMetaEvidenceTemplate());
+        bool namesStaker;
+        for (uint256 i; i < slots.length; ++i) {
+            uint8 slot = uint8(slots[i]);
+            require(slot == SLOT_STAKER || slot == SLOT_CONTRACT, BadMetaEvidenceTemplate());
+            if (slot == SLOT_STAKER) namesStaker = true;
+        }
+        require(namesStaker, BadMetaEvidenceTemplate());
+        metaEvidenceStore = _storeData(abi.encode(pieces, slots));
         policyURI = arbitration_.policyURI;
         emit OwnershipTransferred(address(0), owner_);
     }
@@ -399,6 +424,34 @@ contract TruthPaysKickback {
     function previewShare(uint256 attendeeCount_) external view returns (uint256) {
         if (attendeeCount_ == 0) return 0;
         return (depositAmount * stakerCount) / attendeeCount_;
+    }
+
+    /// @notice The case description template, as passed at deployment (see `Arbitration`).
+    function metaEvidenceTemplate() public view returns (string[] memory pieces, bytes memory slots) {
+        address store = metaEvidenceStore;
+        uint256 size = store.code.length - 1; // after the STOP byte
+        bytes memory data = new bytes(size);
+        assembly ("memory-safe") {
+            extcodecopy(store, add(data, 32), 1, size)
+        }
+        return abi.decode(data, (string[], bytes));
+    }
+
+    /// @notice The case description (ERC-1497 metaevidence) of a Kleros case on `staker`'s
+    /// challenge: the template with the wallet and this contract filled in. `uri` is the IPFS path
+    /// of exactly `text` ("/ipfs/Qm...", CIDv0), as `ipfs add` computes it with its default settings
+    /// (and so Kleros's IPFS upload service): `matchChallenge` sends it to Kleros, and anyone can
+    /// publish `text` to IPFS to make the case readable. It depends only on `staker`, so it can be
+    /// published as soon as the challenge is made, before anyone matches it.
+    function caseMetaEvidence(address staker) public view returns (string memory text, string memory uri) {
+        (string[] memory pieces, bytes memory slots) = metaEvidenceTemplate();
+        bytes memory wallet = _checksummed(staker);
+        bytes memory self = _checksummed(address(this));
+        bytes memory out = bytes(pieces[0]);
+        for (uint256 i; i < slots.length; ++i) {
+            out = bytes.concat(out, uint8(slots[i]) == SLOT_STAKER ? wallet : self, bytes(pieces[i + 1]));
+        }
+        return (string(out), string.concat("/ipfs/", _ipfsPath(out)));
     }
 
     /// @notice ETH needed to open a challenge right now: the Kleros arbitration cost. Matching an
@@ -595,6 +648,7 @@ contract TruthPaysKickback {
         c.arbitrationPaid = cost;
         challengeEscrow = challengeEscrow + c.deposit - cost;
         // KlerosLiquid keeps everything sent with a case, so send exactly the fee
+        (, string memory metaEvidenceURI) = caseMetaEvidence(staker);
         uint256 id = disputeResolver.createDispute{value: cost}(arbitratorExtraData, metaEvidenceURI, RULING_OPTIONS);
         uint256 localID = disputeResolver.externalIDtoLocalID(id);
         c.arbitratorDisputeID = id;
@@ -817,6 +871,79 @@ contract TruthPaysKickback {
         if (!attended[staker]) _addAttendee(staker);
         emit ChallengeResolved(staker, true, RULING_ATTENDED);
         _send(staker, c.deposit);
+    }
+
+    /// @dev The address as "0x" + 40 hex digits with the EIP-55 checksum (mixed case), as Etherscan shows it.
+    function _checksummed(address a) private pure returns (bytes memory out) {
+        out = new bytes(42);
+        out[0] = "0";
+        out[1] = "x";
+        uint256 v = uint160(a);
+        for (uint256 i = 41; i > 1; --i) {
+            uint256 d = v & 15;
+            out[i] = bytes1(uint8(d < 10 ? 48 + d : 87 + d)); // 0-9, a-f
+            v >>= 4;
+        }
+        uint256 hash;
+        assembly ("memory-safe") {
+            hash := keccak256(add(out, 34), 40) // of the 40 lower-case digits
+        }
+        // a letter is upper case when the matching hex digit of the hash is 8 or more (its top bit is set)
+        for (uint256 i; i < 40; ++i) {
+            if (uint8(out[i + 2]) > 57 && (hash >> (255 - 4 * i)) & 1 == 1) out[i + 2] = bytes1(uint8(out[i + 2]) - 32);
+        }
+    }
+
+    /// @dev Keeps `data` as the code of a new contract, after a STOP byte so it can never run: creation
+    /// code PUSH2 size, DUP1, PUSH1 10, RETURNDATASIZE, CODECOPY, RETURNDATASIZE, RETURN, then the code.
+    /// Code is at most 24 KB, so a case description is at most about 40 KB (the text, plus 42
+    /// characters for each of the at most 384 values): always one IPFS block (256 KiB), as `_ipfsPath` needs.
+    function _storeData(bytes memory data) private returns (address store) {
+        require(data.length < 24_576, BadMetaEvidenceTemplate()); // the size limit of contract code (EIP-170)
+        bytes memory init = bytes.concat(hex"61", bytes2(uint16(data.length + 1)), hex"80600a3d393df300", data);
+        assembly ("memory-safe") {
+            store := create(0, add(init, 32), mload(init))
+        }
+        require(store != address(0), BadMetaEvidenceTemplate());
+    }
+
+    /// @dev The CIDv0 ("Qm...") `ipfs add` gives `data` with its default settings, for data that fits
+    /// in one block: a dag-pb node holding a UnixFS file (type 2, the data, its size), hashed with
+    /// sha256, as base58 of the multihash 0x12 0x20 <digest>.
+    function _ipfsPath(bytes memory data) private pure returns (string memory) {
+        bytes memory size = _varint(data.length);
+        bytes memory file = bytes.concat(hex"080212", size, data, hex"18", size);
+        bytes32 digest = sha256(bytes.concat(hex"0a", _varint(file.length), file));
+        // base58 of the 34-byte multihash, as three limbs: 0x1220 and the top 16 bits of the digest,
+        // then two 120-bit parts. It always has 46 digits (58^45 < 0x1220 << 256 < 0x1221 << 256 < 58^46).
+        bytes memory alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+        uint256 d = uint256(digest);
+        uint256 hi = (0x1220 << 16) | (d >> 240);
+        uint256 mid = (d >> 120) & ((1 << 120) - 1);
+        uint256 lo = d & ((1 << 120) - 1);
+        bytes memory out = new bytes(46);
+        for (uint256 i = 46; i > 0; --i) {
+            uint256 r = hi % 58;
+            hi /= 58;
+            uint256 t = (r << 120) | mid;
+            mid = t / 58;
+            t = ((t % 58) << 120) | lo;
+            lo = t / 58;
+            out[i - 1] = alphabet[t % 58];
+        }
+        return string(out);
+    }
+
+    /// @dev Protobuf varint: 7 bits per byte, lowest first, high bit set on all but the last.
+    function _varint(uint256 n) private pure returns (bytes memory out) {
+        uint256 len = 1;
+        for (uint256 m = n >> 7; m > 0; m >>= 7) ++len;
+        out = new bytes(len);
+        for (uint256 i; i < len - 1; ++i) {
+            out[i] = bytes1(uint8(n & 0x7f) | 0x80);
+            n >>= 7;
+        }
+        out[len - 1] = bytes1(uint8(n));
     }
 
     /// @dev `cost + cost * multiplier / denominator`, saturating like the Dispute Resolver's

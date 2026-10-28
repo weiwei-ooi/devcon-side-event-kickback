@@ -19,6 +19,7 @@ import { ethers } from "ethers";
 import { parse } from "csv-parse/sync";
 import {
   csvCell, uncell, pairReturns, getLogsChunked, depKey, isContractCode, verifyTx, otherNetworkOf, fmtEth, DEFAULT_LOG_CHUNK,
+  caseTemplate, renderCase, ipfsPathOf,
 } from "../scripts/lib.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -26,7 +27,7 @@ const load = (n) => JSON.parse(fs.readFileSync(path.join(root, "build", `${n}.js
 // Amounts in thousandths of an ETH, so the numbers read like the old USDC ones: U(25) = 0.025 ETH.
 const U = (x) => ethers.parseEther(String(x)) / 1000n;
 const POLICY = "/ipfs/QmPolicyForTests/attendance-policy.md";
-const META = "/ipfs/QmMetaEvidenceForTests/metaevidence.json";
+let TPL; // the case description template, as deployArgs builds it (set once the owner is known)
 const EXTRA = ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256"], [0, 3]); // General Court, 3 jurors
 const DAY = 86400;
 // a free port, so several test runs can share a machine
@@ -47,7 +48,7 @@ async function deploy(name, signer, ...params) {
   await c.waitForDeployment();
   return c;
 }
-const arb = () => [proxy.target, EXTRA, META, POLICY];
+const arb = () => [proxy.target, EXTRA, TPL.pieces, TPL.slots, POLICY];
 const warp = async (s) => {
   await prov.send("evm_increaseTime", [s]);
   await prov.send("evm_mine", []);
@@ -74,6 +75,7 @@ before(async () => {
   guests = guestKeys.map((k) => new ethers.NonceManager(new ethers.Wallet(k, prov)));
   liquid = await deploy("MockKlerosLiquid", owner);
   proxy = await deploy("MockArbitrableProxy", owner, liquid.target);
+  TPL = caseTemplate({ eventName: "Truth Pays", depositUnits: U(25), explorer: "https://etherscan.io", owner: await owner.getAddress(), kleros: { policyURI: POLICY } });
   const t = (await prov.getBlock("latest")).timestamp;
   kick = await deploy("TruthPaysKickback", owner, U(15), "Truth Pays", await owner.getAddress(), t + 3600, t + 3600 + 14 * DAY, arb());
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "gt-"));
@@ -756,6 +758,14 @@ test("owner.mjs follows a Kleros case: register, post the list, challenge matche
   assert.match(list, new RegExp(`${a1}: In a Kleros dispute, .*Kleros case #${id} \\(Dispute Resolver ID ${ch.localDisputeID}\\) https://court\\.kleros\\.io/cases/${id}`));
   assert.match(list, new RegExp(`${a2}: Waiting for a match`));
   assert.match(await owner_("case", "--staker", a1), /not in the appeal period/);
+  // the case description to publish: exactly the contract's text, and the IPFS path Kleros got
+  const desc = (await owner_("case-description", "--staker", a1, "--out", path.join(s.dir, "out"))).trim().split("\n");
+  const [descText, descUri] = await s.k.caseMetaEvidence(a1);
+  assert.equal(fs.readFileSync(desc[0], "utf8"), descText);
+  assert.equal(desc[1], descUri);
+  assert.equal(desc[2], `https://cdn.kleros.link${descUri}`);
+  const [metaLog] = await proxy.queryFilter(proxy.filters.MetaEvidence(ch.localDisputeID));
+  assert.equal(metaLog.args[1], descUri); // the path sent to Kleros when the challenge was matched
 
   // The jurors say Bea attended; the appeal costs follow the Dispute Resolver's multipliers
   await (await liquid.startAppealPeriod(id, 1, 3600)).wait();
@@ -790,7 +800,7 @@ test("deploy.mjs: ETH deposit and Kleros v1 settings from the config; live mode 
     eventName: "Truth Pays: test", eventStart: iso(t + 3600), claimDeadline: iso(t + 3600 + 14 * DAY), owner: await owner.getAddress(),
     mode: "rehearsal", contract: "", receiver: s.kAddr,
   };
-  s.config({ ...over, kleros: { disputeResolver: proxy.target, arbitrator: liquid.target, court: 0, jurors: 3, policyURI: POLICY, metaEvidenceURI: META } });
+  s.config({ ...over, kleros: { disputeResolver: proxy.target, arbitrator: liquid.target, court: 0, jurors: 3, policyURI: POLICY } });
   const r = await execFileP("node", [path.join(root, "scripts/deploy.mjs"), "--config", "config.json"], { cwd: s.dir, encoding: "utf8", env: { ...process.env, PRIVATE_KEY: deployer } });
   resetNonces();
   assert.match(r.stdout, /deposit 0\.025 ETH/);
@@ -801,17 +811,47 @@ test("deploy.mjs: ETH deposit and Kleros v1 settings from the config; live mode 
   const k = new ethers.Contract(deployed[1], load("TruthPaysKickback").abi, prov);
   assert.equal(await k.depositAmount(), U(25));
   assert.equal(await k.owner(), await owner.getAddress());
-  assert.equal(await k.metaEvidenceURI(), META);
+  // each case's description: the repo's template, with the event name, deposit, policy and organiser filled in
+  const cfgT = caseTemplate({ eventName: "Truth Pays: test", depositUnits: U(25), explorer: "https://etherscan.io", owner: await owner.getAddress(), kleros: { policyURI: POLICY } });
+  const [pieces, slots] = await k.metaEvidenceTemplate();
+  assert.deepEqual([[...pieces], slots], [cfgT.pieces, cfgT.slots]);
+  const someone = await guests[3].getAddress();
+  const [text, uri] = await k.caseMetaEvidence(someone);
+  assert.equal(text, renderCase(cfgT, someone, deployed[1]));
+  assert.equal(uri, ipfsPathOf(text));
+  const meta = JSON.parse(text);
+  assert.match(meta.question, new RegExp(someone));
+  assert.match(meta.description, /"Truth Pays: test"/);
+  assert.match(meta.description, /deposit of 0\.025 ETH/);
+  assert.equal(meta.aliases[await owner.getAddress()], "Organiser (Truth Pays owner wallet)");
+  assert.equal(meta.fileURI, POLICY);
   assert.equal(await k.policyURI(), POLICY);
   assert.equal(await k.arbitrator(), liquid.target);
   assert.equal(await k.arbitratorExtraData(), EXTRA);
 
-  // live mode refuses to deploy without the pinned juror policy and metaevidence, or with the old pin
-  const pinned = "/ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG/attendance-policy.md"; // a real-looking CIDv0
-  s.config({ ...over, mode: "live", kleros: { disputeResolver: proxy.target, policyURI: pinned, metaEvidenceURI: "" } });
-  assert.match(await s.fails("deploy.mjs", [], { PRIVATE_KEY: deployer }), /kleros\.metaEvidenceURI/);
-  s.config({ ...over, mode: "live", kleros: { disputeResolver: proxy.target, policyURI: "/ipfs/QmZMDkYNHVH5bZNPwNnav1ZoziRgL57zE6pTmwo5dqGGGg", metaEvidenceURI: META } });
-  assert.match(await s.fails("deploy.mjs", [], { PRIVATE_KEY: deployer }), /old Arbitrum\/USDC version/);
+  // live mode refuses to deploy without the pinned juror policy, with an earlier pin, with the old
+  // shared metaevidence setting, or with a broken template
+  s.config({ ...over, mode: "live", kleros: { disputeResolver: proxy.target, policyURI: "" } });
+  assert.match(await s.fails("deploy.mjs", [], { PRIVATE_KEY: deployer }), /kleros\.policyURI/);
+  for (const old of ["QmZMDkYNHVH5bZNPwNnav1ZoziRgL57zE6pTmwo5dqGGGg", "QmWzCbhNEaySZ8EtFgPKuq4AYCtJba962S4VT77AGdw25B"]) {
+    s.config({ ...over, mode: "live", kleros: { disputeResolver: proxy.target, policyURI: "/ipfs/" + old } });
+    assert.match(await s.fails("deploy.mjs", [], { PRIVATE_KEY: deployer }), /earlier version of the juror policy/);
+  }
+  const pinned = "/ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"; // a real-looking CIDv0
+  s.config({ ...over, mode: "live", kleros: { disputeResolver: proxy.target, policyURI: pinned, metaEvidenceURI: "/ipfs/QmXAtWkxqrYPhriV4s1r7cQktEfF3498M6tmhKjXtvFUgU" } });
+  assert.match(await s.fails("deploy.mjs", [], { PRIVATE_KEY: deployer }), /metaEvidenceURI" is gone/);
+  const bad = path.join(s.dir, "bad-template.json");
+  for (const [text, why] of [
+    ['{"title": "a case", "question": "?", "fileURI": "{{policyURI}}"}', /must name the challenged wallet/],
+    ['{"title": "{{wallet}}", "question": "{{wallet}}", "description": "x", "rulingOptions": {"titles": ["Yes", "No"]}, "fileURI": "/ipfs/other"}', /"fileURI" must be the juror policy/],
+    ['{"title": "{{wallet}}" "question": "{{wallet}}"}', /not valid JSON/],
+    ['{"title": "{{wallet}} {{eventDate}}"}', /Unknown placeholder \{\{eventDate\}\}/],
+  ]) {
+    fs.writeFileSync(bad, text);
+    s.config({ ...over, mode: "live", kleros: { disputeResolver: proxy.target, policyURI: pinned, metaEvidenceTemplate: bad } });
+    assert.match(await s.fails("deploy.mjs", [], { PRIVATE_KEY: deployer }), why);
+  }
+
 });
 
 test("live mode needs the deploy block; a stopped run leaves no stale lists behind; no contract, no check", async () => {

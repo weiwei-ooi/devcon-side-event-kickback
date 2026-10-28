@@ -20,6 +20,6 @@
     "court": 0,
     "jurors": 3,
     "policyURI": "",
-    "metaEvidenceURI": ""
+    "metaEvidenceTemplate": "docs/metaevidence.template.json"
   }
 }
