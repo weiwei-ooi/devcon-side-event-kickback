@@ -1,6 +1,21 @@
-# Truth Pays Kickback v7: review summary (28 Oct 2026, ETH deposit on Ethereum mainnet)
+# Truth Pays Kickback: review summary (v8 tools on top of the live v7 contract, 28 Oct 2026, ETH deposit on Ethereum mainnet)
 
 For Wei Wei and the developers reviewing the code before the live deployment.
+
+## v8: public admin panel and deposit page for any event (28 Oct 2026, no contract change)
+
+**Why.** The organiser: "Should be usable by everyone not just my wallet"; the Kleros reviewer asked for an admin panel. The contract is unchanged (live v7 at `0xd5c6A73c05FA431c748781DaBAA99Fe2590d677D`); this round is tooling only.
+
+**What changed**
+- **`scripts/core.mjs`**, a browser-safe shared core (imports only ethers): deploy arguments and case descriptions from template *text* (`caseTemplate`, `templateValues`, `deployArgs`), the new-event form checks (`newEventConfig`, `eventDetails`, `describeWhen`, `checkZoneName`), `readEvent` (with a runtime-code fingerprint: `codeFingerprint`, immutables zeroed), the Luma list check `checkGuests` and the payout `buildPayout` (moved out of `verify-deposits.mjs` / `build-payout.mjs`, which are now file wrappers with identical outputs, compared run by run over every scenario in `test/kickback.test.mjs`), `depositsOverview`, CSV parsing. `scripts/lib.mjs` re-exports it. The live constructor arguments are byte-identical to before (test).
+- **Hosted mode of `console/index.html`** (`scripts/build-admin.mjs`): the console is now an ES module with an import map (ethers ESM + core). Local mode (`npm run console`) is unchanged; hosted mode is the public admin panel (open an event by link, create an event from a form, deposits table, Luma CSV checked in the browser, attendance from the check-in export, all owner and public actions). See README "Public admin panel and deposit page for any event".
+- **Generic guest page** (`build-site.mjs --generic`): the event comes from the contract in the link; the baked Truth Pays page still ignores URL parameters.
+- **Generic Kleros texts:** `docs/attendance-policy.generic.md` (same rules as the live policy, event-neutral; path `/ipfs/QmWsCk6sBCsJa2ybj6GC5Vpskg45fgeSjBhGVL3GckpYW9` before the review fixes, recomputed at build) and `docs/metaevidence.generic.template.json` (event title, when, where, hosts, link filled from the form). The live policy and template are unchanged.
+
+**Review (28 Oct):** five reviewers (money and on-chain correctness, regressions for the live event, security and phishing, what jurors read, end-to-end use on mainnet), each finding checked by a skeptic who tried to refute it: 21 reported, 20 confirmed (5 medium, 15 low), all fixed with tests.
+- Medium: Luma ticks could outlive a refund made elsewhere (a wallet refunded twice); the generic page on the live site could carry a "Truth Pays"-looking event; the event timezone defaulted to today's offset, not the event date's (and the zone name was not checked); no attendance list without a tx-link column in the Luma export; a refunded guest who paid again could not be registered from the table.
+- Low: the event page must live on another site than the live page (builds refuse it); the console stays silent if its modules fail to load (now says to restart it); shared `gt-last-tx` storage between pages (now per contract on the generic page); answers a fake contract can give (now the runtime code is checked); an off-site policy link; the case description now says the event details were typed by the organiser and cannot change the policy; the venue "as planned"; disguise characters refused in event details; Luma setup explained on the page.
+- Tests after the fixes: `npm test` 56/56, `npm run test:console` 162/162, `npm run test:site` 180/180 + 70/70, `npm run test:admin` 134/134. The live contract's runtime code matches the fingerprint the panel checks (read on mainnet).
 
 ## v7: each Kleros case names the event and the wallet (28 Oct 2026, please review this first)
 
