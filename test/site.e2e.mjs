@@ -1,6 +1,7 @@
 // Browser test of the guest deposit page (site/index.html) against ganache with a fake injected wallet: ETH deposits
 // on "Ethereum mainnet" (a local chain) and attendance challenges on Kleros Court v1 through the Dispute Resolver
-// (MockKlerosLiquid + MockArbitrableProxy). Kleros's IPFS upload service is mocked in the browser, never reached.
+// (MockKlerosLiquid + MockArbitrableProxy). Each case's own description (metaevidence) comes from the contract, built
+// from docs/metaevidence.template.json. Kleros's IPFS upload service and gateway are mocked in the browser, never reached.
 // Needs Playwright with Chromium: npm i --no-save playwright && npx playwright install chromium
 //   node test/site.e2e.mjs
 import fs from "node:fs";
@@ -9,6 +10,7 @@ import http from "node:http";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { caseTemplate, ipfsCidV0 } from "../scripts/lib.mjs";
 const proj = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const req = createRequire(path.join(proj, "package.json"));
 const ganache = req("ganache");
@@ -44,9 +46,12 @@ const proxy = await deployC("MockArbitrableProxy", liquid.target);
 const otherProxy = await deployC("MockArbitrableProxy", liquid.target);
 const EXTRA = ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256"], [0, 3]); // General Court, 3 jurors
 const POLICY = "/ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG/attendance-policy.md";
-const META = "/ipfs/QmMetaEvidenceForTestsaaaaaaaaaaaaaaaaaaaaaaaaa/metaevidence.json";
 const FEE = await liquid.arbitrationCost(EXTRA); // 0.0162 ETH: the challenge deposit
-const deploy = async (dep, resolver = proxy) => deployC("TruthPaysKickback", E(dep), "E2E", await addr(owner), now + 86400, now + 86400 * 9, [resolver.target, EXTRA, META, POLICY]);
+// each Kleros case gets its own description, written by the contract from this template (docs/metaevidence.template.json)
+const deploy = async (dep, resolver = proxy) => {
+  const t = caseTemplate({ eventName: "E2E", depositUnits: E(dep), explorer: "https://etherscan.io", owner: await addr(owner), kleros: { policyURI: POLICY } });
+  return deployC("TruthPaysKickback", E(dep), "E2E", await addr(owner), now + 86400, now + 86400 * 9, [resolver.target, EXTRA, t.pieces, t.slots, POLICY]);
+};
 const kick = await deploy("0.01"), bad = await deploy("0.015"), late = await deploy("0.01"), otherKleros = await deploy("0.01", otherProxy);
 // someone else's case on the same Dispute Resolver first, with an appeal contribution: our case gets local ID 1 and
 // arbitrator ID 1001, and the page must not mix the two up
@@ -63,80 +68,113 @@ const build = (contract, name, extra = {}) => {
   execFileSync("node", ["scripts/build-site.mjs", "--config", cfg, "--out", path.join(outDir, name), ...(contract ? [] : ["--preview"])], { cwd: proj, stdio: "pipe" });
 };
 build(kick.target, "live"); build(bad.target, "bad"); build(late.target, "late"); build(otherKleros.target, "otherkleros"); build("", "preview");
-http.createServer((rq, rs) => { if (!/^\/(live|bad|preview|late|otherkleros|case2)?$/.test(rq.url)) { rs.writeHead(404); return rs.end(); } const f = path.join(outDir, rq.url.split("/")[1] || "live", "index.html"); rs.writeHead(200, { "content-type": "text/html" }); rs.end(fs.readFileSync(f)); }).listen(WEB);
+http.createServer((rq, rs) => { if (!/^\/(live|bad|preview|late|otherkleros|case2|case3)?$/.test(rq.url)) { rs.writeHead(404); return rs.end(); } const f = path.join(outDir, rq.url.split("/")[1] || "live", "index.html"); rs.writeHead(200, { "content-type": "text/html" }); rs.end(fs.readFileSync(f)); }).listen(WEB);
 
 const results = [];
 const check = (name, ok, extra = "") => { results.push(ok); console.log(`${ok ? "PASS" : "FAIL"} ${name} ${ok ? "" : extra}`); };
 const browser = await chromium.launch();
 const allSent = []; // every transaction any page asked the wallet to send
+const order = []; // uploads and transactions of every page, in the order they happened
 // Kleros's IPFS upload service, mocked: every upload is recorded, and answers like the real one ({ cids: [...] })
-// unless ipfs.mode says "fail" (HTTP 500) or "odd" (no IPFS address in the answer)
-const ipfs = { mode: "ok", uploads: [] };
+// unless ipfs.mode says "fail" (HTTP 500), "odd" (no IPFS address in the answer) or "other" (a case description
+// saved at another address than the one the contract computed). A case description ("metaevidence.json") gets the
+// real CIDv0 of its bytes, as a bare "/ipfs/<cid>" like the real service; other files a made-up CID and their name.
+// Kleros's IPFS gateway (cdn.kleros.link), mocked: it serves what was uploaded, by path, and 404 for anything else.
+const ipfs = { mode: "ok", uploads: [], store: new Map() };
 const cidFor = (n) => "Qm" + `TestCid${"abcdefghijkmnpqrstuvwxyz"[n % 24]}`.padEnd(44, "Z");
+const CORS = { "access-control-allow-origin": "*" };
 // opts: failLogs (every log query fails, on the public RPC and in the wallet), logRange (log queries over more blocks
 // are refused, like a range-limited RPC), clockAt (the browser's clock, in unix seconds: the chain's clock after
 // evm_increaseTime), smart (a TestWallet: the page sees its address and transactions go through its exec, like a
 // smart-account wallet), invalidOpcode (an address: the Dispute Resolver read through a geth node. It is built with
 // Solidity 0.7, where a read past the end of a list (disputeIDtoRoundArray) or a Panic-type failure hits the INVALID
 // opcode, which geth reports as {code: -32000, message: "invalid opcode: INVALID"} with no data; on the public RPC and
-// in the wallet).
+// in the wallet; page.invalidOps counts them), rateLimit (the public RPC refuses the first n log queries as a busy
+// RPC does: HTTP 429, or a "rate limit exceeded" error; page.logRanges lists every log query), holdTx (the wallet
+// signs a transaction and returns its hash without sending it, as if it were still waiting in the mempool; the signed
+// transactions are in page.held), rejectConnect (the wallet refuses the first n connection requests), lateWallet (the
+// wallet is only added when the test calls window.__inject(), like a wallet app's browser that adds it late).
 // page.bigEstimate = true: every gas estimate the page asks the public RPC for answers 13.6 million gas.
 const asSolc07 = (data, e) => { let s = ""; try { s = JSON.stringify(e); } catch {} return /^0x3ef40ba7/.test(String(data)) || /4e487b71/.test(s + String(e && e.message)); };
 async function open(site, wallet, startChain = 1337, opts = {}) {
   const page = await browser.newPage();
   const errs = []; page.on("pageerror", (e) => errs.push(e.message));
   let chain = startChain, signer = wallet, me = opts.smart ? await addr(opts.smart) : wallet ? await addr(wallet) : null;
-  page.sent = [];
+  let rejects = opts.rejectConnect || 0, limited = opts.rateLimit || 0;
+  Object.assign(page, { sent: [], held: [], invalidOps: 0, logRanges: [], limited: 0 });
   const refused = (f) => opts.failLogs || (opts.logRange && parseInt(f.toBlock, 16) - parseInt(f.fromBlock, 16) > opts.logRange);
   await page.exposeFunction("__rpc", async (method, params) => {
+    if (method === "eth_requestAccounts" && rejects > 0) { rejects--; throw new Error("User rejected the request."); }
     if (method === "eth_requestAccounts" || method === "eth_accounts") return [me];
     if (method === "eth_chainId") return "0x" + chain.toString(16);
     if (method === "wallet_switchEthereumChain") { chain = parseInt(params[0].chainId, 16); return null; }
     if (method === "eth_sendTransaction") {
-      const t = params[0]; page.sent.push(t); allSent.push(t);
+      const t = params[0]; page.sent.push(t); allSent.push(t); order.push({ tx: t.data.slice(0, 10), to: t.to.toLowerCase() });
       // like MetaMask: a request pinned to another network than the wallet's is refused
       if (t.chainId !== undefined && parseInt(t.chainId, 16) !== chain) throw new Error("Invalid chainId for the current network");
       const value = t.value ? BigInt(t.value) : 0n;
       if (opts.smart) return (await opts.smart.connect(signer).exec(t.to, t.data, { value })).hash;
+      if (opts.holdTx) { const raw = await signer.signTransaction(await signer.populateTransaction({ to: t.to, data: t.data, value })); page.held.push(raw); return ethers.keccak256(raw); }
       // a gas limit set by the page is used as it is, like real wallets do
       return (await signer.sendTransaction({ to: t.to, data: t.data, value, ...(t.gas ? { gasLimit: BigInt(t.gas) } : {}) })).hash;
     }
     if (method === "eth_getLogs" && refused(params[0])) throw new Error("wallet RPC: log range not allowed");
     if (method === "eth_call" && opts.invalidOpcode && String(params[0].to).toLowerCase() === opts.invalidOpcode.toLowerCase())
-      try { return await prov.send(method, params); } catch (e) { if (asSolc07(params[0].data, e)) throw new Error("invalid opcode: INVALID"); throw e; }
+      try { return await prov.send(method, params); } catch (e) { if (asSolc07(params[0].data, e)) { page.invalidOps++; throw new Error("invalid opcode: INVALID"); } throw e; }
     return prov.send(method, params ?? []);
   });
   await page.route((u) => u.port === String(RPC), async (route) => {
     let body = null;
     try { body = JSON.parse(route.request().postData() || "null"); } catch {}
-    const fail = (error) => route.fulfill({ status: 200, headers: { "content-type": "application/json", "access-control-allow-origin": "*" }, body: JSON.stringify({ jsonrpc: "2.0", id: body.id, error }) });
-    if (body && body.method === "eth_getLogs") { page.logQueries = (page.logQueries || 0) + 1; page.maxLogRange = Math.max(page.maxLogRange || 0, parseInt(body.params[0].toBlock, 16) - parseInt(body.params[0].fromBlock, 16) + 1); }
+    const fail = (error) => route.fulfill({ status: 200, headers: { "content-type": "application/json", ...CORS }, body: JSON.stringify({ jsonrpc: "2.0", id: body.id, error }) });
+    if (body && body.method === "eth_getLogs") {
+      const [a, b] = [parseInt(body.params[0].fromBlock, 16), parseInt(body.params[0].toBlock, 16)];
+      page.logQueries = (page.logQueries || 0) + 1; page.maxLogRange = Math.max(page.maxLogRange || 0, b - a + 1); page.logRanges.push([a, b]);
+      if (limited > 0) {
+        page.limited++;
+        if (limited-- % 2) return route.fulfill({ status: 429, headers: { "content-type": "text/plain", ...CORS }, body: "Too Many Requests" });
+        return fail({ code: -32005, message: "rate limit exceeded, retry later" });
+      }
+    }
     if (body && body.method === "eth_getLogs" && refused(body.params[0])) return fail({ code: -32005, message: "block range too large" });
     if (body && body.method === "eth_estimateGas" && page.bigEstimate)
-      return route.fulfill({ status: 200, headers: { "content-type": "application/json", "access-control-allow-origin": "*" }, body: JSON.stringify({ jsonrpc: "2.0", id: body.id, result: "0xd00000" }) });
+      return route.fulfill({ status: 200, headers: { "content-type": "application/json", ...CORS }, body: JSON.stringify({ jsonrpc: "2.0", id: body.id, result: "0xd00000" }) });
     if (body && body.method === "eth_call" && opts.invalidOpcode && String(body.params[0].to).toLowerCase() === opts.invalidOpcode.toLowerCase()) {
       const res = await route.fetch(), j = await res.json();
-      if (j.error && asSolc07(body.params[0].data, j.error)) return fail({ code: -32000, message: "invalid opcode: INVALID" });
+      if (j.error && asSolc07(body.params[0].data, j.error)) { page.invalidOps++; return fail({ code: -32000, message: "invalid opcode: INVALID" }); }
       return route.fulfill({ response: res, body: JSON.stringify(j) });
     }
     return route.continue();
   });
   await page.route("https://kleros-api.netlify.app/**", async (route) => {
     const rq = route.request(), url = new URL(rq.url());
-    const headers = { "content-type": "application/json", "access-control-allow-origin": "*" };
+    const headers = { "content-type": "application/json", ...CORS };
     if (ipfs.mode === "fail") return route.fulfill({ status: 500, headers, body: JSON.stringify({ message: "Pinning failed" }) });
-    const body = (rq.postDataBuffer() || Buffer.alloc(0)).toString("latin1");
+    const raw = rq.postDataBuffer() || Buffer.alloc(0), body = raw.toString("latin1");
     const file = (body.match(/filename="([^"]*)"/) || [])[1] || "";
-    const cid = cidFor(ipfs.uploads.length);
-    ipfs.uploads.push({ operation: url.searchParams.get("operation"), pinToGraph: url.searchParams.get("pinToGraph"), method: rq.method(), field: (body.match(/name="([^"]*)"/) || [])[1], file, body, cid });
+    // the file's own bytes: the first part of the multipart body, between its headers and the next boundary
+    const boundary = ((rq.headers()["content-type"] || "").match(/boundary=(.+)$/) || [])[1];
+    const from = body.indexOf("\r\n\r\n") + 4, to = boundary ? body.indexOf(`\r\n--${boundary}`, from) : -1;
+    const data = to > from ? Buffer.from(body.slice(from, to), "latin1") : Buffer.alloc(0);
+    const n = ipfs.uploads.length, meta = file === "metaevidence.json";
+    const at = meta ? (ipfs.mode === "other" ? `/ipfs/${cidFor(n)}` : `/ipfs/${ipfsCidV0(data)}`) : `/ipfs/${cidFor(n)}/${file}`;
+    ipfs.uploads.push({ operation: url.searchParams.get("operation"), pinToGraph: url.searchParams.get("pinToGraph"), method: rq.method(), field: (body.match(/name="([^"]*)"/) || [])[1], file, body, data, cid: cidFor(n), path: at });
+    order.push({ upload: file });
     if (ipfs.mode === "odd") return route.fulfill({ status: 200, headers, body: JSON.stringify({ message: "File has been stored successfully" }) });
-    return route.fulfill({ status: 200, headers, body: JSON.stringify({ message: "File has been stored successfully", cids: [`ipfs://${cid}/${file}`] }) });
+    ipfs.store.set(at, data);
+    return route.fulfill({ status: 200, headers, body: JSON.stringify({ message: "File has been stored successfully", cids: [meta ? at : `ipfs://${cidFor(n)}/${file}`], inconsistentCids: [] }) });
   });
-  if (wallet) await page.addInitScript(() => {
+  await page.route("https://cdn.kleros.link/**", (route) => {
+    const data = ipfs.store.get(new URL(route.request().url()).pathname);
+    return data ? route.fulfill({ status: 200, headers: { "content-type": "application/octet-stream", ...CORS }, body: data }) : route.fulfill({ status: 404, headers: CORS, body: "not found" });
+  });
+  if (wallet) await page.addInitScript((late) => {
     const listeners = {};
-    window.ethereum = { request: ({ method, params }) => window.__rpc(method, params), on(ev, f) { (listeners[ev] = listeners[ev] || []).push(f); }, removeListener() {} };
+    const provider = { request: ({ method, params }) => window.__rpc(method, params), on(ev, f) { (listeners[ev] = listeners[ev] || []).push(f); }, removeListener() {} };
     window.__emit = (ev, arg) => (listeners[ev] || []).forEach((f) => f(arg));
-  });
+    if (late) window.__inject = () => { window.ethereum = provider; dispatchEvent(new Event("ethereum#initialized")); };
+    else window.ethereum = provider;
+  }, !!opts.lateWallet);
   if (opts.clockAt) await page.clock.setFixedTime(new Date(opts.clockAt * 1000));
   page.switchAccount = async (w) => { signer = w; me = await addr(w); await page.evaluate((a) => window.__emit("accountsChanged", [a]), me); };
   await page.goto(`http://localhost:${WEB}/${site}`);
@@ -232,6 +270,24 @@ await Promise.all([p.waitForURL(/luma\.com/, { timeout: 5000 }).catch(() => {}),
 check("copy worked: link copied, then back to Luma", copied === g1Link && /luma\.com\/qewnqhas/.test(p.url()), `${copied} ${p.url()}`);
 await p.close();
 
+// 3b. connecting: the wallet refuses the first request, then connects (the error goes away); a wallet app's browser
+// that adds its wallet after the page loaded (the "no wallet" note goes away)
+const gaa = await addr(ga);
+p = await open("live", ga, 1337, { rejectConnect: 1 });
+await p.click("#connect"); await p.waitForTimeout(300);
+const refusedNote = (await vis(p, "no-wallet")) ? await txt(p, "no-wallet") : "";
+await connect(p);
+check("wallet refused, then connected: the error note is gone", /The wallet didn't connect: User rejected the request/.test(refusedNote) && !(await vis(p, "no-wallet")) && (await txt(p, "who")).toLowerCase() === gaa.toLowerCase(), refusedNote);
+await p.close();
+p = await open("live", ga, 1337, { lateWallet: true });
+const noWalletNote = (await vis(p, "no-wallet")) && /No wallet found in this browser/.test(await txt(p, "no-wallet"));
+await p.evaluate(() => window.__inject()); await p.waitForTimeout(200);
+const goneOnceAdded = !(await vis(p, "no-wallet"));
+await connect(p);
+check("wallet added late by the wallet app: 'no wallet' shown, gone once it appears, and connecting works", noWalletNote && goneOnceAdded && (await txt(p, "who")).toLowerCase() === gaa.toLowerCase() && !(await vis(p, "no-wallet")), `${noWalletNote} ${goneOnceAdded}`);
+check("no page errors (connecting)", p.errs.length === 0, p.errs.join("; "));
+await p.close();
+
 // 4. revisit: prior deposit detected, even through an RPC that only answers short block ranges
 p = await open("live", g1, 1337, { logRange: 3 });
 await connect(p);
@@ -250,6 +306,14 @@ p = await open("live", g1);
 await connect(p);
 const span = (await prov.getBlockNumber()) - deployBlock + 1;
 check("history read in logChunk-sized ranges", /already see a deposit/.test(await txt(p, "check-msg")) && p.logQueries >= Math.ceil(span / 7) && span > 7 && p.maxLogRange <= 7, `${p.logQueries} queries over ${span} blocks, longest ${p.maxLogRange} blocks`);
+await p.close();
+// 4a. a busy public RPC (HTTP 429, "rate limit exceeded") and no wallet to fall back on: the same chunk is asked again
+// after a pause, never split into smaller ranges (that would only send more requests), and the history is read
+p = await open("live", null, 1337, { rateLimit: 6 });
+const busyOut = await lookupAs(p, g1a);
+const unsplit = p.logRanges.length > 0 && p.logRanges.every(([a, b]) => (a - deployBlock) % 7 === 0 && b - a <= 6);
+check("busy RPC: asked again after a pause, chunks not split, history read", /Waiting for the hosts/.test(busyOut) && p.limited === 6 && unsplit, `${busyOut} | ${JSON.stringify(p.logRanges)}`);
+check("no page errors (busy RPC)", p.errs.length === 0, p.errs.join("; "));
 await p.close();
 
 // 4b. the deposit history can't be read: unknown, never "no deposit"
@@ -323,6 +387,52 @@ out = await lookupAs(p, await addr(gx));
 check("returned stray then a deposit: lookup links the new deposit", /Deposit received/.test(out) && (await linkHref(p)) === gxLink, out);
 await p.close();
 
+// 6c. a payment below the deposit: the page says so (not "no deposit found") and asks for a full deposit
+const fundNew = async () => { const w = ethers.Wallet.createRandom().connect(prov); await (await owner.sendTransaction({ to: w.address, value: E("1") })).wait(); return w; };
+const gs = new ethers.NonceManager(await fundNew()), gsa = await addr(gs);
+await (await gs.sendTransaction({ to: kick.target, value: E("0.005") })).wait();
+p = await open("live", gs);
+await connect(p);
+const shortRe = /We see 0\.005 ETH from this wallet, less than the 0\.01 ETH deposit: send a full 0\.01 ETH deposit; the hosts return the short payment\./;
+check("short payment: the deposit step says so, and a full deposit can be sent", shortRe.test(await txt(p, "check-msg")) && !(await dis(p, "send")) && !(await vis(p, "luma-box")), await txt(p, "check-msg"));
+out = await lookupAs(p, gsa);
+check("short payment: the lookup says so, not 'no deposit found'", shortRe.test(out) && !/No deposit found/.test(out), out);
+await p.close();
+
+// 6d. a deposit still waiting for confirmation when the page reloads: Send stays blocked and its link is offered;
+// once it is confirmed the deposit history takes over. A saved deposit that failed, or that the network never saw
+// (30 minutes on), is forgotten.
+const gp = await fundNew();
+p = await open("live", gp, 1337, { holdTx: true });
+await connect(p);
+await toDeposit(p); await p.click("#send");
+await waitText(p, "send-msg", /Waiting for Ethereum mainnet to confirm|failed|cancelled|Nothing was sent/);
+const heldHash = p.held.length === 1 ? ethers.keccak256(p.held[0]) : "none";
+const savedTx = await p.evaluate(() => JSON.parse(localStorage.getItem("gt-last-tx") || "{}"));
+check("deposit sent: saved in the browser as soon as the wallet gives its hash", savedTx.hash === heldHash && String(savedTx.account).toLowerCase() === gp.address.toLowerCase() && savedTx.contract === kick.target && !(await prov.getTransactionReceipt(heldHash)), JSON.stringify(savedTx));
+await p.reload(); await p.waitForTimeout(800); await connect(p);
+check("reloaded while it is waiting for confirmation: Send blocked, its link offered for Luma", /Your deposit .+ is waiting for Ethereum mainnet to confirm it\. Don't send another one/.test(await txt(p, "check-msg")) && (await dis(p, "send"))
+  && (await txt(p, "tx-link")) === `https://etherscan.io/tx/${heldHash}` && p.sent.length === 1, await txt(p, "check-msg"));
+await (await prov.broadcastTransaction(p.held[0])).wait();
+await p.reload(); await p.waitForTimeout(800); await connect(p);
+check("confirmed: the deposit history shows it, Send blocked, same link", /already see a deposit/.test(await txt(p, "check-msg")) && (await dis(p, "send")) && (await txt(p, "tx-link")) === `https://etherscan.io/tx/${heldHash}`, await txt(p, "check-msg"));
+check("no page errors (deposit waiting for confirmation)", p.errs.length === 0, p.errs.join("; "));
+await p.close();
+const gf = await fundNew();
+const failedDep = await gf.sendTransaction({ to: kick.target, data: "0xd0e30db0", value: 0, gasLimit: 100000 }); // deposit() of nothing: fails
+await failedDep.wait().catch(() => {});
+p = await open("live", gf);
+const saveTx = (hash, at) => p.evaluate(([h, a, c, t]) => localStorage.setItem("gt-last-tx", JSON.stringify({ hash: h, account: a, contract: c, at: Date.now() - t })), [hash, gf.address, kick.target, at]);
+await saveTx(failedDep.hash, 0); await p.reload(); await p.waitForTimeout(800); await connect(p);
+check("a saved deposit that failed on-chain is forgotten: Send allowed", (await prov.getTransactionReceipt(failedDep.hash)).status === 0 && /All set/.test(await txt(p, "check-msg")) && !(await dis(p, "send"))
+  && (await p.evaluate(() => localStorage.getItem("gt-last-tx"))) === null, await txt(p, "check-msg"));
+await saveTx("0x" + "ab".repeat(32), 31 * 60e3); await p.reload(); await p.waitForTimeout(800); await connect(p);
+check("a saved deposit the network still doesn't know 30 minutes on is forgotten: Send allowed", !(await dis(p, "send")) && (await p.evaluate(() => localStorage.getItem("gt-last-tx"))) === null, await txt(p, "check-msg"));
+await saveTx("0x" + "cd".repeat(32), 60e3); await p.reload(); await p.waitForTimeout(800); await connect(p);
+check("... but a minute on it may still be on its way: Send blocked", (await dis(p, "send")) && /waiting for Ethereum mainnet to confirm/.test(await txt(p, "check-msg")), await txt(p, "check-msg"));
+await p.evaluate(() => localStorage.removeItem("gt-last-tx"));
+await p.close();
+
 // 7. refunded guest: allowed but warned; once they pay again, the new deposit is the one to paste
 p = await open("live", g2);
 await connect(p);
@@ -373,20 +483,40 @@ await p.click("#ch-action");
 check("challenge sent", /Challenge sent/.test(await waitText(p, "lookup-out", /Challenge sent|didn't go through|cancelled|would fail/)), await txt(p, "lookup-out"));
 check("challenge recorded on-chain with the Kleros fee", Number((await kick.challenges(g3a)).state) === 1 && (await kick.challenges(g3a)).deposit === FEE && BigInt(p.sent.at(-1).value) === FEE);
 check("an ordinary transaction leaves the gas limit to the wallet", p.sent.at(-1).gas === undefined, JSON.stringify(p.sent.at(-1)));
+// right after the challenge, the page saves the jurors' case description on IPFS: exactly the text the contract
+// writes for this wallet, at the IPFS address the contract computed (and sends to Kleros when the challenge is matched)
+out = await waitText(p, "lookup-out", /saved on IPFS|Couldn't save the case description/);
+const [g3Case, g3CaseUri] = await kick.caseMetaEvidence(g3a);
+const metaUps = () => ipfs.uploads.filter((u) => u.file === "metaevidence.json");
+const caseLink = (pg) => pg.locator("#lookup-out a", { hasText: "case description" }).first().getAttribute("href");
+check("contract: the case description names the wallet and the deposit contract, at its CIDv0 address", g3Case.includes(g3a) && g3Case.includes(kick.target) && JSON.parse(g3Case).fileURI === POLICY && g3CaseUri === `/ipfs/${ipfsCidV0(g3Case)}`, g3CaseUri);
+check("challenge: case description saved on IPFS (operation=file), byte for byte the contract's text, at the contract's address",
+  /The case description jurors would read is saved on IPFS/.test(out) && (await caseLink(p)) === `https://cdn.kleros.link${g3CaseUri}` && metaUps().length === 1 && metaUps()[0].operation === "file" && metaUps()[0].field === "data"
+  && metaUps()[0].pinToGraph === "false" && metaUps()[0].data.equals(Buffer.from(g3Case, "utf8")) && metaUps()[0].path === g3CaseUri && order.findIndex((o) => o.upload === "metaevidence.json") > order.findIndex((o) => o.tx === "0xd2ef7398"), out);
 check("listed: attendee sees on the list", /On the attendance list/.test(await lookupAs(p, g1a)), await txt(p, "lookup-out"));
 await p.close();
 // g2's page reads Kleros through a geth node: the Dispute Resolver (Solidity 0.7) fails a check with an invalid opcode
 p = await open("live", g2, 1337, { invalidOpcode: proxy.target }); await toStatus(p);
-check("open challenges list shows challenger", (await vis(p, "open-ch")) && (await txt(p, "open-ch-list")).toLowerCase().includes(g3a.toLowerCase()), await txt(p, "open-ch-list"));
+// one row per challenge: the mark, then one line with the wallet and where it stands (the list is a 2-column grid)
+const chRows = (pg) => pg.locator("#open-ch-list li").evaluateAll((lis) => lis.map((li) => (li.children.length === 2 ? li.children[1].innerText.trim() : `${li.children.length} columns`)));
+let rows = await chRows(p);
+check("open challenges list: the challenger's wallet and 'waiting for a match until … IST' on one line", (await vis(p, "open-ch")) && (await txt(p, "open-ch-h")) === "Open challenges" && rows.length === 1 && new RegExp(`^${g3a.toLowerCase()} waiting for a match until .+ IST$`).test(rows[0]), JSON.stringify(rows));
 await connect(p);
-check("challenge open: dispute offered", /Challenge open/.test(await lookupAs(p, g3a)) && /Dispute this claim \(0\.0162 ETH\)/.test(await txt(p, "ch-action")), await txt(p, "lookup-out"));
+out = await lookupAs(p, g3a);
+check("challenge open: dispute offered, the jurors' case description linked", /Challenge open/.test(out) && /Jurors read this case description\./.test(out) && (await caseLink(p)) === `https://cdn.kleros.link${g3CaseUri}` && /Dispute this claim \(0\.0162 ETH\)/.test(await txt(p, "ch-action")), out);
 await p.click("#ch-action");
-check("dispute created", /Dispute created on Kleros/.test(await waitText(p, "lookup-out", /Dispute created on Kleros|didn't go through|cancelled|would fail/)), await txt(p, "lookup-out"));
+check("dispute created", /Dispute created on Kleros/.test(await waitText(p, "lookup-out", /Dispute created on Kleros|didn't go through|cancelled|would fail|Couldn't save/)), await txt(p, "lookup-out"));
 const chg = await kick.challenges(g3a);
 check("Kleros case opened through the Dispute Resolver (arbitrator ID 1001, local ID 1)", chg.arbitratorDisputeID === 1001n && chg.localDisputeID === 1n);
+check("dispute: the case description was already on IPFS (found on the gateway), so it wasn't uploaded again", metaUps().length === 1, JSON.stringify(metaUps().map((u) => u.path)));
+const metaEv = async (local) => (await proxy.queryFilter(proxy.filters.MetaEvidence(local))).map((e) => e.args._evidence);
+check("the Kleros case carries the contract's case description address (MetaEvidence event)", (await metaEv(1n)).join() === g3CaseUri, (await metaEv(1n)).join());
+await p.waitForTimeout(300);
+rows = await chRows(p);
+check("open challenges list: the case number once disputed", rows.length === 1 && rows[0] === `${g3a.toLowerCase()} Kleros case #1001`, JSON.stringify(rows));
 out = await lookupAs(p, g3a);
-check("in dispute: Kleros case link on court.kleros.io", /In a Kleros dispute/.test(out) && /Kleros case #1001/.test(out) && (await linkHref(p)) === "https://court.kleros.io/cases/1001", out);
-check("evidence form shown, and the round, with Kleros read through a geth node (invalid opcode, not a revert)", (await vis(p, "ev-box")) && /Round 1: jurors are being drawn and evidence is open/.test(out), out);
+check("in dispute: Kleros case link on court.kleros.io", /In a Kleros dispute/.test(out) && /Kleros case #1001/.test(out) && (await linkHref(p)) === "https://court.kleros.io/cases/1001" && /Jurors read this case description/.test(out), out);
+check("evidence form shown, and the round", (await vis(p, "ev-box")) && /Round 1: jurors are being drawn and evidence is open/.test(out), out);
 // the upload service fails: clear error, nothing sent to Kleros
 ipfs.mode = "fail";
 const nEv = p.sent.length;
@@ -438,11 +568,14 @@ check("appeal funded (other side)", /Appeal funding sent to Kleros/.test(await w
 check("both funded: round 2 on Kleros", (await liquid.rounds(1001)) === 2n);
 check("round 2 shown", /Round 2: jurors are being drawn/.test(await lookupAs(p, g3a)) && !(await vis(p, "ch-box")) && !(await vis(p, "reward-box")) && (await vis(p, "ev-box")), await txt(p, "lookup-out"));
 await p.close();
-// round 2: jurors say attended. The contribution logs can't be read: the page still offers the full amounts.
+// round 2: jurors say attended. The contribution logs can't be read, and Kleros is read through a geth node: the page
+// counts the rounds by reading disputeIDtoRoundArray until it fails, which the Solidity 0.7 Dispute Resolver does with
+// an invalid opcode (no revert data). It still finds round 2 and offers the full amounts.
 await (await liquid.startAppealPeriod(1001, 1, 86400)).wait();
-p = await open("live", g2, 1337, { failLogs: true }); await connect(p);
+p = await open("live", g2, 1337, { failLogs: true, invalidOpcode: proxy.target }); await connect(p);
 out = await lookupAs(p, g3a);
-check("amounts raised unreadable: full amount offered, extra sent back by Kleros", /Round 2: jurors voted Yes, attended/.test(out) && /couldn't read how much is raised/.test(out) && (await txt(p, "ch-action")) === 'Appeal: fund "Yes, attended" (0.162 ETH)' && (await txt(p, "ch-action2")) === 'Appeal: fund "No, did not attend" (0.243 ETH)' && !/wins the case/.test(out), `${out} | ${await txt(p, "ch-action")}`);
+check("amounts raised unreadable: full amount offered, extra sent back by Kleros", /Round 2: jurors voted Yes, attended/.test(out) && /couldn't read how much is raised/.test(out) && (await txt(p, "ch-action")) === 'Appeal: fund "Yes, attended" (0.162 ETH)' && (await txt(p, "ch-action2")) === 'Appeal: fund "No, did not attend" (0.243 ETH)' && !/⚠/.test(out), `${out} | ${await txt(p, "ch-action")}`);
+check("geth's invalid opcode (Solidity 0.7 Dispute Resolver) read as the end of the rounds", p.invalidOps > 0 && /Round 2/.test(out), `${p.invalidOps} invalid opcodes`);
 await p.close();
 // nobody appeals. Meanwhile the challenge window is over: anyone can release the payouts.
 await prov.send("evm_increaseTime", [86400 + 10]); await prov.send("evm_mine", []);
@@ -459,6 +592,10 @@ check("payouts released from the guest page while the case is open (one share se
 p.bigEstimate = false;
 check("big payout batch: the page sets the gas limit itself, at most 2^24 (EIP-7825)", p.sent.at(-1).gas === "0x1000000", JSON.stringify(p.sent.at(-1)));
 check("Release payouts gone once released", !(await vis(p, "release-box")));
+for (let i = 0; i < 20 && (await txt(p, "open-ch-h")) !== "Open Kleros cases"; i++) await p.waitForTimeout(250);
+rows = await chRows(p);
+check("after the payouts: the open Kleros case is still listed, as 'Open Kleros cases'", (await vis(p, "open-ch")) && (await txt(p, "open-ch-h")) === "Open Kleros cases" && /set aside until Kleros's final ruling/.test(await txt(p, "open-ch-p"))
+  && rows.length === 1 && rows[0] === `${g3a.toLowerCase()} Kleros case #1001`, `${await txt(p, "open-ch-h")} | ${JSON.stringify(rows)}`);
 // the appeal period is over but nobody delivered the ruling yet: anyone can, from the page
 out = await lookupAs(p, g3a);
 check("appeal window over: deliver the final ruling offered", /Jurors ruled Yes, attended and the appeal window is over/.test(out) && (await txt(p, "ch-action")) === "Deliver the final ruling", out);
@@ -490,6 +627,8 @@ check("no page errors (challenges)", p.errs.length === 0, p.errs.join("; "));
 await p.close();
 // the other "Yes" funder (0.005 ETH) gets their part too; a wallet that never funded sees nothing
 p = await open("live", g1); await connect(p);
+await toStatus(p);
+check("case settled: no open Kleros case listed any more", !(await vis(p, "open-ch")));
 await lookupAs(p, g3a);
 check("second funder: their own share offered", (await txt(p, "collect")) === "Collect my appeal rewards (0.0067 ETH)", await txt(p, "collect"));
 await p.switchAccount(ga); await settle(p);
@@ -499,22 +638,53 @@ await p.close();
 check("every transaction pinned to the network (chainId)", allSent.length >= 15 && allSent.every((t) => t.chainId === "0x539"), JSON.stringify(allSent.map((t) => t.chainId)));
 check("no appeal or evidence call ever sent to the deposit contract", !allSent.some((t) => t.to.toLowerCase() === kick.target.toLowerCase() && /^0x(4b2f0ea0|0e274e4c|a6a7f0eb)/.test(t.data)));
 
-// 8b. jurors vote "No", only "Yes" gets fully funded for an appeal, and the window ends. Kleros's rule makes "Yes" win:
-// the page says so instead of showing the jurors' vote as the outcome.
-const [c1, c2, c3] = keys.slice(6, 9).map((k) => new ethers.NonceManager(new ethers.Wallet(k, prov)));
-const c1a = await addr(c1), c2a = await addr(c2);
+// 8b. c2 and c4 challenge (outside the page), c3 disputes c2's claim from the page. The case description isn't on IPFS
+// yet, so the page saves it first, and sends nothing while it can't. Then jurors vote "No", only "Yes" gets fully funded
+// for an appeal, and the window ends. Kleros's rule makes "Yes" win: the page says so instead of showing the jurors'
+// vote as the outcome. Nobody matches c4's challenge: it counts as attended.
+const [c1, c2, c3, c4] = keys.slice(6, 10).map((k) => new ethers.NonceManager(new ethers.Wallet(k, prov)));
+const c1a = await addr(c1), c2a = await addr(c2), c4a = await addr(c4);
 const kick2 = await deploy("0.01");
 build(kick2.target, "case2");
-for (const c of [c1, c2]) await (await c.sendTransaction({ to: kick2.target, value: D })).wait();
-await (await kick2.connect(owner).registerStakers([c1a, c2a])).wait();
-await (await kick2.connect(owner).postAttendance([c1a], 2n * D)).wait();
-await (await kick2.connect(c2).challenge({ value: await kick2.challengeDeposit() })).wait();
-await (await kick2.connect(c3).matchChallenge(c2a, { value: (await kick2.challenges(c2a)).deposit })).wait();
+for (const c of [c1, c2, c4]) await (await c.sendTransaction({ to: kick2.target, value: D })).wait();
+await (await kick2.connect(owner).registerStakers([c1a, c2a, c4a])).wait();
+await (await kick2.connect(owner).postAttendance([c1a], 3n * D)).wait();
+for (const c of [c2, c4]) await (await kick2.connect(c).challenge({ value: await kick2.challengeDeposit() })).wait();
+const [c2Case, c2CaseUri] = await kick2.caseMetaEvidence(c2a);
+ipfs.mode = "fail";
+p = await open("case2", c3); await connect(p);
+out = await lookupAs(p, c2a);
+check("lookup of an open challenge: the case description linked", /Challenge open/.test(out) && (await caseLink(p)) === `https://cdn.kleros.link${c2CaseUri}` && !ipfs.store.has(c2CaseUri), out);
+const n2 = p.sent.length;
+await p.click("#ch-action");
+out = await waitText(p, "lookup-out", /Couldn't save the case description|Dispute created|didn't go through/);
+check("dispute: the case description can't be saved on IPFS, so no transaction is sent", /Couldn't save the case description on IPFS, so nothing was sent: the upload service answered with error 500/.test(out) && p.sent.length === n2 && Number((await kick2.challenges(c2a)).state) === 1 && (await vis(p, "ch-action")), out);
+ipfs.mode = "other";
+await p.click("#ch-action");
+out = await waitText(p, "lookup-out", /Couldn't save the case description|Dispute created|didn't go through/);
+check("dispute: the upload service saves it at another address than the contract's: nothing sent", new RegExp(`Couldn't save the case description on IPFS, so nothing was sent: the upload service saved it at /ipfs/Qm\\w+, not at ${c2CaseUri}`).test(out) && p.sent.length === n2, out);
+ipfs.mode = "ok";
+const ups2 = ipfs.uploads.length, ord2 = order.length;
+await p.click("#ch-action");
+out = await waitText(p, "lookup-out", /Couldn't save the case description|Dispute created|didn't go through/);
+const saved2 = ipfs.uploads.slice(ups2).filter((u) => u.file === "metaevidence.json"), seq2 = order.slice(ord2);
+const iUp = seq2.findIndex((o) => o.upload === "metaevidence.json"), iMatch = seq2.findIndex((o) => o.tx === "0x6d6df455");
+check("dispute: the case description saved on IPFS first (exactly the contract's text, at its address), then the case opened",
+  /Dispute created on Kleros/.test(out) && saved2.length === 1 && saved2[0].data.equals(Buffer.from(c2Case, "utf8")) && saved2[0].path === c2CaseUri && iUp >= 0 && iMatch > iUp && p.sent.length === n2 + 1 && p.sent.at(-1).data === "0x6d6df455" + c2a.slice(2).toLowerCase().padStart(64, "0"), `${out} | ${JSON.stringify(seq2)}`);
 const { arbitratorDisputeID: case2, localDisputeID: local2 } = await kick2.challenges(c2a);
+check("the Kleros case carries c2's own case description (MetaEvidence event)", (await metaEv(local2)).join() === c2CaseUri && c2CaseUri !== g3CaseUri, (await metaEv(local2)).join());
+await p.waitForTimeout(300);
+rows = await chRows(p);
+check("open challenges list: a Kleros case and a challenge waiting for a match", rows.length === 2 && rows[0] === `${c2a.toLowerCase()} Kleros case #${case2}` && new RegExp(`^${c4a.toLowerCase()} waiting for a match until .+ IST$`).test(rows[1]), JSON.stringify(rows));
+check("no page errors (dispute from the page)", p.errs.length === 0, p.errs.join("; "));
+await p.close();
 await (await liquid.startAppealPeriod(case2, 2, 2 * 86400)).wait();
 await (await proxy.connect(c1).fundAppeal(local2, 1, { value: (await kick2.appealStatus(c2a)).costAttended })).wait();
 await prov.send("evm_increaseTime", [2 * 86400 + 10]); await prov.send("evm_mine", []);
 p = await open("case2", c1, 1337, { clockAt: await chainNow() }); await connect(p);
+await toStatus(p);
+rows = await chRows(p);
+check("open challenges list: an unmatched challenge whose match window is over counts as attended", rows.length === 2 && rows[0] === `${c2a.toLowerCase()} Kleros case #${case2}` && rows[1] === `${c4a.toLowerCase()} nobody matched in time: counts as attended`, JSON.stringify(rows));
 out = await lookupAs(p, c2a);
 check("one answer funded, appeal window over: that answer is shown as the winner, not the jurors' vote",
   /Jurors voted No, did not attend, but only Yes, attended was fully funded for an appeal, so Yes, attended wins the case/.test(out) && !/Jurors ruled No/.test(out) && (await txt(p, "ch-action")) === "Deliver the final ruling", out);
@@ -526,6 +696,55 @@ check("appeal funding unreadable: the jurors' vote with a warning that a lone fu
 await p.close();
 await (await liquid.passPeriod(case2)).wait(); await (await liquid.executeRuling(case2)).wait();
 check("and Kleros's final ruling is indeed the funded answer", (await proxy.disputes(local2)).ruling === 1n);
+
+// 8c. answer 0 ("Refuse to arbitrate"): the Dispute Resolver takes appeal funding for it too, an answer funded alone wins,
+// and a final 0 counts as "did not attend". d2's jurors voted "Yes" and someone funds 0; d3's jurors tied (0), so
+// both answers can only be funded until the end of the first half of the appeal period.
+const fresh = async () => new ethers.NonceManager(await fundNew());
+const [d1, d2, d3, griefer] = [await fresh(), await fresh(), await fresh(), await fresh()];
+const [d1a, d2a, d3a] = [await addr(d1), await addr(d2), await addr(d3)];
+const kick3 = await deploy("0.01");
+build(kick3.target, "case3");
+for (const d of [d1, d2, d3]) await (await d.sendTransaction({ to: kick3.target, value: D })).wait();
+await (await kick3.connect(owner).registerStakers([d1a, d2a, d3a])).wait();
+await (await kick3.connect(owner).postAttendance([d1a], 3n * D)).wait();
+for (const d of [d2, d3]) await (await kick3.connect(d).challenge({ value: await kick3.challengeDeposit() })).wait();
+for (const a of [d2a, d3a]) await (await kick3.connect(griefer).matchChallenge(a, { value: (await kick3.challenges(a)).deposit })).wait();
+const [cA, cB] = [await kick3.challenges(d2a), await kick3.challenges(d3a)];
+await (await liquid.startAppealPeriod(cA.arbitratorDisputeID, 1, 2 * 86400)).wait();
+await (await liquid.startAppealPeriod(cB.arbitratorDisputeID, 0, 2 * 86400)).wait();
+await (await proxy.connect(griefer).fundAppeal(cA.localDisputeID, 0, { value: E("0.05") })).wait();
+await (await proxy.connect(griefer).fundAppeal(cB.localDisputeID, 0, { value: E("0.01") })).wait();
+p = await open("case3", d2, 1337, { clockAt: await chainNow() }); await connect(p);
+out = await lookupAs(p, d2a);
+// appeal cost 0.0378: the jurors' answer needs 0.0756 until the end, any other answer (0 included) 0.1134 until the half
+const until = (re) => (out.match(re) || [])[1];
+check("Yes vote, 'Refuse to arbitrate' being funded: shown, and the staker warned they count as a no-show unless Yes is funded",
+  /Round 1: jurors voted Yes, attended/.test(out) && /"Refuse to arbitrate": 0\.05 ETH of 0\.1134 ETH raised/.test(out) && /counts as "No, did not attend" here/.test(out)
+  && /⚠ "Refuse to arbitrate" is being funded\. If "Yes, attended" is not fully funded by .+ IST, you count as a no-show/.test(out) && until(/not fully funded by (.+? IST), you count/) === until(/Either side can appeal until (.+? IST)/), out);
+await (await proxy.connect(griefer).fundAppeal(cA.localDisputeID, 0, { value: E("0.1") })).wait();
+out = await lookupAs(p, d2a);
+check("'Refuse to arbitrate' fully funded alone: shown, the warning stays, Yes still offered", /"Refuse to arbitrate": fully funded/.test(out) && /⚠ "Refuse to arbitrate" is being funded/.test(out) && (await txt(p, "ch-action")) === 'Appeal: fund "Yes, attended" (0.0756 ETH)', out);
+out = await lookupAs(p, d3a);
+check("tied vote: both answers only until the first half of the period, a refusal standing means a no-show",
+  /Round 1: the jurors did not reach an answer \(a tie or a refusal to arbitrate\)\. Both answers can be funded for an appeal only until .+ IST\. If neither is fully funded, the refusal stands and this guest counts as a no-show\./.test(out) && !/Either side can appeal until/.test(out)
+  && /"Refuse to arbitrate": 0\.01 ETH of 0\.0756 ETH raised/.test(out) && /⚠ "Refuse to arbitrate" is being funded\. If "Yes, attended" is not fully funded by .+ IST, this guest counts as a no-show/.test(out)
+  && until(/not fully funded by (.+? IST), this guest/) === until(/only until (.+? IST)\./) && (await txt(p, "ch-action")) === 'Appeal: fund "Yes, attended" (0.1134 ETH)' && (await txt(p, "ch-action2")) === 'Appeal: fund "No, did not attend" (0.1134 ETH)', out);
+check("no page errors (refuse to arbitrate)", p.errs.length === 0, p.errs.join("; "));
+await p.close();
+await prov.send("evm_increaseTime", [2 * 86400 + 10]); await prov.send("evm_mine", []);
+p = await open("case3", d1, 1337, { clockAt: await chainNow() }); await connect(p);
+out = await lookupAs(p, d2a);
+check("appeal window over, only 'Refuse to arbitrate' funded: it wins, and the guest counts as a no-show",
+  /Jurors voted Yes, attended, but only Refuse to arbitrate was fully funded for an appeal, so Refuse to arbitrate wins the case \(Kleros's rule when only one side funds an appeal\): this guest counts as a no-show\./.test(out), out);
+await (await liquid.passPeriod(cA.arbitratorDisputeID)).wait(); await (await liquid.executeRuling(cA.arbitratorDisputeID)).wait();
+out = await lookupAs(p, d2a);
+check("final ruling 0 shown as a no-show", (await proxy.disputes(cA.localDisputeID)).ruling === 0n && /Final ruling: no ruling \(counts as did not attend\)\./.test(out) && (await txt(p, "ch-action")) === "Settle challenge", out);
+await p.click("#ch-action");
+await waitText(p, "lookup-out", /Settled according to the Kleros ruling|didn't go through|cancelled|would fail/);
+check("settled: a final 0 keeps the guest off the list", Number((await kick3.challenges(d2a)).state) === 3 && !(await kick3.attended(d2a)), await txt(p, "lookup-out"));
+check("no page errors (refusal wins)", p.errs.length === 0, p.errs.join("; "));
+await p.close();
 
 // 9. a list never published: after the claim deadline a staker withdraws their own deposit from the page
 await (await g1.sendTransaction({ to: late.target, value: D })).wait();
