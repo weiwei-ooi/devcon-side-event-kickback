@@ -347,7 +347,16 @@ let ev = null, evCfg = null, deposits = null, luma = null, attendance = null;
 
 const short = (a) => (a ? a.slice(0, 6) + "…" + a.slice(-4) : "");
 const eth = (x) => ethers.formatEther(x) + " ETH";
-const when = (ts) => new Date(Number(ts) * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+// A moment with its timezone named. The console shows it on the event's own clock (the offset of the config's
+// eventStart; "IST" for India), so a laptop set to another timezone shows the same times as Luma. The hosted panel
+// knows only the contract's times, so it shows this computer's clock, named.
+const when = (ts) => {
+  const d = new Date(Number(ts) * 1000), o = { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
+  const m = hosted ? null : /([+-])(\d\d):(\d\d)$/.exec(cfg?.eventStart ?? "");
+  if (!m) return d.toLocaleString("en-GB", { ...o, timeZoneName: "short" });
+  const off = (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
+  return new Date(d.getTime() + off * 60_000).toLocaleString("en-GB", { ...o, timeZone: "UTC" }) + (off === 330 ? " IST" : ` UTC${core.offsetText(off)}`);
+};
 const ist = (ts) => new Date(Number(ts) * 1000).toLocaleString("en-GB", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" }) + " IST";
 const MODE_NAMES = { live: "LIVE (real guest deposits)", rehearsal: "REHEARSAL (throwaway contract, never on Luma)", local: "LOCAL TEST CHAIN (no real money)" };
 const tsOf = (iso) => Math.floor(Date.parse(iso) / 1000);

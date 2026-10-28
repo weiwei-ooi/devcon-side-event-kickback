@@ -55,10 +55,14 @@ const dir = "out-console-e2e";
 fs.rmSync(path.join(proj, dir), { recursive: true, force: true });
 fs.mkdirSync(path.join(proj, dir));
 const write = (f, d) => fs.writeFileSync(path.join(proj, dir, f), JSON.stringify(d, null, 2));
+// a moment as an ISO date in India time ("2026-11-04T18:00:00+05:30"), and its IST clock ("18:00")
+const istIso = (ts) => new Date((ts + 19_800) * 1000).toISOString().replace(/\.\d{3}Z$/, "+05:30");
+const istClock = (ts) => istIso(ts).slice(11, 16);
 const config = {
   eventName: "Console E2E", chain: "local", chainId: 1337, rpcUrl: `http://127.0.0.1:${RPC}`, logChunk: 5, deposit: "0.01",
   receiver: "0x0000000000000000000000000000000000000001",
-  eventStart: new Date((now - 60) * 1000).toISOString(), claimDeadline: new Date((now + 9 * DAY) * 1000).toISOString(),
+  // written in India time, like config.json: the page runs in Bangkok time below and must still show IST
+  eventStart: istIso(now - 60), claimDeadline: istIso(now + 9 * DAY),
   owner: await addr(owner), mode: "live",
   kleros: { court: 0, jurors: 3, disputeResolver: proxy.target, arbitrator: liquid.target, policyURI: POLICY },
 };
@@ -71,7 +75,8 @@ if (web.exitCode !== null) throw new Error(`The console server exited at once (p
 const results = [];
 const check = (name, ok, extra = "") => { results.push(ok); console.log(`${ok ? "PASS" : "FAIL"} ${name} ${ok ? "" : extra}`); };
 const browser = await chromium.launch();
-const page = await browser.newPage();
+// a laptop away from India (her Mac is set to Bangkok time while travelling)
+const page = await (await browser.newContext({ timezoneId: "Asia/Bangkok" })).newPage();
 const errs = []; page.on("pageerror", (e) => errs.push(e.message));
 const me = await addr(owner);
 const sent = []; // every transaction the console asked the wallet to send
@@ -189,6 +194,9 @@ await open();
 check("config shows Kleros Court, ETH deposit, the pinned policy and the case description template",
   /Kleros Court \(General Court\), 3 jurors/.test(await txt("deployInfo")) && /0\.01 ETH per guest/.test(await txt("deployInfo")) &&
   (await txt("deployInfo")).includes(POLICY) && /one per Kleros case, written by the contract from docs\/metaevidence\.template\.json/.test(await txt("deployInfo")) && !/Ready to deploy/.test(await txt("deployInfo")), await txt("deployInfo"));
+check("event times shown on the event's clock (IST), not the laptop's (Bangkok)",
+  new RegExp(`Attendance list from\\s*\\d+ \\w+ \\d{4},? ${istClock(now - 60)} IST`).test(await txt("deployInfo")) &&
+  new RegExp(`List by\\s*\\d+ \\w+ \\d{4},? ${istClock(now + 9 * DAY)} IST`).test(await txt("deployInfo")), await txt("deployInfo"));
 check("connect", await click("connect", /ETH on/) || /ETH on/.test(await txt("who")), await txt("who"));
 
 // F12: the config changed on disk after the page loaded (e.g. another console on the same port) → refuse
