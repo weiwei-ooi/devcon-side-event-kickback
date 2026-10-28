@@ -1,8 +1,14 @@
 // Browser test of the generic guest page (node scripts/build-site.mjs --generic, published at /event/): a page for any
 // kickback deposit contract, named by the organiser's link (?contract=0x…&from=<block>), against ganache with a fake
 // injected wallet. The events are created as the admin panel creates them: the core's new-event form and constructor
-// arguments, with the generic case description template and juror policy. Also checks that the Truth Pays build (the
-// contract baked in) still ignores the link. Kleros's IPFS upload service and gateway are mocked, never reached.
+// arguments, with the generic case description template and juror policy. Times are shown on the event's own clock
+// when its case description names it (CET for a Berlin event, opened in Bangkok time, on the next day there; CEST,
+// the same day), the guest's own named otherwise (a read that fails or comes late holds nothing up, and what was shown
+// meanwhile, the open challenges and a wallet's status included, is shown again on the event's clock); only the start
+// is named by the case's zone (a claim deadline after the end of summer time is not called CEST), a name readers take
+// for another zone (PST at +08:00) never, and brackets never nest; the page's copy of eventClock gives the core's
+// results on the core test table. Also checks that the Truth Pays build (the contract baked in) still ignores the
+// link. Kleros's IPFS upload service and gateway are mocked, never reached.
 // Needs Playwright with Chromium (see test/site.e2e.mjs).
 //   node test/site-generic.e2e.mjs
 import fs from "node:fs";
@@ -12,6 +18,7 @@ import os from "node:os";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import * as core from "../scripts/core.mjs";
+import { CLOCK_CASES } from "./event-clock-cases.mjs";
 const proj = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const req = createRequire(path.join(proj, "package.json"));
 const ganache = req("ganache");
@@ -65,6 +72,18 @@ const wrong = await createEvent({ eventName: "Elsewhere Night" }, otherProxy);
 const tricky = await createEvent({ rawName: '<img src=x onerror="window.__xss=1">Night \u202Eevil & "co"' });
 const longName = await createEvent({ eventName: "A very long event name that goes on and on, Lisbon Builders Week 2026, day two" });
 const baked = await createEvent({ eventName: "Baked Event", deposit: "0.01" });
+// events with their date and time written into their case descriptions by the form, at fixed times: in Berlin in winter
+// (CET) on Friday 12 March 2027 at 19:00, which is Saturday 01:00 in Bangkok (another day there); in Berlin in summer
+// (CEST) on Wednesday 20 October 2027 at 10:00, 15:00 in Bangkok (the same day), whose claim deadline 14 days later
+// comes after Berlin's summer time has ended (31 October); in Manila (Philippine time written "PST", which readers take
+// for Pacific time) on Thursday 4 November 2027 at 19:00; and one whose case description names no date ("some evening")
+const CET = ["2027-03-12T19:00:00+01:00", "2027-03-12T23:00:00+01:00"], CEST = ["2027-10-20T10:00:00+02:00", "2027-10-20T14:00:00+02:00"];
+const MANILA = ["2027-11-04T19:00:00+08:00", "2027-11-04T22:00:00+08:00"];
+const cetStart = Date.parse(CET[0]) / 1000, cestStart = Date.parse(CEST[0]) / 1000;
+const cetEv = await createEvent({ eventName: "Clock Night, Berlin", eventWhen: core.describeWhen(...CET, "CET"), eventStart: CET[0] });
+const cestEv = await createEvent({ eventName: "Clock Morning, Berlin", eventWhen: core.describeWhen(...CEST, "CEST"), eventStart: CEST[0] });
+const manila = await createEvent({ eventName: "Clock Night, Manila", eventWhen: core.describeWhen(...MANILA, "PST"), eventStart: MANILA[0] });
+const undated = await createEvent({ eventName: "Undated Night", eventWhen: "some evening in November" });
 const evName = FORM.eventName, D = E("0.02");
 // a build reserved for one event (as the real site's is for Truth Pays): that event's own contract, and look-alikes
 const tpName = "Truth Pays: Devcon Mumbai 2026";
@@ -125,6 +144,9 @@ const iface = new ethers.Interface(load("TruthPaysKickback").abi);
 const wrongSels = sels.filter(([name, sel]) => iface.getFunction(name)?.selector !== sel);
 check("every contract selector on the page matches the contract's ABI (the generic page's reads included)", sels.length >= 28 && wrongSels.length === 0
   && ["eventName", "owner", "policyURI", "metaEvidenceTemplate"].every((n) => sels.some(([name]) => name === n)), JSON.stringify(wrongSels));
+check("generic build: the core's offsets and timezone names baked in for the event's clock; not in the baked build",
+  JSON.stringify(genCfg.zones) === JSON.stringify(core.ZONE_OFFSETS) && genCfg.zones.CET[0] === 60 && JSON.stringify(genCfg.offsets) === JSON.stringify(core.TZ_OFFSETS)
+  && genCfg.offsets.includes("+05:45") && !("zones" in cfgOf(liveHtml)) && !("offsets" in cfgOf(liveHtml)), JSON.stringify(genCfg.zones).slice(0, 100));
 check("generic build: the compiled contract's code fingerprint and the config's own event (its contract and name) baked in",
   JSON.stringify(genCfg.runtime) === JSON.stringify(RUNTIME) && genCfg.reserved?.contract === baked.c.target && genCfg.reserved?.name === "E2E"
   && cfgOf(fs.readFileSync(path.join(outDir, "event-tp", "index.html"), "utf8")).reserved?.name === "Truth Pays" && !("runtime" in cfgOf(liveHtml)) && !("reserved" in cfgOf(liveHtml)),
@@ -150,7 +172,8 @@ const browser = await chromium.launch();
 const ipfs = { uploads: [], store: new Map() };
 const CORS = { "access-control-allow-origin": "*" };
 // opts: noArchive (the public RPC keeps no old state: eth_getCode for any block but "latest" fails, like a pruned node),
-// timezoneId (the browser's time zone). page.calls lists every public RPC request ({ method, params }).
+// timezoneId (the browser's time zone), caseRead ("fail": reading a case description fails; a number: it answers that
+// many ms late). page.calls lists every public RPC request ({ method, params }).
 async function open(url, wallet, opts = {}) {
   const ctx = await browser.newContext(opts.timezoneId ? { timezoneId: opts.timezoneId } : {});
   const page = await ctx.newPage();
@@ -173,6 +196,10 @@ async function open(url, wallet, opts = {}) {
     if (body) page.calls.push({ method: body.method, params: body.params });
     if (body && opts.noArchive && body.method === "eth_getCode" && body.params[1] !== "latest")
       return route.fulfill({ status: 200, headers: { "content-type": "application/json", ...CORS }, body: JSON.stringify({ jsonrpc: "2.0", id: body.id, error: { code: -32000, message: "missing trie node 5c3a… (path ) state is not available" } }) });
+    if (body && opts.caseRead !== undefined && body.method === "eth_call" && String(body.params?.[0]?.data).startsWith(CASE_SEL)) {
+      if (opts.caseRead === "fail") return route.fulfill({ status: 200, headers: { "content-type": "application/json", ...CORS }, body: JSON.stringify({ jsonrpc: "2.0", id: body.id, error: { code: -32603, message: "internal error" } }) });
+      await new Promise((r) => setTimeout(r, opts.caseRead));
+    }
     return route.continue();
   });
   await page.route("https://kleros-api.netlify.app/**", async (route) => {
@@ -227,6 +254,8 @@ const lookupAs = async (pg, who) => {
 const oldCode = (p) => p.calls.filter((c) => c.method === "eth_getCode" && c.params[1] !== "latest").length;
 const logStarts = (p) => p.calls.filter((c) => c.method === "eth_getLogs").map((c) => parseInt(c.params[0].fromBlock, 16));
 const EVENT_SPECIFIC = /Truth Pays|Devcon|Mumbai|Hitchki|BKC|Arkiv|Web3 Mumbai|Luma|Committed Spot|\bIST\b/;
+const CASE_SEL = iface.getFunction("caseMetaEvidence").selector;
+const caseReads = (p) => p.calls.filter((c) => c.method === "eth_call" && String(c.params?.[0]?.data).startsWith(CASE_SEL)).length;
 
 // 2a. no contract in the link, or half an address: nothing but why
 let p = await open("/event/", g1);
@@ -291,6 +320,93 @@ await p.close();
 p = await open(`${link(ev.c, ev.block)}#status`, null);
 check("link with #status: the status page of that event", (await vis(p, "lookup-addr")) && !(await vis(p, "send")) && (await txt(p, "ev-name")) === evName);
 await p.close();
+
+// 2b'. the event's own clock: its case description names its date and time on the event's clock (CET for the Berlin
+// event), so the page shows times on it, with the guest's own time alongside when theirs differs (Bangkok: 6 hours on).
+// Only the start is named by the case's zone; later moments by the offset (a city's summer or winter time can begin
+// after the start). Inside brackets the guest's time is written "…, that is … your time", so brackets never nest.
+// clockAt(t, off): moment t on the clock of offset `off` (minutes), as the page writes it ("Fri 12 Mar, 19:00"); shownRe:
+// a pattern for a text the page shows (Chromium may write a comma after the weekday)
+const clockAt = (t, off) => new Date((Number(t) + off * 60) * 1000).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "UTC" });
+const shownRe = (text) => new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\b([A-Z][a-z]{2}) (\d{1,2} [A-Z][a-z]{2}),/g, "$1,? $2,?"));
+const nested = (text) => /\)\)|\) \(/.test(text); // brackets inside brackets, or two in a row
+const cetDeadline = cetStart + 14 * 86400, cestDeadline = cestStart + 14 * 86400;
+check("the test's times: Saturday 01:00 in Bangkok for the CET start, the same day 15:00 for the CEST one",
+  clockAt(cetStart, 60) === "Fri 12 Mar, 19:00" && clockAt(cetStart, 420) === "Sat 13 Mar, 01:00" && clockAt(cestStart, 120) === "Wed 20 Oct, 10:00" && clockAt(cestStart, 420) === "Wed 20 Oct, 15:00"
+  && clockAt(cetDeadline, 60) === "Fri 26 Mar, 19:00" && clockAt(cestDeadline, 120) === "Wed 3 Nov, 10:00", `${clockAt(cetStart, 420)} ${clockAt(cestDeadline, 120)}`);
+p = await open(link(cetEv.c, cetEv.block), g1, { timezoneId: "Asia/Bangkok" });
+let metaLine = await waitText(p, "ev-meta", / CET /);
+check("the event's own clock (CET, from its case description), the guest's own time and day alongside (Bangkok, the next day)",
+  shownRe("Starts Fri 12 Mar, 19:00 CET (Sat 13 Mar, 01:00 your time)").test(metaLine) && /^Starts .+\)\s*Deposit 0\.02 ETH$/.test(metaLine) && !/GMT\+7/.test(metaLine), metaLine);
+let checksText = await waitText(p, "checks", / CET /);
+check("the deposit deadline check on the event's clock too", shownRe("Deposits are open until Fri 12 Mar, 19:00 CET (Sat 13 Mar, 01:00 your time)").test(checksText) && (await p.locator("#checks .mark.ok").count()) === 4, checksText);
+let deadline = await txt(p, "deadline");
+check("the claim deadline (two weeks on) on the event's offset, named by it, the guest's time inside the same brackets",
+  shownRe("the claim deadline (Fri 26 Mar, 19:00 UTC+01:00, that is Sat 27 Mar, 01:00 your time)").test(deadline) && !/CET/.test(deadline) && !nested(deadline), deadline);
+check("the case description is read once, for the organiser's wallet", caseReads(p) === 1 && p.calls.some((c) => String(c.params?.[0]?.data).toLowerCase() === CASE_SEL + orga.slice(2).toLowerCase().padStart(64, "0")), String(caseReads(p)));
+// the page's own copy of eventClock (it can't import the core) gives the core's results on the core test table
+const pageClock = await p.evaluate((cases) => cases.map(([, text, start]) => eventClock(text, start)), CLOCK_CASES);
+const differ = CLOCK_CASES.map(([what, text, start], i) => (JSON.stringify(pageClock[i]) === JSON.stringify(core.eventClock(text, start)) ? null : `${what}: ${JSON.stringify(pageClock[i])}`)).filter(Boolean);
+check(`the page's eventClock agrees with core.eventClock on the ${CLOCK_CASES.length} cases of the core test table`, CLOCK_CASES.length >= 40 && differ.length === 0
+  && pageClock.some((c) => c?.zone === "CET") && pageClock.some((c) => c?.zone === "UTC+08:00") && pageClock.some((c) => c === null), differ.join("; "));
+check("no page errors (event's clock)", p.errs.length === 0, p.errs.join("; "));
+await p.close();
+// where the guest's clock is the event's (Lagos is UTC+01:00 all year): nothing alongside
+p = await open(link(cetEv.c, cetEv.block), g1, { timezoneId: "Africa/Lagos" });
+metaLine = await waitText(p, "ev-meta", / CET /);
+deadline = await txt(p, "deadline");
+check("the guest's clock is the event's: no second time", shownRe("Starts Fri 12 Mar, 19:00 CET").test(metaLine) && /^Starts .+ CET\s*Deposit/.test(metaLine)
+  && shownRe("the claim deadline (Fri 26 Mar, 19:00 UTC+01:00)").test(deadline) && !/your time/.test(metaLine + await txt(p, "checks") + deadline), `${metaLine} | ${deadline}`);
+await p.close();
+// the guest's own day when it is the event's (Bangkok, 15:00 for a 10:00 CEST start): the time only; the claim deadline,
+// after Berlin's summer time has ended, is not called CEST
+p = await open(link(cestEv.c, cestEv.block), g1, { timezoneId: "Asia/Bangkok" });
+metaLine = await waitText(p, "ev-meta", / CEST /);
+deadline = await txt(p, "deadline");
+check("the same day for the guest: their time without the day; the deadline after the end of summer time named by the offset, not CEST",
+  shownRe("Starts Wed 20 Oct, 10:00 CEST (15:00 your time)").test(metaLine) && shownRe("Deposits are open until Wed 20 Oct, 10:00 CEST (15:00 your time)").test(await txt(p, "checks"))
+  && shownRe("the claim deadline (Wed 3 Nov, 10:00 UTC+02:00, that is 15:00 your time)").test(deadline) && !/CEST/.test(deadline), `${metaLine} | ${deadline}`);
+await p.close();
+// a timezone name readers take for another one (Philippine time written "PST"): named by the offset, also for a guest in
+// Singapore, whose clock it is (nothing alongside: the name alone has to be unmistakable)
+p = await open(link(manila.c, manila.block), g1, { timezoneId: "Asia/Singapore" });
+metaLine = await waitText(p, "ev-meta", / UTC\+08:00/);
+check("PST at +08:00: named UTC+08:00, never PST", shownRe("Starts Thu 4 Nov, 19:00 UTC+08:00").test(metaLine) && !/PST|your time/.test(metaLine + await txt(p, "checks") + await txt(p, "deadline")), metaLine);
+await p.close();
+// the case description read fails, or comes late: the checks don't wait for it, on the guest's own clock meanwhile
+p = await open(link(cetEv.c, cetEv.block), g1, { timezoneId: "Asia/Bangkok", caseRead: "fail" });
+await p.waitForTimeout(500);
+check("the case description can't be read: everything as without a clock (the guest's own, named)", (await p.locator("#checks .mark.ok").count()) === 4 && caseReads(p) === 1
+  && /^Starts .+ GMT\+7\s*Deposit/.test(await txt(p, "ev-meta")) && /Deposits are open until .+ GMT\+7$/.test(await txt(p, "checks")) && /^the claim deadline \(.+ GMT\+7\)$/.test(await txt(p, "deadline"))
+  && !/CET|UTC\+01:00|your time/.test(await visible(p)) && p.errs.length === 0, await txt(p, "checks"));
+await p.close();
+p = await open(link(cetEv.c, cetEv.block), g1, { timezoneId: "Asia/Bangkok", caseRead: 4000 });
+const early = [await txt(p, "ev-meta"), await txt(p, "checks"), (await p.locator("#checks .mark.ok").count()) === 4, await txt(p, "deadline")];
+checksText = await waitText(p, "checks", / CET /);
+check("the case description comes late: the checks are shown at once on the guest's clock, then again on the event's",
+  early[2] && /GMT\+7/.test(early[0]) && /Deposits are open until .+ GMT\+7$/.test(early[1]) && /GMT\+7\)$/.test(early[3]) && shownRe("Deposits are open until Fri 12 Mar, 19:00 CET (Sat 13 Mar, 01:00 your time)").test(checksText)
+  && shownRe("Starts Fri 12 Mar, 19:00 CET (Sat 13 Mar, 01:00 your time)").test(await txt(p, "ev-meta")) && shownRe("(Fri 26 Mar, 19:00 UTC+01:00, that is Sat 27 Mar, 01:00 your time)").test(await txt(p, "deadline")),
+  `${early.join(" | ")} | ${checksText}`);
+await p.close();
+// a case description that names no date the start fits: the guest's own clock, named
+p = await open(link(undated.c, undated.block), g1, { timezoneId: "Asia/Bangkok" });
+for (let i = 0; i < 40 && !caseReads(p); i++) await p.waitForTimeout(100);
+await p.waitForTimeout(500);
+check("no usable date in the case description: the guest's own clock, named (GMT+7)", caseReads(p) === 1 && /^Starts .+ GMT\+7\s*Deposit/.test(await txt(p, "ev-meta"))
+  && /Deposits are open until .+ GMT\+7$/.test(await txt(p, "checks")) && !/your time/.test(await visible(p)), `${await txt(p, "ev-meta")} | ${await txt(p, "checks")}`);
+await p.close();
+// in the page's code, every time inside brackets, or right before them, is written with whenInHtml ("…, that is … your
+// time"): whenHtml, which may add "(… your time)", is never there, so brackets never nest
+const bracketed = (src, names) => [...src.matchAll(new RegExp(`\\$\\{(?:${names.join("|")})\\(`, "g"))].flatMap((m) => {
+  const line = src.slice(src.lastIndexOf("\n", m.index) + 1, m.index), lit = line.slice(line.lastIndexOf("`") + 1).replace(/\$\{[^{}]*\}/g, "");
+  let i = m.index + 2;
+  for (let depth = 0; i < src.length && (src[i] !== "}" || depth); i++) depth += src[i] === "{" ? 1 : src[i] === "}" ? -1 : 0;
+  const unclosed = (lit.match(/\(/g) || []).length - (lit.match(/\)/g) || []).length;
+  return unclosed > 0 || src.slice(i + 1, i + 3) === " (" ? [line.trim().slice(-80)] : [];
+});
+const siteSrc = read("site/index.html");
+check("guest page: no time that can add brackets is written inside brackets or right before them", bracketed(siteSrc, ["when", "whenHtml"]).length === 0
+  && (siteSrc.match(/\$\{whenInHtml\(/g) || []).length >= 4, bracketed(siteSrc, ["when", "whenHtml"]).join(" | "));
 
 // 2c. the link's block missing, wrong or too late: the page finds the creation block itself (binary search over the
 // contract's code); with an RPC that keeps no old state it takes the link's block, and without one it can't go on
@@ -425,6 +541,37 @@ check("in dispute: the Kleros case linked, evidence form shown", /In a Kleros di
 const asked = (fn) => p.calls.filter((c) => c.method === "eth_call" && c.params?.[0]?.data === iface.getFunction(fn).selector && String(c.params[0].to).toLowerCase() === ev.c.target.toLowerCase()).length;
 check("the Kleros court is not read again from the contract after the event was checked", asked("policyURI") >= 1 && asked("arbitrator") === asked("policyURI"), `${asked("arbitrator")} vs ${asked("policyURI")}`);
 check("no page errors (dispute)", p.errs.length === 0, p.errs.join("; "));
+await p.close();
+
+// 3'. after the Berlin event (CET), from Bangkok: g1 on the list, g2 off it and challenging. The challenge window and the
+// match deadline are named by the event's offset (only the start is named by the case's zone), the guest's own time
+// alongside, and inside brackets "…, that is … your time". The case description comes late: the open challenges and a
+// wallet's status, shown first on the guest's own clock, are shown again on the event's once it is known (no new read).
+for (const g of [g1, g2]) await (await g.sendTransaction({ to: cetEv.c.target, value: D })).wait();
+const cetKick = cetEv.c.connect(org);
+await (await cetKick.registerStakers([g1a, g2a])).wait();
+await prov.send("evm_increaseTime", [cetStart + 60 - (await chainNow())]); await prov.send("evm_mine", []);
+await (await cetKick.postAttendance([g1a], 2n * D)).wait();
+await (await cetEv.c.connect(g2).challenge({ value: await cetEv.c.challengeDeposit() })).wait();
+const windowEnd = Number(await cetEv.c.challengeEndsAt()), matchEnd = Number((await cetEv.c.challenges(g2a)).matchEndsAt);
+p = await open(link(cetEv.c, cetEv.block), null, { clockAt: await chainNow(), timezoneId: "Asia/Bangkok", caseRead: 6000 });
+for (let i = 0; i < 40 && !(await vis(p, "open-ch")); i++) await p.waitForTimeout(100);
+const earlyList = await txt(p, "open-ch-list");
+out = await lookupAs(p, g1a);
+const earlyStatus = [out, caseReads(p) === 1 && !/ CET|UTC\+01:00/.test(await txt(p, "ev-meta"))];
+const list = await waitText(p, "open-ch-list", /UTC\+01:00/);
+out = await waitText(p, "lookup-out", /UTC\+01:00/);
+check("before the case description: the open challenges and the wallet's status on the guest's own clock",
+  new RegExp(`${g2a} waiting for a match until .+ GMT\\+7$`, "i").test(earlyList) && /challenge window \(until .+ GMT\+7\) once no challenge/.test(earlyStatus[0]) && earlyStatus[1],
+  `${earlyList} | ${earlyStatus[0]}`);
+check("then the open challenges on the event's clock: the match deadline named by the offset, the guest's time and day alongside",
+  shownRe(`waiting for a match until ${clockAt(matchEnd, 60)} UTC+01:00 (${clockAt(matchEnd, 420)} your time)`).test(list) && clockAt(matchEnd, 420).slice(0, 3) !== clockAt(matchEnd, 60).slice(0, 3)
+  && !/ CET|GMT\+7/.test(list), list);
+check("and the wallet's status too, the challenge window's end inside its brackets without nesting them",
+  shownRe(`Payouts are released after the challenge window (until ${clockAt(windowEnd, 60)} UTC+01:00, that is ${clockAt(windowEnd, 420)} your time) once no challenge is waiting for a match.`).test(out)
+  && !nested(out) && !/GMT\+7/.test(out) && shownRe("the claim deadline (Fri 26 Mar, 19:00 UTC+01:00, that is Sat 27 Mar, 01:00 your time)").test(await txt(p, "deadline")), out);
+check("the event's clock read once, nothing read again to show the times on it", caseReads(p) === 1, String(caseReads(p)));
+check("no page errors (event's clock, after the event)", p.errs.length === 0, p.errs.join("; "));
 await p.close();
 
 await browser.close(); await server.close();

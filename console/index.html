@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Truth Pays · Owner Console</title>
 <style>
-  :root { --bg:#1B003F; --card:#26085a; --line:#3d1b7a; --text:#f3ecff; --muted:#b9a6dd; --accent:#9747FF; --blue:#27CDFE; --ok:#3ddc97; --err:#ff6b8b; --warn:#ffc46b; }
+  :root { color-scheme:dark; --bg:#1B003F; --card:#26085a; --line:#3d1b7a; --text:#f3ecff; --muted:#b9a6dd; --accent:#9747FF; --blue:#27CDFE; --ok:#3ddc97; --err:#ff6b8b; --warn:#ffc46b; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
   main { max-width:760px; margin:0 auto; padding:32px 16px 64px; }
@@ -37,10 +37,11 @@
   .card h2 { font-size:16px; margin:0 0 6px; }
   .card p { margin:4px 0 12px; color:var(--muted); }
   details.card summary { cursor:pointer; font-weight:600; }
+  details.card > summary h2 { display:inline; }
   button { background:var(--accent); color:#fff; border:0; border-radius:10px; padding:10px 16px; font-weight:600; cursor:pointer; font-size:14px; }
   button.secondary { background:transparent; border:1px solid var(--line); color:var(--text); }
   button.danger { background:#a3204a; }
-  button:disabled { opacity:.45; cursor:not-allowed; }
+  button:disabled { opacity:.6; cursor:not-allowed; }
   code, .mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; word-break:break-all; }
   .kv { display:grid; grid-template-columns:170px 1fr; gap:4px 12px; }
   .kv div:nth-child(odd) { color:var(--muted); }
@@ -49,11 +50,15 @@
   a { color:var(--blue); }
   select { background:#12002b; border:1px solid var(--line); color:var(--text); border-radius:8px; padding:8px 10px; }
   input { background:#12002b; border:1px solid var(--line); color:var(--text); border-radius:8px; padding:8px 10px; width:100%; font-family:ui-monospace,Menlo,monospace; }
+  input::placeholder { font-family:system-ui, -apple-system, Segoe UI, sans-serif; }
   .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
   .row input { flex:1 1 220px; width:auto; }
+  label.file input { flex:none; } /* a label.file is a column: a flex basis there would be the input's height */
   /* long links and addresses wrap instead of widening the page on a phone */
   #log, .preview, .big-warn, .result, .kv > * { overflow-wrap:anywhere; min-width:0; }
   @media (max-width:520px) { .kv { grid-template-columns:1fr; } .kv div:nth-child(odd) { margin-top:6px; } .form { grid-template-columns:1fr; } }
+  /* phone: tap targets of at least 44 px */
+  @media (max-width:520px) { button, select, input:not([type=checkbox]) { min-height:44px; } details.card > summary { padding:11px 0; } .kv a { padding:6px 0; } }
 </style>
 </head>
 <body>
@@ -66,7 +71,7 @@
   <div class="card">
     <h2>1. Connect wallet</h2>
     <p class="local-only">Use the dedicated event wallet (the owner), not your personal one. The console switches the wallet to <b>Ethereum mainnet</b>. This event never uses Arbitrum, Base, Optimism or any other network.</p>
-    <p class="hosted-only">Connect the wallet you organise with. If you create an event here, it becomes the event's owner: keep it for this event (not your personal wallet). The page switches the wallet to <b>Ethereum mainnet</b>; these deposit contracts never use Arbitrum, Base, Optimism or any other network. You can look at an event without connecting.</p>
+    <p class="hosted-only">Connect the wallet you organise with. If you create an event here, it becomes the event's owner: keep it for this event (not your personal wallet). The page switches the wallet to <b>Ethereum mainnet</b>; these deposit contracts never use Arbitrum, Base, Optimism or any other network. You can look at an event, or preview a new one, without connecting.</p>
     <div class="row"><button id="connect">Connect wallet</button><span id="who" class="mono"></span></div>
   </div>
 
@@ -86,7 +91,7 @@
       <label>Deposit per guest, in ETH<input id="neDeposit" placeholder="0.01" inputmode="decimal"></label>
       <label>Settle within (days after the start)<input id="neDays" type="number" min="7" max="365" value="14"></label>
     </div>
-    <p>The attendance list can be posted from the start time. If it is never posted, each guest can take their own deposit back once the settlement time is over (at least 7 days after the start; 14 is usual). The timezone is the one of the event's city on the event's date (summer time included); the preview shows the start in UTC and on this computer. The venue is written into every Kleros case as the one planned when the contract is created; jurors are told that the venue announced to registered guests counts. <b>Preview</b> shows what Kleros jurors would read in a case about one guest.</p>
+    <p>The attendance list can be posted from the start time. If it is never posted, each guest can take their own deposit back once the settlement time is over (at least 7 days after the start; 14 is usual). The timezone is the one of the event's city on the event's date (summer time included); the preview shows the start in UTC and on this computer. The venue is written into every Kleros case as the one planned when the contract is created; jurors are told that the venue announced to registered guests counts. <b>Preview</b> shows what Kleros jurors would read in a case about one guest; it needs no wallet. <b>Create event</b> needs the connected wallet that will own the event.</p>
     <div class="row"><button class="secondary" id="previewEvent" disabled>Preview</button><button id="createEvent" disabled>Create event</button></div>
     <div id="nePreview" class="preview" hidden></div>
     <div id="neDone" class="result" hidden></div>
@@ -171,7 +176,7 @@
     <h2 style="margin-top:14px">Appeal a Kleros ruling</h2>
     <p>After each jury vote there is an appeal window (a few days, shown in the challenge list). Anyone can chip in ETH for either answer. <b>Fund appeal</b> sends it from your wallet straight to Kleros (its Dispute Resolver, which runs the appeal crowdfunding), never through the deposit contract, and Kleros records it under your wallet. The answer the jurors voted for must raise the appeal fee plus 1× and has the whole window; the other answer must raise the fee plus 2× and only has the first half of the window. Only when both answers are fully funded does a new, larger jury vote again. After the final ruling, <b>Collect appeal rewards</b> takes back from Kleros what it owes this wallet: ETH back plus a reward for the answer that won, or a refund for an answer that was never fully funded (nothing for a funded answer that lost). Uses the challenger wallet above. Fund from an ordinary wallet like this one, not a Safe or other smart-contract wallet: Kleros pays appeal money back with a basic transfer that such wallets may not accept.</p>
     <p class="warn"><b>Defend your side.</b> If only one answer is fully funded when the window closes, that answer wins the case, whatever the jurors voted. After every vote, watch the challenge list until the appeal window ends, and fund your side if the other side starts funding. Anyone can also fund <b>"refuse to arbitrate"</b> on Kleros: funded alone, it wins too, counts as "did not attend", and splits the challenge money in half. The challenge list shows it as soon as it has funding. If you disputed the challenge, your side is <b>"No, did not attend"</b>.</p>
-    <div class="row"><select id="apSide"><option value="" selected>Choose the answer to fund…</option><option value="1">Yes, attended</option><option value="2">No, did not attend</option></select><input id="apAmt" placeholder="ETH to add (empty = all still missing)" style="flex:0 1 240px"><button class="secondary" id="fundAppeal" disabled>Fund appeal</button></div>
+    <div class="row"><select id="apSide"><option value="" selected>Choose the answer to fund…</option><option value="1">Yes, attended</option><option value="2">No, did not attend</option></select><input id="apAmt" placeholder="ETH to add (empty = all missing)" style="flex:0 1 240px"><button class="secondary" id="fundAppeal" disabled>Fund appeal</button></div>
     <div class="row" style="margin-top:8px"><button class="secondary" id="deliverRuling" disabled>Deliver final ruling</button><button class="secondary" id="collectAppeal" disabled>Collect appeal rewards</button></div>
     <h2 style="margin-top:14px">Send evidence to the Kleros jurors</h2>
     <p>For the challenger wallet above, while the case is open. Write what happened (door records, who saw them). You can attach a file (a photo or a PDF, up to 5 MB) or paste a link. <b>Photos and documents are best attached as files:</b> Kleros shows jurors only files stored on IPFS. A link to an IPFS file (ipfs://… or https://…/ipfs/…) is attached as that file; any other link goes into the description as text, which jurors have to copy into their browser. The console stores the evidence on IPFS (a public file network) through Kleros's upload service, then adds it to the case. Evidence is public and permanent.</p>
@@ -266,7 +271,7 @@ const OWNER_BUTTONS = ["register", "refundDeclined", "postList", "addAtt", "remo
 const TX_GAS_CAP = core.TX_GAS_CAP;
 const ANYONE_BUTTONS = ["matchOne", "resolveOne", "publishCase", "release", "fundAppeal", "deliverRuling", "collectAppeal", "submitEvidence", "sendDetails"]; // any wallet can do these
 // hosted panel only: owner actions on the deposits, reading buttons anyone may use once an event is open
-// (nothing is sent), and the new-event form (needs a connected wallet, which becomes the owner)
+// (nothing is sent), and the new-event form (Preview needs no wallet; Create needs the wallet that becomes the owner)
 const HOSTED_OWNER_BUTTONS = ["registerSel", "refundSel", "registerFile", "refundFile"];
 const HOSTED_READ_BUTTONS = ["loadDeposits", "checkLuma", "buildPlan"];
 const HOSTED_FORM_BUTTONS = ["previewEvent", "createEvent"];
@@ -340,23 +345,43 @@ const KLEROS_ERRORS = [
 ];
 let cfg, cfgText, settings, chain, mode, artifact, iface, rp, wallet, signer, account, state, busy = false;
 let warnedDeposit = null; // the contract whose deposit-mismatch warning was already shown
-// hosted panel: the event that is open (core.readEvent, plus its deploy block) and the settings the
-// core's checks use for it (core.contractConfig); the deposits table, the last Luma check, the
+// hosted panel: the event that is open (core.readEvent, plus its deploy block and its own clock) and the
+// settings the core's checks use for it (core.contractConfig); the deposits table, the last Luma check, the
 // attendance list to post. Each belongs to one contract and is dropped when another event is opened.
 let ev = null, evCfg = null, deposits = null, luma = null, attendance = null;
 
 const short = (a) => (a ? a.slice(0, 6) + "…" + a.slice(-4) : "");
 const eth = (x) => ethers.formatEther(x) + " ETH";
+const WHEN = { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
+// A moment on this computer's clock, named: "4 Nov 2026, 19:30 GMT+7"
+const here = (ts) => new Date(Number(ts) * 1000).toLocaleString("en-GB", { ...WHEN, timeZoneName: "short" });
 // A moment with its timezone named. The console shows it on the event's own clock (the offset of the config's
 // eventStart; "IST" for India), so a laptop set to another timezone shows the same times as Luma. The hosted panel
-// knows only the contract's times, so it shows this computer's clock, named.
-const when = (ts) => {
-  const d = new Date(Number(ts) * 1000), o = { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
+// knows only the contract's times: once an event is open it shows them on that event's own clock when the event's case
+// description names it (ev.clock, core.eventClock), with this computer's time alongside when it differs then: "4 Nov
+// 2026, 18:00 IST (19:30 your time)", and this computer's day too when it is another day. The zone's name is the one
+// the case gives for the event's start, and is used for the start only: a city's summer or winter time can begin any
+// day after it (an event in Berlin on 20 October has its list deadline, 3 November, on CET, not CEST), so every other
+// moment is named by the offset, which stays true ("18 Nov 2026, 18:00 UTC+05:30"). `inside`: for a time written inside
+// brackets (whenIn), "…, that is 19:30 your time", so brackets never nest. Before an event is open, or without a clock,
+// this computer's clock, named. (The form's own times are always this computer's: here.)
+const when = (ts, inside = false) => {
+  const d = new Date(Number(ts) * 1000);
+  if (hosted && ev?.clock) {
+    const { offset } = ev.clock, zone = Number(ts) === ev.eventStart ? ev.clock.zone : `UTC${core.offsetText(offset)}`;
+    const there = new Date(d.getTime() + offset * 60_000), at = `${there.toLocaleString("en-GB", { ...WHEN, timeZone: "UTC" })} ${zone}`;
+    if (-d.getTimezoneOffset() === offset) return at;
+    const day = { day: "numeric", month: "short", year: "numeric" };
+    const mine = there.toLocaleDateString("en-GB", { ...day, timeZone: "UTC" }) === d.toLocaleDateString("en-GB", day)
+      ? d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }) : d.toLocaleString("en-GB", WHEN);
+    return inside ? `${at}, that is ${mine} your time` : `${at} (${mine} your time)`;
+  }
   const m = hosted ? null : /([+-])(\d\d):(\d\d)$/.exec(cfg?.eventStart ?? "");
-  if (!m) return d.toLocaleString("en-GB", { ...o, timeZoneName: "short" });
+  if (!m) return here(ts);
   const off = (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
-  return new Date(d.getTime() + off * 60_000).toLocaleString("en-GB", { ...o, timeZone: "UTC" }) + (off === 330 ? " IST" : ` UTC${core.offsetText(off)}`);
+  return new Date(d.getTime() + off * 60_000).toLocaleString("en-GB", { ...WHEN, timeZone: "UTC" }) + (off === 330 ? " IST" : ` UTC${core.offsetText(off)}`);
 };
+const whenIn = (ts) => when(ts, true); // a time inside brackets: "(until 4 Nov 2026, 18:00 IST, that is 19:30 your time)"
 const ist = (ts) => new Date(Number(ts) * 1000).toLocaleString("en-GB", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" }) + " IST";
 const MODE_NAMES = { live: "LIVE (real guest deposits)", rehearsal: "REHEARSAL (throwaway contract, never on Luma)", local: "LOCAL TEST CHAIN (no real money)" };
 const tsOf = (iso) => Math.floor(Date.parse(iso) / 1000);
@@ -469,7 +494,7 @@ async function init() {
     ["Deposit", `${ethers.formatEther(settings.depositWei)} ETH per guest (plain ETH, no token)`],
     ["Event name", cfg.eventName || "Truth Pays"],
     ["Attendance list from", start ? when(start) : "missing in config", start ? "" : "err"],
-    ["List by", end ? when(end) + " (if no list by then, guests can withdraw their own deposit)" : "missing in config", end ? "" : "err"],
+    ["List by", end ? whenIn(end) + " (if no list by then, guests can withdraw their own deposit)" : "missing in config", end ? "" : "err"],
     ["Challenges", `Kleros Court${k.court === 0 ? " (General Court)" : `, court ${k.court}`}, ${k.jurors} jurors, through Kleros's Dispute Resolver ${short(k.disputeResolver)}`],
     ["Juror policy", k.policyURI || "(not set yet)", k.policyURI ? "mono" : "warn"],
     ["Case description", `one per Kleros case, written by the contract from ${k.metaEvidenceTemplate} (names the event, the challenged wallet and the contract)`],
@@ -1115,10 +1140,10 @@ function describeAppeal(a) {
   const side = (s) => {
     const name = ANSWERS[s];
     if (a.funded.includes(s)) return `${name}: fully funded`;
-    if (!open(s)) return `${name}: closed (had until ${when(until(s))})`;
+    if (!open(s)) return `${name}: closed (had until ${whenIn(until(s))})`;
     const paid = a.paid[s] === null ? "?" : ethers.formatEther(a.paid[s]);
     const amount = a.need[s] === null ? `${paid} ETH raised` : `${paid} of ${ethers.formatEther(a.need[s])} ETH`;
-    return `${name}: ${amount}${s !== a.ruling ? `, until ${when(a.loserEnd)}` : ""}`;
+    return `${name}: ${amount}${s !== a.ruling ? `, until ${whenIn(a.loserEnd)}` : ""}`; // whenIn: side 0 is followed by brackets
   };
   const sides = [side(1), side(2)];
   if (a.funded.includes(0) || a.paid[0] > 0n) sides.push(side(0) + ' (counts as "did not attend"; the challenge money is then split in half)');
@@ -1130,7 +1155,7 @@ function describeAppeal(a) {
     const against = [0, 1, 2].filter((o) => o !== s && open(o) && (o > 0 || a.ruling === 0));
     if (!against.length) continue; // only the jurors' own answer, and nothing can be funded against it any more
     const unless = against.length === 1 ? `If "${ANSWERS[against[0]]}" is not fully funded by ${when(until(against[0]))}`
-      : `If neither ${against.map((o) => `"${ANSWERS[o]}" (until ${when(until(o))})`).join(" nor ")} is fully funded`;
+      : `If neither ${against.map((o) => `"${ANSWERS[o]}" (until ${whenIn(until(o))})`).join(" nor ")} is fully funded`;
     warns.push(`⚠ "${ANSWERS[s]}" is being funded${s === 0 ? ' (it counts as "did not attend", and the challenge money is then split in half)' : ""}. ${unless}, "${ANSWERS[s]}" wins the case.`);
   }
   // no ruling from the jurors: it stands unless an appeal changes it
@@ -1142,7 +1167,7 @@ function describeAppeal(a) {
 // one-funded-answer rule could decide the case without anyone noticing, so point to Kleros's own page.
 function fundingUnknownText(a, now) {
   const until = (s) => (s === a.ruling ? a.end : a.loserEnd);
-  const open = [1, 2].filter((s) => now < until(s)).map((s) => `"${ANSWERS[s]}" until ${when(until(s))}`);
+  const open = [1, 2].filter((s) => now < until(s)).map((s) => `"${ANSWERS[s]}" until ${whenIn(until(s))}`);
   return `Could not read the appeal funding from Kleros right now. Check ${caseUrl(a.id)} now: if one answer is being funded and yours is not, fund yours in time (${open.join(", ")}), or the other answer wins the case. Press Refresh to try again.`;
 }
 const fundingWarned = new Set(); // cases whose unreadable funding is already in the log
@@ -1431,7 +1456,7 @@ async function release() {
   if (state.phase !== 1) throw new Error("Post the attendance list first.");
   if (now <= state.windowEnd) throw new Error(`The challenge window is open until ${when(state.windowEnd)}.`);
   const stuck = state.challenges.filter((x) => x.state === 1 && now <= x.matchEndsAt);
-  if (stuck.length) throw new Error(`${stuck.length} challenge(s) are still waiting for a match (until ${when(Math.max(...stuck.map((x) => x.matchEndsAt)))}). Payouts can be released after that.`);
+  if (stuck.length) throw new Error(`${stuck.length} challenge(s) are still waiting for a match (until ${whenIn(Math.max(...stuck.map((x) => x.matchEndsAt)))}). Payouts can be released after that.`);
   // Challenges nobody matched in time count as attended, and the payout settles them itself. Each one
   // adds a lot of gas when the wallet uses its whole allowance, so with many of them the payout can pass
   // the most one Ethereum transaction may use (2^24 gas): then settle them first, one transaction each.
@@ -1537,6 +1562,7 @@ async function initHosted() {
   timezones();
   artifact = await getJson(HOSTED.artifact);
   iface = new ethers.Interface(artifact.abi);
+  if (!busy) $("previewEvent").disabled = false; // read-only: no wallet needed (an action under way sets it when done)
   if (core.ipfsPathOf(HOSTED.policy.text) !== HOSTED.policy.uri) {
     HOSTED.policy.broken = true;
     log("This page's copy of the juror policy does not match its IPFS address, so it cannot create events. Reload the page.", "err");
@@ -1548,6 +1574,12 @@ async function initHosted() {
   const qc = (q.get("contract") ?? "").trim(), qf = (q.get("from") ?? "").trim();
   if (qc) { $("addr").value = qc; if (/^\d+$/.test(qf)) $("fromBlock").value = qf; }
   else if (HOSTED.defaultEvent) { $("addr").value = HOSTED.defaultEvent.contract; $("fromBlock").value = String(HOSTED.defaultEvent.deployBlock); }
+  // opened from an event's link: the new-event form folds away (a click on its title opens it), so the event comes first
+  if (qc) {
+    const card = $("neTitle").closest(".card"), fold = document.createElement("details"), title = document.createElement("summary");
+    title.append(card.querySelector("h2"));
+    fold.className = card.className; fold.append(title, ...card.childNodes); card.replaceWith(fold);
+  }
   // another address typed in: the block in the box belongs to the previous one
   $("addr").addEventListener("input", () => ($("fromBlock").value = ""));
   showMyEvents();
@@ -1557,10 +1589,9 @@ async function initHosted() {
 
 // The event's timezone as an offset. Preselected: this computer's offset on the event's date (daylight saving time
 // included), recomputed when the date changes until an offset is picked by hand. Nothing is preselected when this
-// computer's offset is not in the list: the organiser picks one.
-const TZ_OFFSETS = ["-12:00", "-11:00", "-10:00", "-09:30", "-09:00", "-08:00", "-07:00", "-06:00", "-05:00", "-04:00", "-03:30", "-03:00", "-02:30", "-02:00", "-01:00", "+00:00",
-  "+01:00", "+02:00", "+03:00", "+03:30", "+04:00", "+04:30", "+05:00", "+05:30", "+05:45", "+06:00", "+06:30", "+07:00", "+08:00", "+08:45", "+09:00", "+09:30",
-  "+10:00", "+10:30", "+11:00", "+12:00", "+12:45", "+13:00", "+13:45", "+14:00"];
+// computer's offset is not in the list: the organiser picks one. The list is the core's (the offsets timezones use, the
+// only ones core.eventClock reads back from a case description).
+const TZ_OFFSETS = core.TZ_OFFSETS;
 // this computer's UTC offset on the date and time of a datetime-local value (read as this computer's time), or today
 const offsetOn = (value) => {
   const d = value ? new Date(value) : new Date();
@@ -1615,7 +1646,11 @@ async function openEvent() {
   const known = settings.knownKleros ?? { disputeResolver: HOSTED.kleros.disputeResolver, arbitrator: HOSTED.kleros.arbitrator };
   const bad = e.disputeResolver.toLowerCase() !== known.disputeResolver.toLowerCase() ? `its Dispute Resolver is ${e.disputeResolver}, not Kleros's own (${ethers.getAddress(known.disputeResolver)})`
     : known.arbitrator && e.arbitrator.toLowerCase() !== known.arbitrator.toLowerCase() ? `its court is ${e.arbitrator}, not Kleros Court (${ethers.getAddress(known.arbitrator)})` : null;
-  ev = { ...e, deployBlock: from,
+  // the event's own clock (when shows its times on it), from its case description as the contract writes it (for its
+  // owner's wallet: every case names the same date); none if the text names no date that fits its start
+  let clock = null;
+  try { clock = core.eventClock(core.renderCase(e.metaEvidenceTemplate, e.owner, e.contract), e.eventStart); } catch {}
+  ev = { ...e, deployBlock: from, clock,
     notKleros: bad && `⚠ WARNING: this contract does not use Kleros: ${bad}. Challenges to its attendance list would not be decided by Kleros jurors, this page sends nothing to its dispute contracts, and the guest page refuses it. Do not send ETH to it unless you know exactly why.` };
   $("fromBlock").value = String(from);
   $("kwarn").hidden = !ev.notKleros; $("kwarn").textContent = ev.notKleros ?? "";
@@ -1668,8 +1703,12 @@ async function checkDeployBlock(a, from) {
 // ------------------------------------------------------------ creating an event
 // The form, checked by the core (core.newEventConfig, core.deployArgs with the generic case description
 // template): the constructor arguments and the case description jurors would read for an example wallet.
-function eventForm() {
-  if (!account) throw new Error("Connect your wallet first: it becomes the owner of the new contract.");
+// The owner is the connected wallet. Only a preview (`preview`, nothing is sent) can be made without one:
+// PREVIEW_OWNER then stands in for it, and the preview names it in words (NO_OWNER_YET), not as an address.
+const PREVIEW_OWNER = "0x1111111111111111111111111111111111111111", NO_OWNER_YET = "[your wallet, once connected]";
+function eventForm({ preview = false } = {}) {
+  if (!account && !preview) throw new Error("Connect your wallet first: it becomes the owner of the new contract.");
+  const owner = account || PREVIEW_OWNER;
   const v = (id) => $(id).value.trim();
   const start = v("neStart").slice(0, 16), off = $("neTz").value, end = v("neEnd").slice(0, 5);
   if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(start)) throw new Error("Starts: pick the date and time the event starts.");
@@ -1685,24 +1724,26 @@ function eventForm() {
   // a moment as the event's clock shows it, in UTC, and on this computer, so a wrong timezone shows before anything is sent
   const offMin = (off[0] === "-" ? -1 : 1) * (Number(off.slice(1, 3)) * 60 + Number(off.slice(4, 6)));
   const clock = (ms, o) => new Date(ms + o * 60_000).toISOString().slice(0, 16).replace("T", " ");
-  const at = (ms) => `${clock(ms, offMin)} (UTC${off}) = ${clock(ms, 0)} UTC = ${when(ms / 1000)} on this computer`;
+  const at = (ms) => `${clock(ms, offMin)} (UTC${off}) = ${clock(ms, 0)} UTC = ${here(ms / 1000)} on this computer`;
   const form = {
     eventTitle: v("neTitle"), eventName: v("neName"), eventWhere: v("neWhere"), hosts: v("neHosts"), eventLink: v("neLink"),
     eventWhen: core.describeWhen(startIso, new Date(t1).toISOString(), v("neZone")),
     deposit: v("neDeposit"), eventStart: startIso, claimDeadline: new Date(t0 + days * 86_400_000).toISOString(),
   };
-  const cfgN = core.newEventConfig(form, network(), account);
+  const cfgN = core.newEventConfig(form, network(), owner);
   const name = "The case description";
-  const args = core.deployArgs(cfgN, account, HOSTED.template.text, { name });
-  const sample = JSON.parse(core.caseTemplate(HOSTED.template.text, core.templateValues(cfgN, account), { name }).sample);
-  return { form, cfg: cfgN, args, sample, days, starts: at(t0), settles: at(t0 + days * 86_400_000) };
+  const args = core.deployArgs(cfgN, owner, HOSTED.template.text, { name });
+  const sample = JSON.parse(core.caseTemplate(HOSTED.template.text, core.templateValues(cfgN, owner), { name }).sample);
+  return { form, cfg: cfgN, args, sample, days, starts: at(t0), settles: at(t0 + days * 86_400_000), noOwner: owner === PREVIEW_OWNER };
 }
 
 function renderPreview(f) {
   const el = $("nePreview");
   el.hidden = false; el.replaceChildren();
   const m = f.sample;
-  const add = (h, text) => { const t = document.createElement("h3"); t.textContent = h; const d = document.createElement("div"); d.textContent = text; el.append(t, d); };
+  // without a wallet: the owner in words wherever the case names it (PREVIEW_OWNER is all digits: one spelling)
+  const owned = (text) => (f.noOwner ? String(text).split(PREVIEW_OWNER).join(NO_OWNER_YET) : text);
+  const add = (h, text) => { const t = document.createElement("h3"); t.textContent = h; const d = document.createElement("div"); d.textContent = owned(text); el.append(t, d); };
   const top = document.createElement("div"); top.className = "warn";
   const starts = document.createElement("div");
   starts.textContent = `The event starts (deposits close, the attendance list can be posted): ${f.starts}. Check that this is the start time in the event's city.`;
@@ -1716,9 +1757,11 @@ function renderPreview(f) {
   el.append(t, link(settings.kleros.ipfsGateway + HOSTED.policy.uri, HOSTED.policy.uri + " ↗"));
 }
 
+// Read-only: no wallet needed (nothing is sent)
 async function previewEvent() {
-  renderPreview(eventForm());
-  log("Preview ready: below the form is what Kleros jurors would read in a case.");
+  const f = eventForm({ preview: true });
+  renderPreview(f);
+  log(`Preview ready: below the form is what Kleros jurors would read in a case.${f.noOwner ? " To create the event, connect the wallet that will own it: the case names it where the preview says " + NO_OWNER_YET + "." : ""}`);
 }
 
 // The juror policy every new event names (docs/attendance-policy.generic.md): it must be on IPFS, at the
@@ -1744,7 +1787,7 @@ async function createEvent() {
   if (resolver.toLowerCase() !== known.toLowerCase()) throw new Error(`This page names ${resolver} as Kleros's Dispute Resolver, not the known address ${known}. Not created.`);
   const earlier = pastDeploys();
   if (earlier.length) {
-    const lines = earlier.map((d) => `• ${d.name ? `"${d.name}" ` : ""}${d.addr ? `${d.addr} (${chain.explorer}/address/${d.addr})` : `not confirmed yet, check ${chain.explorer}/tx/${d.hash}`}${d.at ? `, ${when(d.at)}` : ""}`);
+    const lines = earlier.map((d) => `• ${d.name ? `"${d.name}" ` : ""}${d.addr ? `${d.addr} (${chain.explorer}/address/${d.addr})` : `not confirmed yet, check ${chain.explorer}/tx/${d.hash}`}${d.at ? `, ${here(d.at)}` : ""}`);
     const typed = promptBox(`Event contracts already created from this browser:\n${lines.join("\n")}\n\nCreating another one makes a NEW, separate contract. Each event needs only one: guests must only ever pay the one address you give them. Check the list above first.\n\nType NEW to create another contract.`);
     if (typed !== "NEW") { log("Not created: no new contract."); return; }
   }
@@ -2131,7 +2174,7 @@ function applyButtons() {
   const now = Math.floor(Date.now() / 1000);
   const b = $("postList");
   if (state.phase !== 0) { b.disabled = true; b.textContent = "Post attendance list (done)"; }
-  else if (now < state.start) { b.disabled = true; b.textContent = `Post attendance list (locked until ${when(state.start)})`; }
+  else if (now < state.start) { b.disabled = true; b.textContent = `Post attendance list (locked until ${whenIn(state.start)})`; }
   else if (now > state.end) { b.disabled = true; b.textContent = "Post attendance list (deadline passed)"; }
   else b.textContent = "Post attendance list";
   const listed = state.phase === 1;
@@ -2145,7 +2188,7 @@ function applyButtons() {
   const r = $("release");
   if (state.phase >= 2) { r.disabled = true; r.textContent = state.phase === 2 ? "Release payouts (done)" : "Release payouts (cancelled)"; }
   else if (!listed) { r.disabled = true; r.textContent = "Release payouts (post the list first)"; }
-  else if (now <= state.windowEnd) { r.disabled = true; r.textContent = `Release payouts (locked until ${when(state.windowEnd)})`; }
+  else if (now <= state.windowEnd) { r.disabled = true; r.textContent = `Release payouts (locked until ${whenIn(state.windowEnd)})`; }
   else if (state.challenges.some((x) => x.state === 1 && now <= x.matchEndsAt)) { r.disabled = true; r.textContent = "Release payouts (waiting for challenges)"; }
   else r.textContent = "Release payouts";
   if (hosted) {
@@ -2172,7 +2215,8 @@ const wrap = (fn) => async () => {
     if (account) { $("deploy").disabled = false; $("refresh").disabled = false; }
     if (hosted) {
       $("refresh").disabled = false;
-      HOSTED_FORM_BUTTONS.forEach((id) => ($(id).disabled = !account));
+      // Preview is read-only: on once the page has loaded, wallet or not; Create needs the wallet
+      $("previewEvent").disabled = !artifact; $("createEvent").disabled = !account;
       // no event open (or it could not be read): nothing to act on
       if (!state) [...OWNER_BUTTONS, ...ANYONE_BUTTONS, ...HOSTED_OWNER_BUTTONS, ...HOSTED_READ_BUTTONS].forEach((id) => ($(id).disabled = true));
     }

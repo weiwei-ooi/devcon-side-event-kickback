@@ -2,7 +2,8 @@
 // it stays browser-safe; lib.mjs keeps every export; the live contract's constructor arguments and
 // case description are unchanged; parseCsv reads text exactly like readCsv (csv-parse); the generic
 // juror policy and case description template (for any organiser's event) keep the live rules, name
-// the wallet and fit the contract; and on a local chain (ganache), checkGuests and buildPayout give
+// the wallet and fit the contract; the event's own clock is read back from a case description
+// (eventClock, on the table of test/event-clock-cases.mjs); and on a local chain (ganache), checkGuests and buildPayout give
 // exactly the lists verify-deposits.mjs and build-payout.mjs write, for a contract deployed from the
 // new-event form with the generic template.
 import { test, before, after } from "node:test";
@@ -20,6 +21,7 @@ import { ethers } from "ethers";
 import { parse } from "csv-parse/sync";
 import * as core from "../scripts/core.mjs";
 import * as lib from "../scripts/lib.mjs";
+import { CLOCK_CASES } from "./event-clock-cases.mjs";
 
 const execFileP = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -311,6 +313,39 @@ test("describeWhen writes the date and time in the event's own timezone", () => 
   for (const code of [0x202e, 0x2028, 0x200b, 0x85]) assert.throws(() => core.describeWhen(...summer, `C${ch(code)}ET`), /Timezone name: please keep it on one line, without invisible/);
   assert.throws(() => core.describeWhen(...summer, "x".repeat(41)), /Timezone name is too long/);
   assert.throws(() => core.describeWhen(...summer, "{{wallet}}"), /Timezone name can't contain/);
+});
+
+test("eventClock reads the event's own clock from its case description, or gives none", () => {
+  // the table the generic guest page's copy is checked against too (test/site-generic.e2e.mjs)
+  for (const [what, text, start, expected] of CLOCK_CASES) assert.deepEqual(core.eventClock(text, start), expected, what);
+  // every offset the admin panel's form offers (core.TZ_OFFSETS) comes back from the case description it writes, named
+  // by the offset without a timezone name, and by the name with one
+  const OFFSETS = core.TZ_OFFSETS.map((t) => (t[0] === "-" ? -1 : 1) * (Number(t.slice(1, 3)) * 60 + Number(t.slice(4, 6))));
+  assert.equal(OFFSETS.length, 40);
+  assert.deepEqual(OFFSETS.map(core.offsetText), core.TZ_OFFSETS);
+  assert.deepEqual(OFFSETS, [...OFFSETS].sort((a, b) => a - b));
+  for (const off of OFFSETS) {
+    const iso = (h) => `2027-03-12T${h}:00${core.offsetText(off)}`, start = Date.parse(iso("19:00")) / 1000;
+    const when = (zone) => JSON.stringify({ title: `Did wallet ${W} attend Night (${core.describeWhen(iso("19:00"), iso("23:00"), zone)})?` });
+    assert.deepEqual(core.eventClock(when(""), start), { offset: off, zone: `UTC${core.offsetText(off)}` }, String(off));
+    assert.deepEqual(core.eventClock(when(`GMT${core.offsetText(off)}`), start), { offset: off, zone: `GMT${core.offsetText(off)}` }, String(off));
+  }
+  // a case as the hosted panel renders it from readEvent's template is the contract's own text: the same clock
+  const t = core.caseTemplate(GENERIC_TEXT, core.templateValues(core.newEventConfig({ ...FORM, eventWhen: core.describeWhen("2027-03-12T19:00:00+01:00", "2027-03-12T23:00:00+01:00", "CET") }, MAINNET, ORGANISER), ORGANISER));
+  assert.deepEqual(core.eventClock(core.renderCase(t, ORGANISER, C), Date.parse(FORM.eventStart) / 1000), { offset: 60, zone: "CET" });
+  // the names it trusts: the UTC / GMT forms of exactly that offset, and the abbreviations whose first meaning it is
+  for (const [name, off] of [["IST", 330], ["CET", 60], ["UTC", 0], ["GMT", 0], ["UTC+5:30", 330], ["UTC+0530", 330], ["GMT\u221203:30", -210], [" CEST ", 120],
+    ["PST", -480], ["CST", -360], ["BST", 60], ["AST", -240]])
+    assert.ok(core.zoneIs(name, off), `${name} ${off}`);
+  // not: another offset, other text, or a name read first as another timezone (Irish IST, Philippine PST, Cuban or
+  // Chinese CST, Bangladeshi BST, Arabian AST), though checkZoneName lets the organiser write them
+  for (const [name, off] of [["IST", 420], ["CET", 120], ["UTC+02:00", 60], ["UTC+05:75", 375], ["Berlin time", 60], ["cet", 60], ["constructor", 0], ["toString", 0], ["", 0], ["UTC+1 CET", 60],
+    ["IST", 60], ["IST", 120], ["PST", 480], ["CST", -300], ["CST", 480], ["BST", 360], ["AST", 180]])
+    assert.ok(!core.zoneIs(name, off), `${name} ${off}`);
+  for (const [name, offs] of Object.entries(core.ZONE_OFFSETS)) for (const off of offs) {
+    assert.doesNotThrow(() => core.checkZoneName(name, off), name);
+    assert.ok(core.TZ_OFFSETS.includes(core.offsetText(off)), `${name} ${off} is an offset the form offers`);
+  }
 });
 
 // ---------------------------------------------------------------- the lists, on a local chain

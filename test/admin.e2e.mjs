@@ -14,7 +14,11 @@
 // attendance list from the check-in export (locked until the event starts, POST typed; a payout-plan.json
 // for another contract or out of date refused) → a guest left off challenges and the organiser disputes it
 // (its case description saved on IPFS first) → payouts, one share set aside for the Kleros case → the page
-// fits a phone's width. Also: the event's timezone (none preselected that isn't this computer's on the
+// fits a phone's width. Also: Preview without a wallet (the owner named in words; Create refuses without
+// one), an event's times on its own clock on a computer elsewhere (from its case description; this
+// computer's time alongside, with its day when it is another day, nothing on a computer on the event's
+// clock; only the start named by the case's zone, later moments by the offset; brackets never nested;
+// cleared when another event is opened; the form's times stay this computer's), the event's timezone (none preselected that isn't this computer's on the
 // event's date; a timezone name that contradicts the offset refused; the start shown in UTC), the
 // Luma setup the checks need, a refunded guest who paid again registered from the table, a late payer's
 // Luma tick that does not survive a return, a check-in export without a deposit link column, a door
@@ -153,7 +157,9 @@ const page = await browser.newPage();
 const errs = []; page.on("pageerror", (e) => errs.push(e.message));
 const sent = []; // every transaction the page asked the wallet to send
 let current = owner; // the account the fake wallet extension holds
+const walletAsks = []; // every request the page made to the wallet
 await page.exposeFunction("__rpc", async (method, params) => {
+  walletAsks.push(method);
   const from = await current.getAddress();
   if (method === "eth_requestAccounts" || method === "eth_accounts") return [from];
   if (method === "eth_chainId") return "0x539";
@@ -268,8 +274,6 @@ check("nothing shown for them", (await txt("status")) === "" && await page.isDis
 await page.fill("#addr", "");
 
 // ---------------------------------------------------------------- a new event from the form
-await connect();
-check("connect enables the new-event form", !(await page.isDisabled("#previewEvent")) && !(await page.isDisabled("#createEvent")));
 const chainNow = (await prov.getBlock("latest")).timestamp;
 const t0 = (Math.floor(chainNow / 60) + 120) * 60; // in about two hours, on the minute
 const startLocal = new Date(t0 * 1000).toISOString().slice(0, 16);
@@ -279,8 +283,25 @@ await page.fill("#neTitle", FORM.eventTitle); await page.fill("#neName", FORM.ev
 await page.fill("#neStart", startLocal); await page.fill("#neEnd", endLocal);
 await page.selectOption("#neTz", "+00:00"); await page.fill("#neZone", "UTC");
 await page.fill("#neWhere", FORM.eventWhere); await page.fill("#neHosts", FORM.hosts); await page.fill("#neLink", FORM.eventLink);
-await page.fill("#neDeposit", "2");
+await page.fill("#neDeposit", "0.01");
+// Preview is read-only, so it needs no wallet: the owner is named in words; Create needs the wallet that becomes the owner
+const EXAMPLES = ["0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed", "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359"]; // the example guest and contract
+check("no wallet yet: Preview on, Create off", !(await page.isDisabled("#previewEvent")) && await page.isDisabled("#createEvent") && !/ETH on/.test(await txt("who")));
+check("preview without a wallet", await click("previewEvent", /Preview ready: .+ To create the event, connect the wallet that will own it/), await logText());
+const noWallet = await txt("nePreview");
+check("preview without a wallet: the owner named in words, no address but the example guest's and contract's, nothing asked of the wallet",
+  noWallet.includes("The organiser's wallet is [your wallet, once connected] (the deposit contract's owner when it was deployed)") && noWallet.includes(FORM.eventTitle)
+  && (noWallet.match(/0x[0-9a-fA-F]{40}/g) ?? []).every((a) => EXAMPLES.includes(a)) && !noWallet.includes("0x1111") && walletAsks.length === 0, noWallet);
+// Create forced on without a wallet: refused before anything is asked, saved or sent, and off again
+await page.evaluate(() => (document.getElementById("createEvent").disabled = false));
 let n0 = await nonce();
+check("Create without a wallet: refused, nothing asked, saved or sent", await click("createEvent", /Connect your wallet first: it becomes the owner of the new contract/)
+  && (await nonce()) === n0 && dialogs.length === 0 && uploads.length === 0 && walletAsks.length === 0, await logText());
+check("and Create is off again", await page.isDisabled("#createEvent"));
+await connect();
+check("connect turns Create on (Preview stays on)", !(await page.isDisabled("#previewEvent")) && !(await page.isDisabled("#createEvent")));
+await page.fill("#neDeposit", "2");
+n0 = await nonce();
 check("a deposit above 1 ETH is refused", await click("createEvent", /Deposit: more than 1 ETH per guest looks like a mistake/) && (await nonce()) === n0 && dialogs.length === 0, await logText());
 await page.fill("#neDeposit", "0.01");
 await page.fill("#neLink", "luma.com/x");
@@ -301,6 +322,7 @@ const preview = await txt("nePreview");
 check("preview: what jurors would read, with the event, an example wallet and the juror policy",
   preview.includes(FORM.eventTitle) && preview.includes(FORM.eventWhere) && preview.includes(FORM.hosts) && preview.includes("0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed") &&
   /Attended/.test(preview) && /Did not attend/.test(preview) && preview.includes(POLICY), preview);
+check("preview with a wallet: it is the owner the case names", preview.includes(`The organiser's wallet is ${me} (the deposit contract's owner`) && !preview.includes("[your wallet"), preview);
 const startsAt = `${startLocal.replace("T", " ")} (UTC+00:00) = ${startLocal.replace("T", " ")} UTC = `;
 check("preview: the start in the event's timezone, in UTC and on this computer", preview.includes(`The event starts (deposits close, the attendance list can be posted): ${startsAt}`), preview);
 check("the venue is what was planned when the contract was created; the announced venue counts",
@@ -671,6 +693,91 @@ await sp.fill("#neStart", "2027-07-15T19:00");
 z = await zoneOf(sp);
 check("Newfoundland in July: UTC-02:30 is in the list and preselected", z.value === "-02:30", JSON.stringify(z));
 await stJohns.close();
+
+// events with their date and time in their case descriptions as the form writes them, at fixed times, opened on a
+// computer in Bangkok: in Berlin in winter (CET) on Friday 12 March 2027 at 19:00, Saturday 01:00 in Bangkok (another day
+// there); in Berlin in summer (CEST) on Wednesday 20 October 2027 at 10:00, 15:00 in Bangkok (the same day), its list
+// deadline 14 days later after Berlin's summer time has ended. Their times on the event's own clock, this computer's
+// alongside; only the start named by the case's zone, later moments by the offset; inside brackets "…, that is … your
+// time", so brackets never nest.
+const clockEvent = async (eventName, [startIso, endIso], zone) => {
+  const k = await (await new ethers.ContractFactory(abi, load("TruthPaysKickback").bytecode, owner)
+    .deploy(...core.deployArgs(core.newEventConfig({ ...FORM, eventName, eventWhen: core.describeWhen(startIso, endIso, zone), deposit: "0.01", eventStart: startIso }, network, me), me, genericTemplate))).waitForDeployment();
+  return { k, block: (await k.deploymentTransaction().wait()).blockNumber };
+};
+const cet = await clockEvent("Clock Night", ["2027-03-12T19:00:00+01:00", "2027-03-12T23:00:00+01:00"], "CET");
+const cest = await clockEvent("Clock Morning", ["2027-10-20T10:00:00+02:00", "2027-10-20T14:00:00+02:00"], "CEST");
+const cetK = cet.k, cetBlock = cet.block;
+// a pattern for a text the panel shows (Chromium may leave out the comma before the time)
+const shownRe = (text) => new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/(\d{4}),/g, "$1,?"));
+const nested = (text) => /\)\)|\) \(/.test(text); // brackets inside brackets, or two in a row
+const hm = (t, off) => new Date((t + off * 60) * 1000).toISOString().slice(11, 16); // moment t's HH:MM at offset `off` (minutes)
+const bangkok = await browser.newContext({ timezoneId: "Asia/Bangkok" });
+const kp = await bangkok.newPage();
+kp.on("pageerror", (e) => errs.push(e.message));
+await localOnly(kp);
+await kp.goto(`${ADMIN}?contract=${cetK.target}&from=${cetBlock}`);
+const statusOf = async (pg, re) => { for (let i = 0; i < 80 && !re.test(await pg.locator("#status").innerText()); i++) await pg.waitForTimeout(250); return pg.locator("#status").innerText(); };
+const kpStatus = (re) => statusOf(kp, re);
+const postLabel = (pg) => pg.evaluate(() => document.getElementById("postList").textContent);
+let kst = await kpStatus(/Event\s*Clock Night/);
+check("an event opened elsewhere: its start on its own clock (CET, from its case description), this computer's time and day alongside (Bangkok, the next day)",
+  shownRe("Attendance list from\t12 Mar 2027, 19:00 CET (13 Mar 2027, 01:00 your time)").test(kst.replace(/\s*\n\s*/g, "\t")) && !/GMT\+7/.test(kst), kst);
+check("its list deadline two weeks on: on the event's offset, named by it", shownRe("List by\t26 Mar 2027, 19:00 UTC+01:00 (27 Mar 2027, 01:00 your time)").test(kst.replace(/\s*\n\s*/g, "\t")), kst);
+let label = await postLabel(kp);
+check("a time inside brackets: \"…, that is … your time\", brackets never nested (Post attendance list, locked)",
+  shownRe("Post attendance list (locked until 12 Mar 2027, 19:00 CET, that is 13 Mar 2027, 01:00 your time)").test(label) && !nested(label), label);
+// opened from an event's link, the new-event form is folded away under its title, and a click opens it
+check("opened from an event's link: the new-event form is folded under its title, so the event's status is near the top",
+  !(await kp.isVisible("#neTitle")) && (await kp.evaluate(() => { const f = document.getElementById("neTitle").closest("details"); return !!f && !f.open && /Create a new event/i.test(f.querySelector("summary")?.textContent ?? ""); })));
+await kp.click("details:has(#neTitle) > summary");
+// the form's own times stay this computer's, even with an event open
+await kp.fill("#neTitle", FORM.eventTitle); await kp.fill("#neName", "Another Night");
+await kp.fill("#neStart", startLocal); await kp.fill("#neEnd", endLocal);
+await kp.selectOption("#neTz", "+00:00");
+await kp.fill("#neWhere", FORM.eventWhere); await kp.fill("#neHosts", FORM.hosts); await kp.fill("#neLink", FORM.eventLink); await kp.fill("#neDeposit", "0.01");
+await kp.click("#previewEvent");
+for (let i = 0; i < 40 && !(await kp.isVisible("#nePreview")); i++) await kp.waitForTimeout(100);
+const kpPreview = await kp.locator("#nePreview").innerText();
+check("the form's times are this computer's, not the open event's clock", new RegExp(`= \\d{1,2} \\w{3} \\d{4},? ${hm(t0, 420)} GMT\\+7 on this computer`).test(kpPreview) && !/CET|your time/.test(kpPreview), kpPreview);
+// another event opened: its own clock or none (no date in its case description: this computer's, named)
+await kp.fill("#addr", other.target); await kp.fill("#fromBlock", String(otherBlock));
+await kp.click("#refresh");
+kst = await kpStatus(/Event\s*Not Kleros/);
+check("another event opened: the clock of the first one is gone (no date in its case: this computer's, named)",
+  /Attendance list from\s*\d{1,2} \w{3} \d{4},? \d\d:\d\d GMT\+7/.test(kst) && !/CET|your time/.test(kst), kst);
+// the same day on this computer (15:00 for a 10:00 CEST start): the time only; the list deadline, after Berlin's summer
+// time has ended, is not called CEST
+await kp.fill("#addr", cest.k.target); await kp.fill("#fromBlock", String(cest.block));
+await kp.click("#refresh");
+kst = (await kpStatus(/Event\s*Clock Morning/)).replace(/\s*\n\s*/g, "\t");
+check("the same day on this computer: its time without the day; the deadline after the end of summer time named by the offset, not CEST",
+  shownRe("Attendance list from\t20 Oct 2027, 10:00 CEST (15:00 your time)").test(kst) && shownRe("List by\t3 Nov 2027, 10:00 UTC+02:00 (15:00 your time)").test(kst)
+  && shownRe("Post attendance list (locked until 20 Oct 2027, 10:00 CEST, that is 15:00 your time)").test(await postLabel(kp)), kst);
+await bangkok.close();
+// on a computer whose clock is the event's (Lagos is UTC+01:00 all year): nothing alongside
+const lagos = await browser.newContext({ timezoneId: "Africa/Lagos" });
+const lp = await lagos.newPage();
+lp.on("pageerror", (e) => errs.push(e.message));
+await localOnly(lp);
+await lp.goto(`${ADMIN}?contract=${cetK.target}&from=${cetBlock}`);
+kst = (await statusOf(lp, /Event\s*Clock Night/)).replace(/\s*\n\s*/g, "\t");
+label = await postLabel(lp);
+check("this computer's clock is the event's: no second time", shownRe("Attendance list from\t12 Mar 2027, 19:00 CET\t").test(kst) && shownRe("List by\t26 Mar 2027, 19:00 UTC+01:00\t").test(kst)
+  && shownRe("Post attendance list (locked until 12 Mar 2027, 19:00 CET)").test(label) && !/your time/.test(kst + label), `${kst} | ${label}`);
+await lagos.close();
+// in the panel's code, every time inside brackets, or right before them, is written with whenIn ("…, that is … your
+// time"): when, which may add "(… your time)", is never there, so brackets never nest
+const panelSrc = fs.readFileSync(path.join(proj, "console/index.html"), "utf8");
+const bracketed = [...panelSrc.matchAll(/\$\{when\(/g)].flatMap((m) => {
+  const line = panelSrc.slice(panelSrc.lastIndexOf("\n", m.index) + 1, m.index), lit = line.slice(line.lastIndexOf("`") + 1).replace(/\$\{[^{}]*\}/g, "");
+  let i = m.index + 2;
+  for (let depth = 0; i < panelSrc.length && (panelSrc[i] !== "}" || depth); i++) depth += panelSrc[i] === "{" ? 1 : panelSrc[i] === "}" ? -1 : 0;
+  const unclosed = (lit.match(/\(/g) || []).length - (lit.match(/\)/g) || []).length;
+  return unclosed > 0 || panelSrc.slice(i + 1, i + 3) === " (" ? [line.trim().slice(-80)] : [];
+});
+check("panel: no time that can add brackets is written inside brackets or right before them", bracketed.length === 0 && !/\bwhen\([^()]*\) \+ " \(/.test(panelSrc)
+  && (panelSrc.match(/\$\{whenIn\(/g) || []).length >= 7, bracketed.join(" | "));
 
 // the page's code did not load (here: core.mjs missing on the host): the page says so, instead of buttons that do nothing
 const dead = await browser.newPage();

@@ -10,7 +10,8 @@
 //
 // builds instead the guest page for any kickback deposit contract (published at /event/): it has no
 // contract of its own and takes it from the organiser's link, ?contract=0x…&from=<block it was created
-// in>, then reads the event, the deposit and the jurors' policy from that contract. It refuses a
+// in>, then reads the event, the deposit and the jurors' policy from that contract (and the event's own
+// clock from its case description, with the core's table of timezone names baked in). It refuses a
 // contract whose code isn't the compiled kickback contract's (build/, checked byte for byte but for
 // the constructor's values), or whose disputes don't go to Kleros's own Dispute Resolver. From the
 // config it takes the network (chain, RPC, explorer, log chunk, the Kleros addresses) and the
@@ -26,7 +27,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ethers } from "ethers";
-import { args, loadConfig, klerosConfig, isIpfsPath, KLEROS, isKnownResolver, kickbackRuntime, bakedGuestPageAbove } from "./lib.mjs";
+import { args, loadConfig, klerosConfig, isIpfsPath, KLEROS, isKnownResolver, kickbackRuntime, bakedGuestPageAbove, ZONE_OFFSETS, TZ_OFFSETS } from "./lib.mjs";
 
 const a = args();
 const cfg = loadConfig(a.config ?? "config.json");
@@ -88,6 +89,10 @@ const site = generic
       runtime,
       // the config's own event: another contract whose name looks like it is refused
       reserved: { contract: isAddr(cfg.contract) ? cfg.contract : "", name: String(cfg.eventName ?? "").split(":")[0].trim() },
+      // for the page's copy of eventClock: the offsets timezones use (core.mjs TZ_OFFSETS) and the timezone names the
+      // core knows (ZONE_OFFSETS): the event's own clock is one of those offsets, named only by a name that is verifiably it
+      offsets: TZ_OFFSETS,
+      zones: ZONE_OFFSETS,
     }
   : {
       contract: a.preview ? "" : cfg.contract,

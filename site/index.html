@@ -83,7 +83,9 @@ header { display: grid; gap: 10px; }
 .mark.ok { background: var(--good-soft); color: var(--good); }
 .mark.no { background: var(--bad-soft); color: var(--bad); }
 .addr-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.addr-row .mono { flex: 1 1 260px; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.addr-row .mono { flex: 1 1 100%; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.addr-row a { display: inline-block; padding: 9px 2px; }
+.checks:empty, .stats:empty { display: none; }
 .stats { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 0.9rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 ol.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; counter-reset: step; }
@@ -94,7 +96,9 @@ ol.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; co
   font: 700 0.95rem var(--font-display); background: var(--accent-soft); color: var(--accent);
 }
 .step.done::before { content: "✓"; background: var(--good-soft); color: var(--good); }
-.step.locked { opacity: 0.6; }
+/* a step that isn't ready yet: grey number and title, its text stays readable */
+.step.locked::before { background: var(--line); color: var(--muted); }
+.step.locked h2 { color: var(--muted); }
 .step > * { min-width: 0; }
 .step .body { display: grid; gap: 10px; }
 
@@ -104,8 +108,9 @@ button {
 }
 a.btn { display: inline-block; text-decoration: none; font: 600 0.95rem var(--font-body); border-radius: 8px; padding: 10px 16px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); }
 button.ghost { background: transparent; color: var(--accent); }
-button.small { padding: 6px 10px; font-size: 0.85rem; }
-button:disabled { cursor: not-allowed; opacity: 0.45; }
+button.small { padding: 8px 14px; font-size: 0.85rem; min-height: 40px; }
+button:disabled { cursor: not-allowed; }
+button:disabled, .step.locked a.btn { background: var(--bg); border-color: var(--line); color: var(--muted); }
 button:focus-visible, input:focus-visible, a:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 input[type="text"] {
   font: 0.92rem var(--font-mono); width: 100%; padding: 9px 10px; border-radius: 8px;
@@ -130,6 +135,7 @@ body.status .deposit-only, body:not(.status) .status-only { display: none !impor
 /* the generic page when its link names no usable deposit contract: only the header and why */
 body.refused .network, body.refused ol.steps, body.refused .pagelink, body.refused .status-only, body.refused footer { display: none !important; }
 .pagelink { font-size: 0.92rem; }
+#status { scroll-margin-top: 12px; }
 @media (prefers-reduced-motion: no-preference) { button { transition: filter .15s; } button:hover:not(:disabled) { filter: brightness(1.08); } }
 </style>
 <body>
@@ -232,7 +238,7 @@ body.refused .network, body.refused ol.steps, body.refused .pagelink, body.refus
   <p class="pagelink deposit-only muted">Already registered, or the event is over? <a href="#status">Check your deposit, or challenge the attendance list</a>.</p>
   <p class="pagelink status-only muted">Haven't deposited yet? <a href="#">Go to the deposit steps</a>.</p>
 
-  <section class="panel status-only" aria-labelledby="lookup-h">
+  <section class="panel status-only" id="status" aria-labelledby="lookup-h">
     <h2 id="lookup-h">Check a deposit</h2>
     <p class="muted">See where a wallet stands: deposit received, spot confirmed, refunded or paid out.</p>
     <div class="row"><input type="text" id="lookup-addr" placeholder="0x… wallet address" autocomplete="off" spellcheck="false"><button id="lookup" type="button" class="ghost">Check</button></div>
@@ -404,13 +410,34 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 const txA = (h, label) => (isHash(h) ? `<a href="${esc(txUrl(h))}" target="_blank" rel="noopener">${esc(label || short(h))}</a>` : "");
 const caseUrl = (id) => `${CONFIG.klerosCourt}/cases/${BigInt(id)}`;
 const caseA = (id) => `<a href="${esc(caseUrl(id))}" target="_blank" rel="noopener">Kleros case #${BigInt(id)}</a>`;
-// A time as guests read it: in India time for the Truth Pays dinner in Mumbai; on the generic page, which knows no
-// venue, in the guest's own time zone, named.
-function when(ts) {
+// A time as guests read it: in India time for the Truth Pays dinner in Mumbai. The generic page shows it on the event's
+// own clock once the event's case description has named it (CLOCK, see loadClock), with the guest's own time alongside
+// when theirs differs then: "Wed 4 Nov, 18:00 IST (19:30 your time)", and the guest's day too when it is another day.
+// The zone's name is the one the case gives for the event's start, and is used for the start only: a city's summer or
+// winter time can begin any day after it (an event in Berlin on 20 October has its claim deadline, 3 November, on CET,
+// not CEST), so every other moment is named by the offset, which stays true ("Wed 18 Nov, 18:00 UTC+05:30"). Until the
+// clock is known, or without one, in the guest's own time zone, named. (CLOCK's zone is a known abbreviation or a UTC
+// offset, never other text from the contract.) `inside`: for a time written inside brackets, "…, that is 19:30 your
+// time", so brackets never nest.
+let CLOCK = null; // { offset, zone, start }
+function when(ts, inside = false) {
   const d = new Date(Number(ts) * 1000), o = { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false };
+  if (CONFIG.generic && CLOCK) {
+    const { offset } = CLOCK, zone = Number(ts) === CLOCK.start ? CLOCK.zone : `UTC${offsetText(offset)}`;
+    const there = new Date(d.getTime() + offset * 60000), at = `${there.toLocaleString("en-GB", { ...o, timeZone: "UTC" })} ${zone}`;
+    if (-d.getTimezoneOffset() === offset) return at;
+    const day = { weekday: "short", day: "numeric", month: "short" };
+    const mine = there.toLocaleDateString("en-GB", { ...day, timeZone: "UTC" }) === d.toLocaleDateString("en-GB", day)
+      ? d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false }) : d.toLocaleString("en-GB", o);
+    return inside ? `${at}, that is ${mine} your time` : `${at} (${mine} your time)`;
+  }
   if (CONFIG.generic) return d.toLocaleString("en-GB", { ...o, timeZoneName: "short" });
   return d.toLocaleString("en-IN", { timeZone: "Asia/Kolkata", ...o }) + " IST";
 }
+// A time in the page's HTML: marked with its moment, so that loadClock can show it again on the event's clock wherever it
+// is (the checks, the open challenges, a wallet's status) once that is known. whenInHtml: inside brackets.
+const whenHtml = (ts, inside = false) => `<span data-ts="${Number(ts)}"${inside ? " data-inside" : ""}>${esc(when(ts, inside))}</span>`;
+const whenInHtml = (ts) => whenHtml(ts, true);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Reads go to the public Ethereum RPC, so they work before a wallet is connected and whatever network the wallet is on.
@@ -604,9 +631,64 @@ async function loadEvent() {
   DEPOSIT = ev.deposit; DEP = eth(DEPOSIT, 18);
   document.title = `${ev.name} · Deposit`;
   $("ev-name").textContent = ev.name;
-  $("ev-meta").innerHTML = `<span>Starts ${esc(when(ev.start))}</span><span>Deposit ${esc(DEP)}</span>`;
+  $("ev-meta").innerHTML = `<span>Starts ${whenHtml(ev.start)}</span><span>Deposit ${esc(DEP)}</span>`;
   setNote(note, "warn", `<strong>Only use a link the organiser gave you.</strong> This page is for <strong>${esc(ev.name)}</strong>, deposit contract ${at}, organiser <span class="mono">${esc(ev.owner)}</span>. It is a page for any kickback deposit contract: the event's name is whatever its creator gave it.`);
+  loadClock(ev);
   return true;
+}
+// The event's own clock (eventClock below), from its case description: read once the event is accepted, for the
+// organiser's wallet (every case names the same date). Nothing waits for it: until it is known, or if it can't be read,
+// times are on the guest's own clock, named. Once it is known, every time already on the page (whenHtml: the start, the
+// checks, the claim deadline, the open challenges, a wallet's status, whatever was read first) is shown again on it,
+// with no new read, and every time written after it is on it.
+function loadClock(ev) {
+  caseDescription(ev.owner).then(({ text }) => {
+    const clock = eventClock(new TextDecoder().decode(text), ev.start);
+    if (!clock) return;
+    CLOCK = { ...clock, start: Number(ev.start) };
+    for (const el of document.querySelectorAll("[data-ts]")) el.textContent = when(el.dataset.ts, "inside" in el.dataset);
+  }).catch(() => {});
+}
+// ---- the event's own clock. The contract keeps no timezone, but each case description it writes names the event's date
+// and time as the admin panel's form wrote it when the contract was created (scripts/core.mjs describeWhen: "Friday 12
+// March 2027, 19:00-23:00 CET"). eventClock is scripts/core.mjs eventClock, copied (this page can't import it;
+// test/site-generic.e2e.mjs checks that both give the same results on the table of test/event-clock-cases.mjs), with the
+// core's offsets and timezone names baked in by the build (CONFIG.offsets, CONFIG.zones). It gives { offset (minutes
+// east of UTC), zone } or null. A "<Weekday> <D> <Month> <YYYY>, <HH>:<MM>" counts when its weekday is right and its
+// distance from the contract's eventStart is an offset timezones use (CONFIG.offsets: the form offers no other); its
+// zone is the name written after that date's last time (up to the next ")", quote, ";", "," or line end) when it is
+// verifiably and unmistakably that offset ("UTC+01:00", or an abbreviation whose first meaning it is: "IST" for +05:30,
+// not for Irish time). The first date whose name is gives the clock; if none is, the first date that counts, named by
+// the offset ("UTC+01:00"). The text is JSON: its escapes are read first. All of it is the organiser's, and a title
+// could hold another date earlier on, so the clock may not be the venue's: the time shown on it is still right, because
+// the zone always names exactly that offset.
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const WHEN_RE = new RegExp(`\\b(${WEEKDAYS.join("|")}) (\\d{1,2}) (${MONTHS.join("|")}) (\\d{4}), (\\d\\d):(\\d\\d)` +
+  `(?:-\\d\\d:\\d\\d| to (?:${WEEKDAYS.join("|")}) \\d{1,2} (?:${MONTHS.join("|")}) \\d{4}, \\d\\d:\\d\\d)?`, "g");
+const JSON_ESCAPES = { b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
+const offsetText = (minutes) => `${minutes < 0 ? "-" : "+"}${String(Math.floor(Math.abs(minutes) / 60)).padStart(2, "0")}:${String(Math.abs(minutes) % 60).padStart(2, "0")}`;
+function zoneIs(name, offset) {
+  const z = String(name ?? "").trim(), m = /^(?:UTC|GMT) *([+\-\u2212]) *(\d{1,2})(?::?(\d\d))?$/.exec(z), zones = CONFIG.zones || {};
+  if (m) return Number(m[3] ?? 0) < 60 && (m[1] === "+" ? 1 : -1) * (Number(m[2]) * 60 + Number(m[3] ?? 0)) === offset;
+  return Object.prototype.hasOwnProperty.call(zones, z) && zones[z][0] === offset;
+}
+function eventClock(caseText, eventStart) {
+  const start = Number(eventStart), offsets = CONFIG.offsets || [];
+  if (!Number.isFinite(start)) return null;
+  const text = String(caseText ?? "").replace(/\\(?:u([0-9a-fA-F]{4})|([^u]))/g, (_, u, c) => (u ? String.fromCharCode(parseInt(u, 16)) : JSON_ESCAPES[c] ?? c));
+  let first = null;
+  for (const m of text.matchAll(WHEN_RE)) {
+    const [d, mo, y, hh, mm] = [Number(m[2]), MONTHS.indexOf(m[3]), Number(m[4]), Number(m[5]), Number(m[6])];
+    const day = new Date(Date.UTC(y, mo, d));
+    if (hh > 23 || mm > 59 || day.getUTCDate() !== d || day.getUTCMonth() !== mo || day.getUTCDay() !== WEEKDAYS.indexOf(m[1])) continue;
+    const offset = (Date.UTC(y, mo, d, hh, mm) - start * 1000) / 60000;
+    if (!Number.isInteger(offset) || !offsets.includes(offsetText(offset))) continue;
+    const name = /^[^)";,\u0000-\u001f]*/.exec(text.slice(m.index + m[0].length))[0].trim();
+    if (zoneIs(name, offset)) return { offset, zone: name };
+    first ??= { offset, zone: `UTC${offsetText(offset)}` };
+  }
+  return first;
 }
 // The event as its contract knows it. code: there is a contract at the address; ok: it answers every read a kickback
 // deposit contract answers, in the right shape (a contract without one of them refuses the read); known: its code is
@@ -677,7 +759,7 @@ async function loadContract() {
     state.info = info;
     renderChecks(info);
     $("stats").innerHTML = `<span>${info.count} spot${info.count === 1n ? "" : "s"} confirmed</span><span>${esc(eth(info.pool))} held in the contract</span>`;
-    $("deadline").textContent = `the claim deadline (${when(info.deadline)})`;
+    $("deadline").innerHTML = `the claim deadline (${whenInHtml(info.deadline)})`;
     // today's Kleros fee for a challenge (it follows the court's fee, so it can change)
     call(c, SEL.challengeDeposit).then((f) => { if (big(f) > 0n) $("fee-now").textContent = `${eth(big(f))} today`; }).catch(() => {});
     if (info.phase === PHASE.Listed || info.phase === PHASE.Finalized) loadOpenChallenges().catch(() => {});
@@ -700,7 +782,7 @@ function renderChecks(info) {
     add(info.klerosOk, info.klerosOk ? "Attendance disputes go to Kleros Court" : "It is set up with a different dispute service. Don't send anything.");
     if (info.phase !== PHASE.Open) add(false, info.phase === PHASE.Listed ? "The attendance list is published and the challenge window is running. Deposits are closed."
       : info.phase === PHASE.Finalized ? "The event has been settled. Deposits are closed." : "The event was cancelled. Deposits are closed and every deposit was refunded.");
-    else add(info.open, info.open ? `Deposits are open until ${when(info.start)}` : `Deposits closed at ${when(info.start)}`);
+    else add(info.open, info.open ? `Deposits are open until ${whenHtml(info.start)}` : `Deposits closed at ${whenHtml(info.start)}`);
   }
   $("checks").innerHTML = rows.join("");
 }
@@ -1003,7 +1085,7 @@ async function loadOpenChallenges() {
     const ch = await call(c, SEL.challenges + pad(a));
     const st = Number(wordAt(ch, 0));
     const ends = Number(wordAt(ch, 2));
-    const what = st === 2 ? caseA(wordAt(ch, 4)) : ends >= Math.floor(Date.now() / 1000) ? `waiting for a match until ${when(ends)}` : "nobody matched in time: counts as attended";
+    const what = st === 2 ? caseA(wordAt(ch, 4)) : ends >= Math.floor(Date.now() / 1000) ? `waiting for a match until ${whenHtml(ends)}` : "nobody matched in time: counts as attended";
     if (st === 2 || (st === 1 && !paid)) rows.push(`<li><span class="mark">·</span><span><span class="mono">${esc(a)}</span> ${what}</span></li>`);
   }
   $("open-ch-h").textContent = paid ? "Open Kleros cases" : "Open challenges";
@@ -1344,11 +1426,11 @@ async function lookup() {
         kind = attended ? "good" : "bad";
         text = attended ? `Challenge settled: on the attendance list.${ch.matched ? " Kleros jurors ruled that this guest attended." : ""}` : `Kleros jurors ruled this spot a no-show.${kleros}`;
       }
-      else if (attended && ch.state !== 2) { kind = "good"; text = `On the attendance list. Payouts are released after the challenge window (until ${when(windowEnd)}) once no challenge is waiting for a match.`; }
+      else if (attended && ch.state !== 2) { kind = "good"; text = `On the attendance list. Payouts are released after the challenge window (until ${whenInHtml(windowEnd)}) once no challenge is waiting for a match.`; }
       else if (ch.state === 0 && now <= windowEnd) {
         const cost = big(await call(c, SEL.challengeDeposit));
         kind = "warn";
-        text = `Not on the attendance list. If you were at the event, you can challenge until ${when(windowEnd)} with a deposit of ${esc(eth(cost))} (the Kleros fee). If nobody matches it within 1 day, you count as attended and get the ETH back. If someone does, Kleros jurors decide.`;
+        text = `Not on the attendance list. If you were at the event, you can challenge until ${whenHtml(windowEnd)} with a deposit of ${esc(eth(cost))} (the Kleros fee). If nobody matches it within 1 day, you count as attended and get the ETH back. If someone does, Kleros jurors decide.`;
         showAction(`Challenge (${eth(cost)})`, async () => {
           if (!(await sendTx({ onlyFrom: addr, data: SEL.challenge, value: cost, out, done: "Challenge sent. Check back here: if nobody matches it within 1 day, you count as attended." }))) return;
           loadOpenChallenges().catch(() => {});
@@ -1356,10 +1438,10 @@ async function lookup() {
           try { const uri = await saveCaseDescription(addr); out.insertAdjacentHTML("beforeend", ` The ${caseDescA(uri)} jurors would read is saved on IPFS.`); }
           catch (e) { out.insertAdjacentHTML("beforeend", ` (Couldn't save the case description on IPFS yet: ${esc(e.message)}. Check this wallet again later and it will retry.)`); }
         });
-      } else if (ch.state === 0) { kind = "bad"; text = `Not on the attendance list, and the challenge window closed at ${when(windowEnd)}. This spot counts as a no-show.`; }
+      } else if (ch.state === 0) { kind = "bad"; text = `Not on the attendance list, and the challenge window closed at ${whenHtml(windowEnd)}. This spot counts as a no-show.`; }
       else if (ch.state === 1 && now <= ch.matchEndsAt) {
         kind = "warn";
-        text = `Challenge open: this guest says they attended. If nobody matches the ${esc(eth(ch.deposit))} deposit by ${when(ch.matchEndsAt)}, they count as attended. If you know they were not there, you can dispute it: you send the same deposit and Kleros jurors decide (the winner gets the remaining ETH; about 3 weeks, and this guest's share is set aside until the final ruling).${caseDesc}`;
+        text = `Challenge open: this guest says they attended. If nobody matches the ${esc(eth(ch.deposit))} deposit by ${whenHtml(ch.matchEndsAt)}, they count as attended. If you know they were not there, you can dispute it: you send the same deposit and Kleros jurors decide (the winner gets the remaining ETH; about 3 weeks, and this guest's share is set aside until the final ruling).${caseDesc}`;
         showAction(`Dispute this claim (${eth(ch.deposit)})`, async () => {
           // the case description must be readable on IPFS before the case opens
           setNote(out, "", "Saving the case description on IPFS (Kleros's file storage)…");
@@ -1395,17 +1477,17 @@ async function lookup() {
         else {
           // after a tie or a refusal (0) no answer is the jurors' own: both can only be funded in the first part of the period
           text += a.ruling === 0
-            ? ` ${roundName}: the jurors did not reach an answer (a tie or a refusal to arbitrate). Both answers can be funded for an appeal only until ${when(a.loserEnd)}. If neither is fully funded, the refusal stands and this guest counts as a no-show.`
-            : ` ${roundName}: jurors voted <b>${esc(ruling(a.ruling))}</b>. Either side can appeal until ${when(a.end)} (a side the jurors did not vote for only until ${when(a.loserEnd)}).`;
+            ? ` ${roundName}: the jurors did not reach an answer (a tie or a refusal to arbitrate). Both answers can be funded for an appeal only until ${whenHtml(a.loserEnd)}. If neither is fully funded, the refusal stands and this guest counts as a no-show.`
+            : ` ${roundName}: jurors voted <b>${esc(ruling(a.ruling))}</b>. Either side can appeal until ${whenInHtml(a.end)} (a side the jurors did not vote for only until ${whenInHtml(a.loserEnd)}).`; // the first time is next to brackets, the second inside
           text += ` An appeal needs both answers fully funded, and anyone can chip in: the ETH goes straight from your wallet to Kleros. After the final ruling, the funders of the winning answer get their ETH back plus a reward, and money for an answer that never got fully funded is returned (collect it here). Kleros also takes funding for "${answer(0)}", which counts as "${ruling(2)}" here, and an answer that ends up the only one fully funded wins the case. Fund from an ordinary wallet, not a Safe or other smart-contract wallet: Kleros pays appeal money back with a basic transfer that such wallets may not accept, and then it is lost.`;
           if (a.known) {
             const lose = state.account && state.account.toLowerCase() === addr.toLowerCase() ? "you count" : "this guest counts";
             if ((a.funded.includes(1) || a.paid[1] > 0n) && !a.funded.includes(2) && !a.funded.includes(0))
-              text += ` <b>⚠ "${ruling(1)}" is being funded. If "${ruling(2)}" is not fully funded by ${when(a.ruling === 2 ? a.end : a.loserEnd)}, "${ruling(1)}" wins the case.</b>`;
+              text += ` <b>⚠ "${ruling(1)}" is being funded. If "${ruling(2)}" is not fully funded by ${whenHtml(a.ruling === 2 ? a.end : a.loserEnd)}, "${ruling(1)}" wins the case.</b>`;
             // "No" or "Refuse to arbitrate" funded while "Yes" isn't: alone, either one wins, and both mean a no-show
             for (const s of [2, 0])
               if ((a.funded.includes(s) || a.paid[s] > 0n) && !a.funded.includes(1))
-                text += ` <b>⚠ "${answer(s)}" is being funded. If "${ruling(1)}" is not fully funded by ${when(a.ruling === 1 ? a.end : a.loserEnd)}, ${lose} as a no-show.</b>`;
+                text += ` <b>⚠ "${answer(s)}" is being funded. If "${ruling(1)}" is not fully funded by ${whenHtml(a.ruling === 1 ? a.end : a.loserEnd)}, ${lose} as a no-show.</b>`;
           }
           const opts = [1, 2].filter((s) => !a.funded.includes(s) && (a.ruling === s ? now < a.end : now < a.loserEnd)).map((s) => {
             const missing = a.need[s] - a.paid[s];
@@ -1458,7 +1540,7 @@ async function claim(mode) {
 // ---------------------------------------------------------------- wire up
 const applyMode = () => document.body.classList.toggle("status", location.hash === "#status");
 applyMode();
-addEventListener("hashchange", () => { applyMode(); scrollTo(0, 0); });
+addEventListener("hashchange", () => { applyMode(); if (location.hash === "#status") $("status").scrollIntoView(); else scrollTo(0, 0); });
 $("connect").addEventListener("click", connect);
 $("switch").addEventListener("click", switchNetwork);
 $("send").addEventListener("click", send);

@@ -405,9 +405,16 @@ const offsetOf = (iso) => {
 // "+05:30" for 330 minutes
 export const offsetText = (minutes) =>
   `${minutes < 0 ? "-" : "+"}${String(Math.floor(Math.abs(minutes) / 60)).padStart(2, "0")}:${String(Math.abs(minutes) % 60).padStart(2, "0")}`;
-// Common timezone abbreviations and the UTC offsets (minutes) each can stand for. A typed timezone name
-// that uses one of them (or "UTC+2", "GMT-03:30") must agree with the event's offset.
-const ZONE_OFFSETS = {
+// The UTC offsets timezones use today, as offsetText writes them: the admin panel's form offers these, and
+// eventClock takes no other. (The generic guest page, which can't import this file, gets this list and the
+// table below baked in by build-site.mjs for its eventClock.)
+export const TZ_OFFSETS = ["-12:00", "-11:00", "-10:00", "-09:30", "-09:00", "-08:00", "-07:00", "-06:00", "-05:00", "-04:00", "-03:30", "-03:00", "-02:30", "-02:00", "-01:00", "+00:00",
+  "+01:00", "+02:00", "+03:00", "+03:30", "+04:00", "+04:30", "+05:00", "+05:30", "+05:45", "+06:00", "+06:30", "+07:00", "+08:00", "+08:45", "+09:00", "+09:30",
+  "+10:00", "+10:30", "+11:00", "+12:00", "+12:45", "+13:00", "+13:45", "+14:00"];
+// Common timezone abbreviations and the UTC offsets (minutes) each can stand for, the one most readers take
+// it for first ("IST" is India's +05:30 before Irish or Israel time). A typed timezone name that uses one of
+// them (or "UTC+2", "GMT-03:30") must agree with the event's offset.
+export const ZONE_OFFSETS = {
   UTC: [0], GMT: [0], UT: [0], WET: [0], WEST: [60], BST: [60, 360], IST: [330, 60, 120], CET: [60], CEST: [120], MET: [60], MEST: [120],
   WAT: [60], CAT: [120], SAST: [120], EET: [120], EEST: [180], EAT: [180], MSK: [180], TRT: [180], AST: [-240, 180], ADT: [-180], GST: [240],
   PKT: [300], NPT: [345], BDT: [360], ICT: [420], WIB: [420], HKT: [480], SGT: [480], AWST: [480], PHT: [480], PHST: [480], JST: [540], KST: [540],
@@ -416,6 +423,8 @@ const ZONE_OFFSETS = {
   AKST: [-540], AKDT: [-480], HST: [-600],
 };
 const UTC_NAME_RE = /\b(?:UTC|GMT)\s*([+\-\u2212])\s*(\d{1,2})(?::?(\d\d))?(?!\d)/g;
+// the offset (minutes) a "UTC+2" / "GMT-03:30" match of UTC_NAME_RE stands for
+const utcNameOffset = (m) => (m[1] === "+" ? 1 : -1) * (Number(m[2]) * 60 + Number(m[3] ?? 0));
 /**
  * Checks a typed timezone name (for {{eventWhen}}) against the event's UTC offset in minutes: no
  * invisible or text-direction characters, at most 40 characters, and every abbreviation in it that
@@ -427,14 +436,27 @@ export function checkZoneName(zone, offset) {
   if (z.length > 40) throw new Error(`Timezone name is too long (${z.length} characters, at most 40).`);
   if (/\{\{|\}\}/.test(z)) throw new Error('Timezone name can\'t contain "{{" or "}}".');
   const wrong = (name) => new Error(`Timezone name: "${name}" is not UTC${offsetText(offset)}, the timezone of the event on that date. Pick the right timezone, or correct or clear the name.`);
-  for (const m of z.matchAll(UTC_NAME_RE)) {
-    const o = (m[1] === "+" ? 1 : -1) * (Number(m[2]) * 60 + Number(m[3] ?? 0));
-    if (o !== offset) throw wrong(m[0]);
-  }
+  for (const m of z.matchAll(UTC_NAME_RE)) if (utcNameOffset(m) !== offset) throw wrong(m[0]);
   for (const m of z.replace(UTC_NAME_RE, " ").matchAll(/\b[A-Z]{2,5}\b/g))
     if (ZONE_OFFSETS[m[0]] && !ZONE_OFFSETS[m[0]].includes(offset)) throw wrong(m[0]);
   return z;
 }
+/**
+ * True when a timezone name is verifiably and unmistakably the UTC offset `offset` (minutes): the whole
+ * name is a "UTC+05:30" / "GMT+7" form (as checkZoneName reads them) of that value, or one abbreviation
+ * whose first meaning in ZONE_OFFSETS is that offset ("IST" for 330, "CST" for -360). An abbreviation
+ * that stands for something else first is not: "IST" at +01:00 (Irish time) or "PST" at +08:00
+ * (Philippine time) would be read as India or Pacific time, so eventClock names those by the offset.
+ */
+export function zoneIs(name, offset) {
+  const z = String(name ?? "").trim(), m = /^(?:UTC|GMT) *([+\-\u2212]) *(\d{1,2})(?::?(\d\d))?$/.exec(z);
+  if (m) return Number(m[3] ?? 0) < 60 && utcNameOffset(m) === offset;
+  return Object.prototype.hasOwnProperty.call(ZONE_OFFSETS, z) && ZONE_OFFSETS[z][0] === offset;
+}
+
+// the English names describeWhen writes
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 /**
  * "Wednesday 4 November 2026, 18:00-22:00 IST": an event's date and time as people read it, in the
@@ -448,14 +470,51 @@ export function describeWhen(startIso, endIso, zone = "") {
   if (off === null || Number.isNaN(t0) || Number.isNaN(t1)) throw new Error("Start and end must be dates with a timezone, e.g. 2026-11-04T18:00:00+05:30");
   if (t1 <= t0) throw new Error("The event must end after it starts.");
   zone = checkZoneName(zone, off);
-  const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-  const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
   const local = (t) => new Date(t + off * 60_000); // read with getUTC*: the wall clock at the event
-  const day = (d) => `${DAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+  const day = (d) => `${WEEKDAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
   const time = (d) => `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
   const a = local(t0), b = local(t1);
   const tz = zone || `UTC${offsetText(off)}`;
   return day(a) === day(b) ? `${day(a)}, ${time(a)}-${time(b)} ${tz}` : `${day(a)}, ${time(a)} to ${day(b)}, ${time(b)} ${tz}`;
+}
+
+// The start of a describeWhen text, "<Weekday> <D> <Month> <YYYY>, <HH>:<MM>", and its end if it has one ("-22:00",
+// or " to Saturday 13 March 2027, 01:00"), so that the timezone's name is what follows the last time
+const WHEN_RE = new RegExp(`\\b(${WEEKDAYS.join("|")}) (\\d{1,2}) (${MONTHS.join("|")}) (\\d{4}), (\\d\\d):(\\d\\d)` +
+  `(?:-\\d\\d:\\d\\d| to (?:${WEEKDAYS.join("|")}) \\d{1,2} (?:${MONTHS.join("|")}) \\d{4}, \\d\\d:\\d\\d)?`, "g");
+const JSON_ESCAPES = { b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" };
+/**
+ * The event's own clock, from its case description (the text of caseMetaEvidence, or renderCase of
+ * readEvent's metaEvidenceTemplate: the date is the same in every case) and the contract's eventStart
+ * (unix seconds): { offset (minutes east of UTC), zone (its name, "IST") }, or null. The contract keeps
+ * no timezone, but the case text names the event's date and time as describeWhen wrote it when the
+ * contract was created ("Wednesday 4 November 2026, 18:00-22:00 IST"). A date counts when its weekday is
+ * right and its distance from eventStart is an offset timezones use (TZ_OFFSETS: the form offers no
+ * other, so "+00:30" means the date is another one, a doors time in the event's name for example). Its
+ * zone is the name written after that date's last time, up to the next ")", quote, ";", "," or line end,
+ * when it is verifiably and unmistakably that offset (zoneIs: "UTC+01:00", "CET"). The first date whose
+ * name is gives the clock; if none is, the first date that counts gives it, named by the offset
+ * ("UTC+05:30", offsetText). The text is JSON: its escapes (\" and \\ in the organiser's texts, \n
+ * between paragraphs) are read first. All of the text is organiser-typed, and a title could hold another
+ * date earlier on: so the clock found may not be the venue's. The moment shown on it is still right,
+ * because the zone always names a timezone that is exactly that offset.
+ */
+export function eventClock(caseText, eventStart) {
+  const start = Number(eventStart);
+  if (!Number.isFinite(start)) return null;
+  const text = String(caseText ?? "").replace(/\\(?:u([0-9a-fA-F]{4})|([^u]))/g, (_, u, c) => (u ? String.fromCharCode(parseInt(u, 16)) : JSON_ESCAPES[c] ?? c));
+  let first = null;
+  for (const m of text.matchAll(WHEN_RE)) {
+    const [d, mo, y, hh, mm] = [Number(m[2]), MONTHS.indexOf(m[3]), Number(m[4]), Number(m[5]), Number(m[6])];
+    const day = new Date(Date.UTC(y, mo, d));
+    if (hh > 23 || mm > 59 || day.getUTCDate() !== d || day.getUTCMonth() !== mo || day.getUTCDay() !== WEEKDAYS.indexOf(m[1])) continue;
+    const offset = (Date.UTC(y, mo, d, hh, mm) - start * 1000) / 60_000;
+    if (!Number.isInteger(offset) || !TZ_OFFSETS.includes(offsetText(offset))) continue;
+    const name = /^[^)";,\u0000-\u001f]*/.exec(text.slice(m.index + m[0].length))[0].trim();
+    if (zoneIs(name, offset)) return { offset, zone: name };
+    first ??= { offset, zone: `UTC${offsetText(offset)}` };
+  }
+  return first;
 }
 
 // The network part of a page's config. `network`: { chainId, chain ("ethereum" on mainnet, else a
