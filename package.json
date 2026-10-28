@@ -13,7 +13,7 @@
     "console:rehearsal": "node scripts/console.mjs --config config.rehearsal.json --out out-rehearsal",
     "site": "node scripts/build-site.mjs",
     "admin": "node scripts/build-admin.mjs",
-    "test:site": "node test/site.e2e.mjs",
+    "test:site": "node test/site.e2e.mjs && node test/site-generic.e2e.mjs",
     "test:console": "node test/console.e2e.mjs",
     "test:admin": "node test/admin.e2e.mjs",
     "test:fork": "node test/fork.e2e.mjs"
