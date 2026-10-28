@@ -76,11 +76,12 @@ const browser = await chromium.launch();
 const allSent = []; // every transaction any page asked the wallet to send
 const order = []; // uploads and transactions of every page, in the order they happened
 // Kleros's IPFS upload service, mocked: every upload is recorded, and answers like the real one ({ cids: [...] })
-// unless ipfs.mode says "fail" (HTTP 500), "odd" (no IPFS address in the answer) or "other" (a case description
-// saved at another address than the one the contract computed). A case description ("metaevidence.json") gets the
-// real CIDv0 of its bytes, as a bare "/ipfs/<cid>" like the real service; other files a made-up CID and their name.
+// unless ipfs.mode says "fail" (HTTP 500), "odd" (no IPFS address in the answer), "other" (a case description
+// saved at another address than the one the contract computed) or "hang" (no answer for 5 s, then HTTP 500; ipfs.hung
+// counts them). A case description ("metaevidence.json") gets the real CIDv0 of its bytes, as a bare "/ipfs/<cid>"
+// like the real service; other files a made-up CID and their name.
 // Kleros's IPFS gateway (cdn.kleros.link), mocked: it serves what was uploaded, by path, and 404 for anything else.
-const ipfs = { mode: "ok", uploads: [], store: new Map() };
+const ipfs = { mode: "ok", uploads: [], store: new Map(), hung: 0 };
 const cidFor = (n) => "Qm" + `TestCid${"abcdefghijkmnpqrstuvwxyz"[n % 24]}`.padEnd(44, "Z");
 const CORS = { "access-control-allow-origin": "*" };
 // opts: failLogs (every log query fails, on the public RPC and in the wallet), logRange (log queries over more blocks
@@ -93,7 +94,9 @@ const CORS = { "access-control-allow-origin": "*" };
 // RPC does: HTTP 429, or a "rate limit exceeded" error; page.logRanges lists every log query), holdTx (the wallet
 // signs a transaction and returns its hash without sending it, as if it were still waiting in the mempool; the signed
 // transactions are in page.held), rejectConnect (the wallet refuses the first n connection requests), lateWallet (the
-// wallet is only added when the test calls window.__inject(), like a wallet app's browser that adds it late).
+// wallet is only added when the test calls window.__inject(), like a wallet app's browser that adds it late),
+// confirmDelay (ms the wallet takes before sending a transaction, like a guest reading the prompt), clockInstall (the
+// browser's timers are Playwright's fake clock, running at normal speed until the test calls page.clock.fastForward).
 // page.bigEstimate = true: every gas estimate the page asks the public RPC for answers 13.6 million gas.
 const asSolc07 = (data, e) => { let s = ""; try { s = JSON.stringify(e); } catch {} return /^0x3ef40ba7/.test(String(data)) || /4e487b71/.test(s + String(e && e.message)); };
 async function open(site, wallet, startChain = 1337, opts = {}) {
@@ -112,6 +115,7 @@ async function open(site, wallet, startChain = 1337, opts = {}) {
       const t = params[0]; page.sent.push(t); allSent.push(t); order.push({ tx: t.data.slice(0, 10), to: t.to.toLowerCase() });
       // like MetaMask: a request pinned to another network than the wallet's is refused
       if (t.chainId !== undefined && parseInt(t.chainId, 16) !== chain) throw new Error("Invalid chainId for the current network");
+      if (opts.confirmDelay) await new Promise((r) => setTimeout(r, opts.confirmDelay));
       const value = t.value ? BigInt(t.value) : 0n;
       if (opts.smart) return (await opts.smart.connect(signer).exec(t.to, t.data, { value })).hash;
       if (opts.holdTx) { const raw = await signer.signTransaction(await signer.populateTransaction({ to: t.to, data: t.data, value })); page.held.push(raw); return ethers.keccak256(raw); }
@@ -150,6 +154,7 @@ async function open(site, wallet, startChain = 1337, opts = {}) {
     const rq = route.request(), url = new URL(rq.url());
     const headers = { "content-type": "application/json", ...CORS };
     if (ipfs.mode === "fail") return route.fulfill({ status: 500, headers, body: JSON.stringify({ message: "Pinning failed" }) });
+    if (ipfs.mode === "hang") { ipfs.hung++; await new Promise((r) => setTimeout(r, 5000)); return route.fulfill({ status: 500, headers, body: "{}" }).catch(() => {}); }
     const raw = rq.postDataBuffer() || Buffer.alloc(0), body = raw.toString("latin1");
     const file = (body.match(/filename="([^"]*)"/) || [])[1] || "";
     // the file's own bytes: the first part of the multipart body, between its headers and the next boundary
@@ -176,6 +181,7 @@ async function open(site, wallet, startChain = 1337, opts = {}) {
     else window.ethereum = provider;
   }, !!opts.lateWallet);
   if (opts.clockAt) await page.clock.setFixedTime(new Date(opts.clockAt * 1000));
+  if (opts.clockInstall) await page.clock.install();
   page.switchAccount = async (w) => { signer = w; me = await addr(w); await page.evaluate((a) => window.__emit("accountsChanged", [a]), me); };
   await page.goto(`http://localhost:${WEB}/${site}`);
   await page.waitForTimeout(800);
@@ -398,10 +404,24 @@ check("short payment: the deposit step says so, and a full deposit can be sent",
 out = await lookupAs(p, gsa);
 check("short payment: the lookup says so, not 'no deposit found'", shortRe.test(out) && !/No deposit found/.test(out), out);
 await p.close();
+// a full deposit, then a stray 0.004 ETH transfer the hosts return ("Return a stray transfer"): the return covers the
+// stray transfer, not the older deposit (as the verify script pairs them), so the deposit still counts
+const gr = new ethers.NonceManager(await fundNew()), gra = await addr(gr);
+const grDep = await (await gr.sendTransaction({ to: kick.target, data: "0xd0e30db0", value: D })).wait();
+await (await gr.sendTransaction({ to: kick.target, value: E("0.004") })).wait();
+await (await k.refund(gra, E("0.004"))).wait();
+const grLink = `https://etherscan.io/tx/${grDep.hash}`;
+p = await open("live", gr);
+await connect(p);
+check("deposit, then a stray transfer returned: the deposit still counts, Send blocked, its link offered", /already see a deposit/.test(await txt(p, "check-msg")) && !/less than the/.test(await txt(p, "check-msg"))
+  && (await dis(p, "send")) && (await vis(p, "luma-box")) && (await txt(p, "tx-link")) === grLink, await txt(p, "check-msg"));
+out = await lookupAs(p, gra);
+check("deposit, then a stray transfer returned: lookup says deposit received and links it", /Deposit received/.test(out) && !/less than the/.test(out) && (await linkHref(p)) === grLink, out);
+await p.close();
 
-// 6d. a deposit still waiting for confirmation when the page reloads: Send stays blocked and its link is offered;
-// once it is confirmed the deposit history takes over. A saved deposit that failed, or that the network never saw
-// (30 minutes on), is forgotten.
+// 6d. a deposit still waiting for confirmation when the page reloads: Send stays blocked and its link is offered, and
+// the page keeps checking: once it is confirmed the deposit history takes over, without a reload. A saved deposit that
+// failed, that the wallet replaced (sped up or cancelled), or that the network never saw (30 minutes on), is forgotten.
 const gp = await fundNew();
 p = await open("live", gp, 1337, { holdTx: true });
 await connect(p);
@@ -409,11 +429,14 @@ await toDeposit(p); await p.click("#send");
 await waitText(p, "send-msg", /Waiting for Ethereum mainnet to confirm|failed|cancelled|Nothing was sent/);
 const heldHash = p.held.length === 1 ? ethers.keccak256(p.held[0]) : "none";
 const savedTx = await p.evaluate(() => JSON.parse(localStorage.getItem("gt-last-tx") || "{}"));
-check("deposit sent: saved in the browser as soon as the wallet gives its hash", savedTx.hash === heldHash && String(savedTx.account).toLowerCase() === gp.address.toLowerCase() && savedTx.contract === kick.target && !(await prov.getTransactionReceipt(heldHash)), JSON.stringify(savedTx));
+check("deposit sent: saved in the browser (with its nonce) as soon as the wallet gives its hash", savedTx.hash === heldHash && String(savedTx.account).toLowerCase() === gp.address.toLowerCase() && savedTx.contract === kick.target
+  && savedTx.nonce === 0 && !(await prov.getTransactionReceipt(heldHash)), JSON.stringify(savedTx));
 await p.reload(); await p.waitForTimeout(800); await connect(p);
 check("reloaded while it is waiting for confirmation: Send blocked, its link offered for Luma", /Your deposit .+ is waiting for Ethereum mainnet to confirm it\. Don't send another one/.test(await txt(p, "check-msg")) && (await dis(p, "send"))
   && (await txt(p, "tx-link")) === `https://etherscan.io/tx/${heldHash}` && p.sent.length === 1, await txt(p, "check-msg"));
 await (await prov.broadcastTransaction(p.held[0])).wait();
+out = await waitText(p, "check-msg", /already see a deposit/);
+check("confirmed while the page is open: it updates by itself, Send blocked, same link", /already see a deposit/.test(out) && (await dis(p, "send")) && (await txt(p, "tx-link")) === `https://etherscan.io/tx/${heldHash}`, out);
 await p.reload(); await p.waitForTimeout(800); await connect(p);
 check("confirmed: the deposit history shows it, Send blocked, same link", /already see a deposit/.test(await txt(p, "check-msg")) && (await dis(p, "send")) && (await txt(p, "tx-link")) === `https://etherscan.io/tx/${heldHash}`, await txt(p, "check-msg"));
 check("no page errors (deposit waiting for confirmation)", p.errs.length === 0, p.errs.join("; "));
@@ -431,6 +454,48 @@ check("a saved deposit the network still doesn't know 30 minutes on is forgotten
 await saveTx("0x" + "cd".repeat(32), 60e3); await p.reload(); await p.waitForTimeout(800); await connect(p);
 check("... but a minute on it may still be on its way: Send blocked", (await dis(p, "send")) && /waiting for Ethereum mainnet to confirm/.test(await txt(p, "check-msg")), await txt(p, "check-msg"));
 await p.evaluate(() => localStorage.removeItem("gt-last-tx"));
+await p.close();
+// the wallet sped the deposit up (same nonce, higher fee, new hash): once the faster one is in, the page notices by
+// itself, shows that one and forgets the first; the same after a reload
+const sendHeld = async (w) => {
+  const pg = await open("live", w, 1337, { holdTx: true });
+  await connect(pg); await toDeposit(pg); await pg.click("#send");
+  await waitText(pg, "send-msg", /Waiting for Ethereum mainnet to confirm|failed|cancelled|Nothing was sent/);
+  await pg.reload(); await pg.waitForTimeout(800); await connect(pg);
+  return pg;
+};
+const gq = await fundNew();
+p = await sendHeld(gq);
+const slow = ethers.Transaction.from(p.held[0]);
+const fast = await gq.signTransaction({ type: slow.type, chainId: slow.chainId, nonce: slow.nonce, to: slow.to, data: slow.data, value: slow.value, gasLimit: slow.gasLimit,
+  ...(slow.type === 2 ? { maxFeePerGas: slow.maxFeePerGas * 2n, maxPriorityFeePerGas: slow.maxPriorityFeePerGas * 2n + 1n } : { gasPrice: slow.gasPrice * 2n }) });
+const fastLink = `https://etherscan.io/tx/${ethers.keccak256(fast)}`;
+check("sped up: the first one waits for confirmation at first", /is waiting for Ethereum mainnet to confirm it/.test(await txt(p, "check-msg")) && (await dis(p, "send")), await txt(p, "check-msg"));
+await (await prov.broadcastTransaction(fast)).wait();
+out = await waitText(p, "check-msg", /already see a deposit/);
+check("sped up in the wallet: the page notices by itself, shows the faster deposit, forgets the first", /already see a deposit/.test(out) && (await txt(p, "tx-link")) === fastLink && (await dis(p, "send"))
+  && (await p.evaluate(() => localStorage.getItem("gt-last-tx"))) === null, `${out} | ${await txt(p, "tx-link")}`);
+await p.reload(); await p.waitForTimeout(800); await connect(p);
+check("sped up, after a reload: the faster deposit only", /already see a deposit/.test(await txt(p, "check-msg")) && (await txt(p, "tx-link")) === fastLink && (await dis(p, "send")), await txt(p, "check-msg"));
+check("no page errors (sped up)", p.errs.length === 0, p.errs.join("; "));
+await p.close();
+// the wallet cancelled it (another transaction, an empty one to itself, used its nonce): forgotten, Send allowed
+const gk = await fundNew();
+p = await sendHeld(gk);
+const keptTx = await p.evaluate(() => JSON.parse(localStorage.getItem("gt-last-tx") || "{}"));
+await (await gk.sendTransaction({ to: gk.address, value: 0, nonce: 0 })).wait();
+await p.reload(); await p.waitForTimeout(800); await connect(p);
+check("cancelled in the wallet (a later transaction used its nonce): forgotten, Send allowed", keptTx.nonce === 0 && /All set/.test(await txt(p, "check-msg")) && !(await dis(p, "send")) && !(await vis(p, "luma-box"))
+  && (await p.evaluate(() => localStorage.getItem("gt-last-tx"))) === null, await txt(p, "check-msg"));
+await p.close();
+// the history can't be read: a confirmed deposit saved in this browser isn't taken for granted (the hosts declined
+// and refunded this one), so the page doesn't say it was sent and Send stays blocked
+const g2Dep = (await kick.queryFilter(kick.filters.Deposited(g2a)))[0].transactionHash;
+p = await open("live", g2, 1337, { failLogs: true });
+await p.evaluate(([h, a, c]) => localStorage.setItem("gt-last-tx", JSON.stringify({ hash: h, account: a, contract: c, at: Date.now(), nonce: 0 })), [g2Dep, g2a, kick.target]);
+await p.reload(); await p.waitForTimeout(800); await connect(p);
+check("history unreadable, a refunded deposit saved in the browser: not shown as sent, Send blocked", /Couldn't check for an earlier deposit/.test(await txt(p, "check-msg")) && !/Deposit sent/.test(await txt(p, "check-msg"))
+  && (await dis(p, "send")) && !(await vis(p, "luma-box")), await txt(p, "check-msg"));
 await p.close();
 
 // 7. refunded guest: allowed but warned; once they pay again, the new deposit is the one to paste
@@ -457,6 +522,10 @@ await (await smart.exec(kick.target, kick.interface.encodeFunctionData("deposit"
 await (await smart.setMode(1)).wait(); // refuse ETH
 await (await k.rejectAndRefund([smart.target], { gasLimit: 500000 })).wait();
 check("undelivered refund kept for the guest", (await kick.owed(smart.target)) === D);
+p = await open("live", owner, 1337, { smart, failLogs: true });
+await connect(p);
+check("undelivered refund, history unreadable: the deposit page still points to the claim", /0\.01 ETH refund couldn't be delivered/.test(await txt(p, "check-msg")) && (await dis(p, "send")), await txt(p, "check-msg"));
+await p.close();
 p = await open("live", owner, 1337, { smart });
 await connect(p);
 check("undelivered refund: deposit page points to the claim, Send blocked", /0\.01 ETH refund couldn't be delivered/.test(await txt(p, "check-msg")) && (await dis(p, "send")), await txt(p, "check-msg"));
@@ -546,6 +615,24 @@ check("evidence filed on the Dispute Resolver under the local ID, from the guest
   evs.length === 1 && evs[0].args._party === g2a && evs[0].args._evidence === `/ipfs/${upJson.cid}/evidence.json` && (await proxy.queryFilter(proxy.filters.Evidence(null, 1001n))).length === 0
   && p.sent.at(-1).to.toLowerCase() === proxy.target.toLowerCase() && p.sent.at(-1).data.startsWith("0xa6a7f0eb"), evs.map((e) => e.args._evidence).join("; "));
 check("evidence form cleared after sending", (await p.locator("#ev-title").inputValue()) === "" && (await p.locator("#ev-file").inputValue()) === "");
+// links: Kleros Court only opens files at an IPFS address (any other link shows as "flagged as unsafe"). An IPFS link,
+// also through a gateway, becomes the evidence file; any other link goes in the text, with no file
+const linkCid = "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
+const linkEvidence = async (link) => {
+  const n = ipfs.uploads.length;
+  await p.evaluate(() => { document.getElementById("lookup-out").textContent = ""; });
+  await p.fill("#ev-title", "Door list"); await p.fill("#ev-text", "The door list at 19:30."); await p.fill("#ev-link", link);
+  await p.click("#ev-send");
+  const said = await waitText(p, "lookup-out", /Couldn't save|Evidence sent|would fail|didn't go through|isn't complete/);
+  const ups = ipfs.uploads.slice(n);
+  return { said, ups, ev: ups.length === 1 ? JSON.parse(ups[0].data.toString("utf8")) : {} };
+};
+let le = await linkEvidence(`https://ipfs.io/ipfs/${linkCid}/door-list.jpg?filename=door-list.jpg`);
+check("evidence link on an IPFS gateway: the file as an IPFS path", /Evidence sent/.test(le.said) && le.ups.length === 1 && le.ev.fileURI === `/ipfs/${linkCid}/door-list.jpg` && le.ev.fileTypeExtension === "jpg" && !le.ev.description.includes("ipfs.io"), JSON.stringify(le.ev));
+le = await linkEvidence(`ipfs://${linkCid}`);
+check("evidence link ipfs://: the file as an IPFS path", /Evidence sent/.test(le.said) && le.ev.fileURI === `/ipfs/${linkCid}` && !("fileTypeExtension" in le.ev), JSON.stringify(le.ev));
+le = await linkEvidence("https://photos.example.com/album/door-list");
+check("any other link: in the evidence text, no file", /Evidence sent/.test(le.said) && !("fileURI" in le.ev) && le.ev.description.startsWith("The door list at 19:30.") && le.ev.description.includes("https://photos.example.com/album/door-list") && le.ev.description.includes(g3a), JSON.stringify(le.ev));
 // round 1: jurors say g3 did not attend. Someone already put 0.005 ETH on "Yes" directly on the Dispute Resolver.
 await (await liquid.startAppealPeriod(1001, 2, 3 * 86400)).wait();
 await (await proxy.connect(g1).fundAppeal(1, 1, { value: E("0.005") })).wait();
@@ -639,7 +726,8 @@ check("every transaction pinned to the network (chainId)", allSent.length >= 15 
 check("no appeal or evidence call ever sent to the deposit contract", !allSent.some((t) => t.to.toLowerCase() === kick.target.toLowerCase() && /^0x(4b2f0ea0|0e274e4c|a6a7f0eb)/.test(t.data)));
 
 // 8b. c2 and c4 challenge (outside the page), c3 disputes c2's claim from the page. The case description isn't on IPFS
-// yet, so the page saves it first, and sends nothing while it can't. Then jurors vote "No", only "Yes" gets fully funded
+// yet, so the page saves it first, and sends nothing while it can't (also when the upload service never answers).
+// A double click on Dispute opens one wallet prompt, not two. Then jurors vote "No", only "Yes" gets fully funded
 // for an appeal, and the window ends. Kleros's rule makes "Yes" win: the page says so instead of showing the jurors'
 // vote as the outcome. Nobody matches c4's challenge: it counts as attended.
 const [c1, c2, c3, c4] = keys.slice(6, 10).map((k) => new ethers.NonceManager(new ethers.Wallet(k, prov)));
@@ -652,10 +740,21 @@ await (await kick2.connect(owner).postAttendance([c1a], 3n * D)).wait();
 for (const c of [c2, c4]) await (await kick2.connect(c).challenge({ value: await kick2.challengeDeposit() })).wait();
 const [c2Case, c2CaseUri] = await kick2.caseMetaEvidence(c2a);
 ipfs.mode = "fail";
-p = await open("case2", c3); await connect(p);
+p = await open("case2", c3, 1337, { clockInstall: true, confirmDelay: 1500 }); await connect(p);
 out = await lookupAs(p, c2a);
 check("lookup of an open challenge: the case description linked", /Challenge open/.test(out) && (await caseLink(p)) === `https://cdn.kleros.link${c2CaseUri}` && !ipfs.store.has(c2CaseUri), out);
 const n2 = p.sent.length;
+// the upload service never answers: after 30 seconds the page gives up, and nothing is sent
+ipfs.mode = "hang";
+const hung = ipfs.hung;
+await p.click("#ch-action");
+for (let i = 0; i < 40 && ipfs.hung === hung; i++) await p.waitForTimeout(100);
+const greyed = (await dis(p, "ch-action")) && (await txt(p, "lookup-out")).includes("Saving the case description");
+await p.clock.fastForward(31000);
+out = await waitText(p, "lookup-out", /Couldn't save the case description|Dispute created|didn't go through/);
+check("dispute: the upload service never answers: the page gives up after 30 s, nothing sent", ipfs.hung === hung + 1 && greyed && /Couldn't save the case description on IPFS, so nothing was sent: the upload service didn't answer in time/.test(out)
+  && p.sent.length === n2 && !(await dis(p, "ch-action")), out);
+ipfs.mode = "fail";
 await p.click("#ch-action");
 out = await waitText(p, "lookup-out", /Couldn't save the case description|Dispute created|didn't go through/);
 check("dispute: the case description can't be saved on IPFS, so no transaction is sent", /Couldn't save the case description on IPFS, so nothing was sent: the upload service answered with error 500/.test(out) && p.sent.length === n2 && Number((await kick2.challenges(c2a)).state) === 1 && (await vis(p, "ch-action")), out);
@@ -665,12 +764,15 @@ out = await waitText(p, "lookup-out", /Couldn't save the case description|Disput
 check("dispute: the upload service saves it at another address than the contract's: nothing sent", new RegExp(`Couldn't save the case description on IPFS, so nothing was sent: the upload service saved it at /ipfs/Qm\\w+, not at ${c2CaseUri}`).test(out) && p.sent.length === n2, out);
 ipfs.mode = "ok";
 const ups2 = ipfs.uploads.length, ord2 = order.length;
-await p.click("#ch-action");
+// a double click, both clicks on the button (the note above it changes on the first click, so a real double click
+// may or may not land twice)
+await p.locator("#ch-action").evaluate((b) => { b.click(); b.click(); });
 out = await waitText(p, "lookup-out", /Couldn't save the case description|Dispute created|didn't go through/);
 const saved2 = ipfs.uploads.slice(ups2).filter((u) => u.file === "metaevidence.json"), seq2 = order.slice(ord2);
 const iUp = seq2.findIndex((o) => o.upload === "metaevidence.json"), iMatch = seq2.findIndex((o) => o.tx === "0x6d6df455");
 check("dispute: the case description saved on IPFS first (exactly the contract's text, at its address), then the case opened",
   /Dispute created on Kleros/.test(out) && saved2.length === 1 && saved2[0].data.equals(Buffer.from(c2Case, "utf8")) && saved2[0].path === c2CaseUri && iUp >= 0 && iMatch > iUp && p.sent.length === n2 + 1 && p.sent.at(-1).data === "0x6d6df455" + c2a.slice(2).toLowerCase().padStart(64, "0"), `${out} | ${JSON.stringify(seq2)}`);
+check("dispute double-clicked: one wallet prompt, one upload", p.sent.filter((t) => t.data.startsWith("0x6d6df455")).length === 1 && saved2.length === 1, JSON.stringify(seq2));
 const { arbitratorDisputeID: case2, localDisputeID: local2 } = await kick2.challenges(c2a);
 check("the Kleros case carries c2's own case description (MetaEvidence event)", (await metaEv(local2)).join() === c2CaseUri && c2CaseUri !== g3CaseUri, (await metaEv(local2)).join());
 await p.waitForTimeout(300);

@@ -219,9 +219,10 @@ body.status .deposit-only, body:not(.status) .status-only { display: none !impor
       <label for="ev-title" class="muted">Send evidence to the Kleros jurors (public and permanent). It is saved on IPFS, Kleros's file storage, then added to the case from your wallet.</label>
       <input type="text" id="ev-title" placeholder="Title, e.g. Photo at the venue, 19:30" autocomplete="off">
       <input type="text" id="ev-text" placeholder="What it shows" autocomplete="off">
-      <input type="text" id="ev-link" placeholder="Link to a photo or file (optional, https:// or ipfs://)" autocomplete="off" spellcheck="false">
-      <label for="ev-file" class="muted">Or attach a photo or PDF (optional, up to 4 MB):</label>
+      <label for="ev-file" class="muted">Attach a photo or PDF (optional, up to 4 MB). This is the best way to share a photo: it is saved on IPFS too, so jurors can open it from the case.</label>
       <input type="file" id="ev-file" accept="image/*,application/pdf">
+      <label for="ev-link" class="muted">Or paste a link (optional). Kleros only opens IPFS links (ipfs://…) as files; any other link is added to your text.</label>
+      <input type="text" id="ev-link" placeholder="ipfs://… or https://…" autocomplete="off" spellcheck="false">
       <div class="row"><button id="ev-send" type="button" class="ghost">Send evidence</button></div>
     </div>
     <div id="reward-box" hidden class="body">
@@ -479,8 +480,16 @@ async function depositHistory(addr) {
     if (String(t[1]).toLowerCase() !== me) continue;
     if (kind === TOPIC.deposited) { if (isHash(l.transactionHash)) deposits.push({ tx: l.transactionHash, amount, left: amount }); }
     else if (kind === TOPIC.rejected || kind === TOPIC.refunded) {
+      // which deposits a return covers (as pairReturns in scripts/lib.mjs): first one with exactly that much left; then,
+      // for a returned stray transfer (Refunded), what is above or below a full deposit (an overpayment's excess, a
+      // short payment), and for a declined guest's refund (Rejected), a full deposit; then the oldest first
       let back = amount;
-      for (const d of deposits) { const take = d.left < back ? d.left : back; d.left -= take; back -= take; if (!back) break; }
+      const give = (d, most) => { const take = most < back ? most : back; d.left -= take; back -= take; };
+      const pass = (pick, most) => { for (const d of deposits) if (back && d.left > 0n && pick(d)) give(d, most(d)); };
+      pass((d) => d.left === back, (d) => d.left);
+      if (kind === TOPIC.refunded) pass((d) => d.left !== DEPOSIT, (d) => (d.left > DEPOSIT ? d.left - DEPOSIT : d.left));
+      else pass((d) => d.left >= DEPOSIT, (d) => d.left);
+      pass(() => true, (d) => d.left);
     }
   }
   return { live: deposits.filter((d) => d.left >= DEPOSIT), returned: deposits.some((d) => d.left < d.amount),
@@ -608,33 +617,73 @@ async function afterWalletChange() {
   }
   refresh();
 }
-// The deposit this browser sent, saved as soon as the wallet gave its hash: after a reload, Send stays blocked while
-// it waits for confirmation, or once confirmed until the deposit history shows it (from then on the history decides,
-// so a deposit the hosts refunded doesn't block a new one), and its link is offered for Luma. A failed one is
-// forgotten, and so is one the network still doesn't know 30 minutes later (dropped or replaced in the wallet).
+// The deposit this browser sent, saved as soon as the wallet gave its hash (with the wallet's nonce for it). After a
+// reload, Send stays blocked while it waits for confirmation, its link is offered for Luma, and the page keeps checking
+// on it. Once confirmed, the deposit history decides (so a deposit the hosts returned doesn't block a new one); the
+// deposit this tab just saw confirmed keeps its link while it is still in the contract. Without a readable history, a
+// confirmed one is taken for granted only by that tab, and only while the contract shows no decision on the wallet
+// (otherwise the hosts may have returned it since). It is forgotten once it failed, once the wallet replaced it (sped
+// up or cancelled: the history shows another deposit, or a later transaction used its nonce), or when the network
+// still doesn't know it 30 minutes on (dropped).
 const SENT_KEY = "gt-last-tx";
-const forgetSentTx = () => { try { localStorage.removeItem(SENT_KEY); } catch {} };
+let sentHere = null; // what this tab sent, also when the browser can't save it
+function saveSentTx(rec) { sentHere = rec; try { localStorage.setItem(SENT_KEY, JSON.stringify(rec)); } catch {} }
+function forgetSentTx(hash) {
+  if (sentHere && sentHere.hash === hash) sentHere = null;
+  try { const s = JSON.parse(localStorage.getItem(SENT_KEY) || "null"); if (!s || s.hash === hash) localStorage.removeItem(SENT_KEY); } catch {}
+}
 async function loadSentTx(acct) {
+  const lc = (s) => String(s || "").toLowerCase(), p = state.prior;
+  const mine = (s) => !!s && s.contract === CONFIG.contract && isHash(s.hash) && lc(s.account) === lc(acct);
   let saved = null;
   try { saved = JSON.parse(localStorage.getItem(SENT_KEY) || "null"); } catch {}
-  if (!saved || saved.contract !== CONFIG.contract || !isHash(saved.hash) || String(saved.account).toLowerCase() !== acct.toLowerCase()) return;
-  let r, known = true;
-  try {
-    r = await rpc("eth_getTransactionReceipt", [saved.hash]);
-    if (!r && Date.now() - Number(saved.at || 0) > 30 * 60e3) known = !!(await rpc("eth_getTransactionByHash", [saved.hash]));
-  } catch { r = null; } // can't tell: keep blocking
+  const rec = mine(saved) ? saved : mine(sentHere) ? sentHere : null;
+  let lastTx = null, pending = false;
+  if (rec) {
+    let r = null, gone = false;
+    try {
+      r = await rpc("eth_getTransactionReceipt", [rec.hash]);
+      if (!r) {
+        if (p && p.live.some((d) => lc(d.tx) !== lc(rec.hash))) gone = true;
+        else if (Number.isInteger(rec.nonce) && Number(big(await rpc("eth_getTransactionCount", [acct, "latest"]))) > rec.nonce)
+          gone = !(r = await rpc("eth_getTransactionReceipt", [rec.hash])) && !(await rpc("eth_getTransactionByHash", [rec.hash]));
+        else if (Date.now() - Number(rec.at || 0) > 30 * 60e3) gone = !(await rpc("eth_getTransactionByHash", [rec.hash]));
+      }
+    } catch { r = null; gone = false; } // can't tell: keep blocking
+    if (state.account !== acct) return;
+    const own = !!state.lastTx && !state.pending && lc(state.lastTx) === lc(rec.hash); // this tab saw it confirmed
+    if ((r && r.status !== "0x1") || gone) forgetSentTx(rec.hash);
+    else if (!r) { lastTx = rec.hash; pending = true; }
+    else if (p ? !p.sent.includes(lc(rec.hash)) || (own && p.live.some((d) => lc(d.tx) === lc(rec.hash))) : own && state.status === 0) lastTx = rec.hash;
+  }
   if (state.account !== acct) return;
-  if ((r && r.status !== "0x1") || !known) { forgetSentTx(); return; }
-  if (r && state.prior && state.prior.sent.includes(saved.hash.toLowerCase())) return;
-  state.lastTx = saved.hash; state.pending = !r;
+  state.lastTx = lastTx; state.pending = pending;
+  if (pending) watchSentTx(acct, lastTx);
+}
+// While the deposit waits for confirmation, the page checks every few seconds (for about 10 minutes) whether it, or
+// another transaction from the wallet, went through, and then updates itself.
+let watching = false;
+async function watchSentTx(acct, hash) {
+  if (watching) return;
+  watching = true;
+  try {
+    let seen = null;
+    try { seen = await rpc("eth_getTransactionCount", [acct, "latest"]); } catch {}
+    for (let i = 0; i < 150; i++) {
+      await sleep(4000);
+      if (state.account !== acct || state.lastTx !== hash || !state.pending) return;
+      try {
+        const [r, n] = await Promise.all([rpc("eth_getTransactionReceipt", [hash]), rpc("eth_getTransactionCount", [acct, "latest"])]);
+        if (r || n !== seen) { seen = n; await afterWalletChange(); }
+      } catch {}
+    }
+  } finally { watching = false; }
 }
 // Has this wallet already sent a deposit that is still in the contract, and what does the contract say about it?
+// Each is read on its own: a history that can't be read doesn't hide what the contract says (declined, refund owed).
 async function loadHistory(addr) {
-  const c = CONFIG.contract;
-  let st = null, ow = null, hist = null;
-  try {
-    [st, ow, hist] = await Promise.all([call(c, SEL.status + pad(addr)), call(c, SEL.owed + pad(addr)), depositHistory(addr)]);
-  } catch { st = ow = hist = null; }
+  const c = CONFIG.contract, none = () => null;
+  const [st, ow, hist] = await Promise.all([call(c, SEL.status + pad(addr)).catch(none), call(c, SEL.owed + pad(addr)).catch(none), depositHistory(addr).catch(none)]);
   if (state.account !== addr) return;
   // a history we couldn't read is unknown, never "no deposit": sending stays blocked until it can be checked
   state.status = st === null ? null : Number(big(st)); state.owed = ow === null ? null : big(ow); state.prior = hist;
@@ -650,12 +699,13 @@ function verdict() {
   if (p === undefined) return { kind: "", text: "Checking this wallet's earlier deposits…", send: false };
   if (st === 1) return { kind: "good", text: "This wallet already has a confirmed spot. You don't need to send anything else.", send: false };
   if (st === 2) return { kind: "warn", text: `This wallet's deposit has already been settled. <a href="#status">Look it up</a>.`, send: false };
+  if (st === 3 && state.owed > 0n) return { kind: "warn", text: `The hosts declined this registration, and the ${esc(eth(state.owed, 18))} refund couldn't be delivered to this wallet. <a href="#status">Claim it on the status page</a>.`, send: false };
+  // a deposit the history shows comes before one this browser is still waiting for (that one may have been replaced)
+  const deps = p ? p.live.filter((d) => d.tx.toLowerCase() !== lastTx) : [];
+  if (deps.length) return { kind: "warn", text: `We already see a deposit from this wallet: ${txA(deps[deps.length - 1].tx)}. Don't send it twice. Paste that link on Luma (shown in step 5).`, send: false };
   if (state.lastTx && state.pending) return { kind: "warn", text: `Your deposit ${txA(state.lastTx)} is waiting for Ethereum mainnet to confirm it. Don't send another one: you can already paste its link on Luma (step 5).`, send: false };
   if (state.lastTx) return { kind: "good", text: "Deposit sent from this wallet. Now finish registering on Luma (step 5).", send: false };
   if (p === null || st === null) return { kind: "bad", text: "Couldn't check for an earlier deposit. Reload the page.", send: false };
-  if (st === 3 && state.owed > 0n) return { kind: "warn", text: `The hosts declined this registration, and the ${esc(eth(state.owed, 18))} refund couldn't be delivered to this wallet. <a href="#status">Claim it on the status page</a>.`, send: false };
-  const deps = p.live.filter((d) => d.tx.toLowerCase() !== lastTx);
-  if (deps.length) return { kind: "warn", text: `We already see a deposit from this wallet: ${txA(deps[deps.length - 1].tx)}. Don't send it twice. Paste that link on Luma (shown in step 5).`, send: false };
   if (state.eth === null) return { kind: "bad", text: "Couldn't read this wallet's balance. Reload the page.", send: false };
   const f = feeEstimate();
   if (state.eth < DEPOSIT) return { kind: "bad", send: false, text: `You need ${esc(DEP)} on Ethereum mainnet, plus a little for the network fee. If your ETH is on Arbitrum, Base, Optimism or another network, move it to Ethereum mainnet first, or withdraw from your exchange choosing the Ethereum network (sometimes called ERC20).` };
@@ -719,6 +769,10 @@ async function send() {
     const v = verdict();
     if (!v.send) throw Object.assign(new Error(""), { html: `${v.text} Nothing was sent.` });
     setNote(msg, "", `Confirm in your wallet: ${esc(DEP)} on Ethereum mainnet.`);
+    // the wallet's next nonce (the transaction's own replaces it once the network knows it): if a later transaction
+    // uses it while this one never went through, the wallet replaced this one (sped up or cancelled)
+    let nonce = null;
+    try { nonce = Number(big(await rpc("eth_getTransactionCount", [account, "pending"]))); } catch {}
     // the network is read last, right before the wallet prompt, and pinned in the request so the wallet refuses any other one
     state.chainId = Number(await window.ethereum.request({ method: "eth_chainId" }));
     if (state.chainId !== CONFIG.chainId) throw new Error("Your wallet is no longer on Ethereum mainnet. Switch back and try again.");
@@ -728,10 +782,12 @@ async function send() {
     const hash = await window.ethereum.request({ method: "eth_sendTransaction", params: [{ from: account, to: CONFIG.contract, data: SEL.deposit, value: "0x" + DEPOSIT.toString(16), chainId: CHAIN_HEX }] });
     if (!isHash(hash)) throw new Error("The wallet didn't return a transaction link. Check your wallet's activity before sending again.");
     // saved right away, so a reload while it is waiting for confirmation doesn't offer Send again
-    try { localStorage.setItem(SENT_KEY, JSON.stringify({ hash, account, contract: CONFIG.contract, at: Date.now() })); } catch {}
+    const rec = { hash, account, contract: CONFIG.contract, at: Date.now(), nonce };
+    saveSentTx(rec);
+    rpc("eth_getTransactionByHash", [hash]).then((t) => { if (t && t.nonce && sentHere === rec) { rec.nonce = Number(big(t.nonce)); saveSentTx(rec); } }).catch(() => {});
     setNote(msg, "", `Sent. Waiting for Ethereum mainnet to confirm it… ${txA(hash)}`);
     const receipt = await waitReceipt(hash);
-    if (receipt && receipt.status !== "0x1") { forgetSentTx(); throw Object.assign(new Error(""), { html: `The deposit failed on-chain, so the ETH stayed in your wallet (only the network fee was spent). ${txA(hash, "See it on Etherscan")}.` }); }
+    if (receipt && receipt.status !== "0x1") { forgetSentTx(hash); throw Object.assign(new Error(""), { html: `The deposit failed on-chain, so the ETH stayed in your wallet (only the network fee was spent). ${txA(hash, "See it on Etherscan")}.` }); }
     if (state.account !== account) return; // the guest switched accounts meanwhile: this link belongs to the old one
     state.lastTx = hash; state.pending = !receipt;
     if (!receipt) setNote(msg, "warn", `Still waiting for confirmation. You can already copy the link below and check it on ${txA(hash, "Etherscan")}.`);
@@ -881,10 +937,16 @@ const caseDescA = (uri) => `<a href="${esc(CONFIG.ipfsGateway + uri)}" target="_
 // ---- evidence: an ERC-1497 JSON file { name, description, fileURI? } saved on IPFS through Kleros's upload service,
 // then submitEvidence(localDisputeID, "/ipfs/<cid>/evidence.json") on the Dispute Resolver from the guest's wallet
 const IPFS_PATH = /^\/ipfs\/(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{58,})(\/[^\s]*)?$/;
-// "/ipfs/<cid>[/file]" from what an upload service or a guest may give: ipfs://…, a gateway URL, /ipfs/… or a bare CID
+// "/ipfs/<cid>[/file]" from what an upload service or a guest may give: ipfs://…, a gateway URL (https://<gateway>/ipfs/<cid>/…
+// or https://<cid>.ipfs.<gateway>/…), /ipfs/… or a bare CID
 function toIpfsPath(s) {
   s = String(s || "").trim();
-  if (/^https?:\/\//i.test(s)) { const i = s.indexOf("/ipfs/"); if (i < 0) return null; s = s.slice(i); }
+  if (/^https?:\/\//i.test(s)) {
+    s = s.replace(/[?#].*$/, "");
+    const sub = s.match(/^https?:\/\/(b[a-z2-7]{58,})\.ipfs\.[^/]+(\/.*)?$/i);
+    if (sub) s = `/ipfs/${sub[1].toLowerCase()}${sub[2] && sub[2] !== "/" ? sub[2] : ""}`;
+    else { const i = s.indexOf("/ipfs/"); if (i < 0) return null; s = s.slice(i); }
+  }
   else if (/^ipfs:\/\//i.test(s)) s = "/ipfs/" + s.slice(7).replace(/^ipfs\//, "");
   else if (!s.startsWith("/ipfs/")) s = "/ipfs/" + s;
   return IPFS_PATH.test(s) ? s : null;
@@ -902,18 +964,23 @@ function ipfsPathFrom(answer) {
   for (const s of found) { const p = toIpfsPath(s); if (p) return p; }
   return null;
 }
+// A service that never answers ends the upload too: after 30 seconds, plus time to send a large file (50 KB/s).
 async function ipfsUpload(blob, name, operation) {
   const form = new FormData();
   form.append("data", blob, name);
-  let r;
-  try { r = await fetch(`${CONFIG.ipfsUpload}?operation=${operation}&pinToGraph=false`, { method: "POST", body: form }); }
-  catch { throw new Error("the upload service couldn't be reached"); }
-  if (!r.ok) throw new Error(`the upload service answered with error ${r.status}`);
-  let answer;
-  try { answer = await r.json(); } catch { throw new Error("the upload service gave an answer this page doesn't understand"); }
-  const p = ipfsPathFrom(answer);
-  if (!p) throw new Error("the upload service didn't return an IPFS address");
-  return p;
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 30e3 + blob.size / 50);
+  const late = () => ctl.signal.aborted && new Error("the upload service didn't answer in time");
+  try {
+    let r;
+    try { r = await fetch(`${CONFIG.ipfsUpload}?operation=${operation}&pinToGraph=false`, { method: "POST", body: form, signal: ctl.signal }); }
+    catch { throw late() || new Error("the upload service couldn't be reached"); }
+    if (!r.ok) throw new Error(`the upload service answered with error ${r.status}`);
+    let answer;
+    try { answer = await r.json(); } catch { throw late() || new Error("the upload service gave an answer this page doesn't understand"); }
+    const p = ipfsPathFrom(answer);
+    if (!p) throw new Error("the upload service didn't return an IPFS address");
+    return p;
+  } finally { clearTimeout(t); }
 }
 const MAX_FILE = 4 * 1024 * 1024;
 let evCase = null; // { local, id, staker }: evidence goes under the Dispute Resolver's local ID; the court page uses the arbitrator ID
@@ -925,22 +992,26 @@ async function sendEvidence() {
   if (!name || !text) { setNote(out, "bad", "Write a title and what the evidence shows."); return; }
   if (link && file) { setNote(out, "bad", "Add either a link or a file, not both."); return; }
   if (link && !/^(https:\/\/|ipfs:\/\/|\/ipfs\/)\S+$/.test(link)) { setNote(out, "bad", "The link should start with https:// or ipfs://."); return; }
+  // Kleros Court only opens files at an IPFS address (any other file link shows as "flagged as unsafe"): an IPFS link,
+  // also through a gateway, becomes the evidence file, and any other link goes in the text
+  const ipfsLink = link ? toIpfsPath(link) : null;
+  if (link && !ipfsLink && !/^https:\/\//.test(link)) { setNote(out, "bad", "That IPFS link isn't complete. Check it, or attach the file instead."); return; }
   if (file && file.size > MAX_FILE) { setNote(out, "bad", "That file is bigger than 4 MB. Make it smaller, or upload it somewhere and paste a link instead."); return; }
   let proxy;
   try { ({ proxy } = await klerosContracts()); }
   catch (e) { setNote(out, "bad", `Couldn't reach Ethereum mainnet right now (${esc(e.message)}). Nothing was sent. Try again in a minute.`); return; }
   // the case description names the wallet too; repeating it keeps each piece of evidence clear on its own
-  const description = `${text}\n\n(Case about the guest wallet ${evCase.staker}, deposit contract ${CONFIG.contract} on Ethereum mainnet.)`;
-  let uri, fileURI = link ? (/^https:\/\//.test(link) ? link : toIpfsPath(link) || link) : "";
+  const description = `${text}${link && !ipfsLink ? `\n\nLink: ${link}` : ""}\n\n(Case about the guest wallet ${evCase.staker}, deposit contract ${CONFIG.contract} on Ethereum mainnet.)`;
+  let uri, fileURI = ipfsLink;
   try {
     setNote(out, "", "Saving your evidence on IPFS (Kleros's file storage)…");
     const ev = { name, description };
-    if (file) {
-      fileURI = await ipfsUpload(file, file.name.replace(/[^\w.\-]+/g, "_") || "evidence-file", "file");
-      const ext = (file.name.match(/\.([a-z0-9]{1,8})$/i) || [])[1];
+    if (file) fileURI = await ipfsUpload(file, file.name.replace(/[^\w.\-]+/g, "_") || "evidence-file", "file");
+    if (fileURI) {
+      ev.fileURI = fileURI;
+      const ext = ((file ? file.name : fileURI).match(/\.([a-z0-9]{1,8})$/i) || [])[1];
       if (ext) ev.fileTypeExtension = ext.toLowerCase();
     }
-    if (fileURI) ev.fileURI = fileURI;
     uri = await ipfsUpload(new Blob([JSON.stringify(ev)], { type: "application/json" }), "evidence.json", "evidence");
   } catch (e) {
     setNote(out, "bad", `Couldn't save your evidence on IPFS, so nothing was sent to Kleros: ${esc(e.message)}. Try again in a few minutes. If it keeps failing, send it to the hosts and ask them to add it to the case.`);
@@ -1243,12 +1314,25 @@ $("connect").addEventListener("click", connect);
 $("switch").addEventListener("click", switchNetwork);
 $("send").addEventListener("click", send);
 $("lookup").addEventListener("click", lookup);
-for (const mode of ["owed", "emergency"]) $("claim-" + mode).addEventListener("click", () => claim(mode));
-$("ch-action").addEventListener("click", () => chAction && chAction());
-$("ch-action2").addEventListener("click", () => chAction2 && chAction2());
-$("collect").addEventListener("click", collectAppealRewards);
-$("release").addEventListener("click", releasePayouts);
-$("ev-send").addEventListener("click", sendEvidence);
+// One flow at a time from the buttons under a looked-up wallet (challenge, dispute, settle, appeal, deliver the ruling,
+// collect, evidence, claim), and from Release payouts: while one runs they are greyed out and another click (a double
+// click, say) does nothing, so the wallet is never asked twice for the same thing.
+function oneAtATime(ids) {
+  let busy = false;
+  return (fn) => async () => {
+    if (busy) return;
+    busy = true;
+    for (const id of ids) $(id).disabled = true;
+    try { await fn(); } finally { busy = false; for (const id of ids) $(id).disabled = false; }
+  };
+}
+const lookupFlow = oneAtATime(["ch-action", "ch-action2", "collect", "ev-send", "claim-owed", "claim-emergency"]), releaseFlow = oneAtATime(["release"]);
+for (const mode of ["owed", "emergency"]) $("claim-" + mode).addEventListener("click", lookupFlow(() => claim(mode)));
+$("ch-action").addEventListener("click", lookupFlow(() => chAction && chAction()));
+$("ch-action2").addEventListener("click", lookupFlow(() => chAction2 && chAction2()));
+$("collect").addEventListener("click", lookupFlow(collectAppealRewards));
+$("release").addEventListener("click", releaseFlow(releasePayouts));
+$("ev-send").addEventListener("click", lookupFlow(sendEvidence));
 $("copy-contract").addEventListener("click", (e) => copy(CONFIG.contract, e.currentTarget));
 $("copy-tx").addEventListener("click", (e) => copy($("tx-link").textContent, e.currentTarget));
 $("copy-wallet").addEventListener("click", (e) => copy($("tx-wallet").textContent, e.currentTarget));
