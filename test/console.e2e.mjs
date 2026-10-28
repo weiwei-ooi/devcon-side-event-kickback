@@ -318,8 +318,9 @@ const [caseText, caseUri] = await kick.caseMetaEvidence(cai);
 await page.waitForTimeout(500);
 check("case description linked in the challenge list, not on IPFS yet",
   (await page.locator("#challenges a", { hasText: "case description" }).getAttribute("href")) === `https://cdn.kleros.link${caseUri}` && /not on IPFS yet/.test(await txt("challenges")), await txt("challenges"));
+// (its wording comes from the template and may change: only check what it must contain)
 check("case description names the event, the wallet and the deposit contract",
-  JSON.parse(caseText).question.includes(cai) && caseText.includes(kAddr) && caseText.includes('\\"Console E2E\\"') && JSON.parse(caseText).fileURI === POLICY, caseText.slice(0, 400));
+  caseText.toLowerCase().includes(cai.toLowerCase()) && caseText.toLowerCase().includes(kAddr.toLowerCase()) && caseText.includes("Console E2E") && JSON.parse(caseText).fileURI === POLICY, caseText.slice(0, 400));
 ipfsFail = true;
 // a dispute first saves the case description; if that fails it asks, and Cancel sends nothing
 answers.push("DISPUTE", false);
@@ -350,12 +351,17 @@ let evs = await evidenceOf(localID);
 const details = uploads[0] ? JSON.parse(uploads[0].body.slice(uploads[0].body.indexOf("{"), uploads[0].body.lastIndexOf("}") + 1)) : {};
 check("challenge details uploaded through Kleros's service as an evidence JSON",
   uploads.length === 1 && uploads[0].method === "POST" && /operation=evidence/.test(uploads[0].url) && /name="data"/.test(uploads[0].body) && uploads[0].file === "evidence.json", JSON.stringify(uploads[0] ?? {}).slice(0, 300));
-check("challenge details name the staker, the contract and where to check",
+check("challenge details name the staker, the contract and the transactions",
   /Challenge details/.test(details.name) && details.description?.includes(`This case is about the wallet ${cai}`) && details.description.includes(kAddr) &&
-  /Challenged and ChallengeMatched events/.test(details.description) && details.description.includes(me) && details.description.includes(`/tx/${challengeTx}`), JSON.stringify(details));
+  details.description.includes(me) && details.description.includes(`/tx/${challengeTx}`) && !("fileURI" in details), JSON.stringify(details));
+// where to check: Read Contract → challenges(wallet), and the match transaction's logs; not the contract's
+// Events tab, which only lists the latest 25 events (the payouts push these out)
+const matchTx = (await kick.queryFilter(kick.filters.ChallengeMatched(cai)))[0]?.transactionHash ?? "none";
+check("challenge details point to challenges(wallet) on Read Contract and to the match transaction's logs, not the Events tab",
+  details.description?.includes(`/address/${kAddr}#readContract, "challenges" with the wallet ${cai} shows arbitratorDisputeID 1000 (this Kleros case) and matcher ${me}`) &&
+  details.description.includes(`/tx/${matchTx}#eventlog, shows its ChallengeMatched event (Logs tab), which names ${cai} and Kleros case #1000.`) && !/#events/.test(details.description), JSON.stringify(details));
 check("challenge details name the Kleros case number and the Dispute Resolver's number",
-  details.description?.includes(`It is Kleros case #1000 (https://court.kleros.io/cases/1000), number ${localID} in Kleros's Dispute Resolver`) &&
-  /The ChallengeMatched event for \S+ names Kleros case #1000\./.test(details.description), JSON.stringify(details));
+  details.description?.includes(`It is Kleros case #1000 (https://court.kleros.io/cases/1000), number ${localID} in Kleros's Dispute Resolver`), JSON.stringify(details));
 check("challenge details on Kleros under the local ID, from the owner", localID !== 1000n && evs.length === 1 && evs[0].args._party === me && evs[0].args._evidence === uploads[0].path,
   `local ${localID}: ` + evs.map((e) => `${e.args._party} ${e.args._evidence}`).join("; "));
 await page.waitForTimeout(500);
@@ -373,21 +379,54 @@ check("attendees paid 0.01, challenger's share set aside", mid[0] - before[0] ==
 await page.waitForTimeout(800);
 check("set-aside share shown", /Set aside for open Kleros cases\s*0\.01 ETH/.test(await txt("challenges")), await txt("challenges"));
 
-// evidence: uploads that fail send nothing; a link; a file from this computer
+// evidence: uploads that fail send nothing; links; a file from this computer. Kleros Court v1 shows an
+// attachment (fileURI) only for a content-addressed /ipfs/ path, and any https link as "unsafe": a link to
+// an IPFS file is attached by its /ipfs/ path, any other link goes into the description as text.
+const lastEvidence = () => { const u = uploads[uploads.length - 1]; return JSON.parse(u.body.slice(u.body.indexOf("{"), u.body.lastIndexOf("}") + 1)); };
 await page.fill("#evTitle", "Door list"); await page.fill("#evText", "Cai is not on the door list and no host saw them.");
 ipfsFail = true;
 n0 = await nonce();
 check("failed upload: clear error", await click("submitEvidence", /Could not upload "evidence\.json" to IPFS through Kleros's upload service \(error 500\)\. Nothing was sent to Kleros/), await logText());
 check("failed upload: nothing sent", (await nonce()) === n0 && (await evidenceOf(localID)).length === 1);
 ipfsFail = false;
-await page.fill("#evLink", "ipfs://QmDoorList");
-check("submit evidence with a link", await click("submitEvidence", /Evidence sent to Kleros case #1000/), await logText());
+const doorCid = fakeCid(90);
+await page.fill("#evLink", `ipfs://${doorCid}`);
+check("submit evidence with an ipfs:// link", await click("submitEvidence", /Evidence sent to Kleros case #1000/), await logText());
 evs = await evidenceOf(localID);
-const second = JSON.parse(uploads[1].body.slice(uploads[1].body.indexOf("{"), uploads[1].body.lastIndexOf("}") + 1));
-check("evidence JSON (ERC-1497) on Kleros under the local ID", evs.length === 2 && evs[1].args._party === me && evs[1].args._evidence === uploads[1].path &&
-  second.name === "Door list" && second.fileURI === "ipfs://QmDoorList" && /door list/.test(second.description), JSON.stringify(second));
+const second = lastEvidence();
+check("evidence JSON (ERC-1497) on Kleros under the local ID; an ipfs:// link is attached as /ipfs/<CID>", evs.length === 2 && evs[1].args._party === me && evs[1].args._evidence === uploads[uploads.length - 1].path &&
+  second.name === "Door list" && second.fileURI === `/ipfs/${doorCid}` && second.description === "Cai is not on the door list and no host saw them.", JSON.stringify(second));
 check("no evidence under Kleros's case number", (await evidenceOf(1000)).length === 0);
 check("evidence form cleared", (await page.inputValue("#evTitle")) === "" && (await page.inputValue("#evLink")) === "");
+await page.fill("#evTitle", "Door list (gateway link)"); await page.fill("#evText", "The same list, as a PDF.");
+await page.fill("#evLink", `https://cdn.kleros.link/ipfs/${doorCid}/door-list.pdf?filename=door-list.pdf`);
+await clearLog();
+check("submit evidence with a gateway link to an IPFS file", await click("submitEvidence", /Evidence sent to Kleros case #1000/), await logText());
+check("gateway link attached by its /ipfs/ path (no https), description as typed",
+  lastEvidence().fileURI === `/ipfs/${doorCid}/door-list.pdf` && lastEvidence().description === "The same list, as a PDF." &&
+  lastDialog().includes(`File on IPFS: /ipfs/${doorCid}/door-list.pdf (shown to jurors as an attachment)`), JSON.stringify(lastEvidence()) + "\n" + lastDialog());
+await page.fill("#evTitle", "Host statement"); await page.fill("#evText", "What the host at the door wrote.");
+await page.fill("#evLink", "https://example.org/statement");
+await clearLog();
+check("submit evidence with another link", await click("submitEvidence", /Evidence sent to Kleros case #1000/), await logText());
+check("another link: no attachment, the link goes into the description as text",
+  !("fileURI" in lastEvidence()) && lastEvidence().description === "What the host at the door wrote.\n\nLink: https://example.org/statement", JSON.stringify(lastEvidence()));
+check("another link: the confirm says so, and to attach photos and documents as files",
+  /this link goes into the description as text, for jurors to copy into their browser\. For a photo or a document, attach the file instead\./.test(lastDialog()), lastDialog());
+evs = await evidenceOf(localID);
+check("three link evidences on Kleros", evs.length === 4, String(evs.length));
+await page.fill("#evTitle", "Door list"); await page.fill("#evText", "Broken link.");
+await page.fill("#evLink", "ipfs://QmDoorList");
+n0 = await nonce();
+check("an incomplete IPFS link is refused", await click("submitEvidence", /ipfs:\/\/QmDoorList is not a complete IPFS address/) && (await nonce()) === n0, await logText());
+await page.fill("#evLink", "");
+// more link forms (subdomain gateway, trailing slash, old ipfs://ipfs/, a path that is not an IPFS file)
+const V1 = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi";
+const forms = await page.evaluate(([cid, v1]) => [
+  `https://${v1}.ipfs.dweb.link/door.png`, `https://ipfs.io/ipfs/${cid}/`, `ipfs://ipfs/${cid}#top`, `/ipfs/${cid}/a.pdf`, "https://example.org/ipfs/notacid", "https://example.org/photo.png",
+].map((l) => window.ipfsPathOfLink(l)), [doorCid, V1]);
+check("IPFS link forms converted, other links not",
+  JSON.stringify(forms) === JSON.stringify([`/ipfs/${V1}/door.png`, `/ipfs/${doorCid}`, `/ipfs/${doorCid}`, `/ipfs/${doorCid}/a.pdf`, null, null]), JSON.stringify(forms));
 await page.fill("#evTitle", "Door photo"); await page.fill("#evText", "Photo of the door list at 21:30.");
 await page.setInputFiles("#evFile", { name: "door-list.png", mimeType: "image/png", buffer: Buffer.from("PNG door list photo bytes") });
 await page.fill("#evLink", "https://example.org/x");
@@ -396,10 +435,10 @@ check("a file and a link together are refused", await click("submitEvidence", /A
 await page.fill("#evLink", "");
 await clearLog();
 check("submit evidence with a file", await click("submitEvidence", /Evidence sent to Kleros case #1000/), await logText());
-const fileUp = uploads[2], third = uploads[3] ? JSON.parse(uploads[3].body.slice(uploads[3].body.indexOf("{"), uploads[3].body.lastIndexOf("}") + 1)) : {};
+const fileUp = uploads[uploads.length - 2], third = lastEvidence();
 evs = await evidenceOf(localID);
 check("file uploaded first, then the evidence pointing to it", fileUp?.file === "door-list.png" && fileUp.body.includes("PNG door list photo bytes") && third.fileURI === fileUp.path &&
-  evs.length === 3 && evs[2].args._evidence === uploads[3].path, JSON.stringify(third));
+  evs.length === 5 && evs[4].args._evidence === uploads[uploads.length - 1].path, JSON.stringify(third));
 answers.push(false);
 await clearLog();
 n0 = await nonce();
@@ -590,6 +629,28 @@ check("release prompt after settling: 2 attendees, Cai's share set aside", /Pay 
 const after2 = await Promise.all([ana, ben, cai].map((w) => bal(w)));
 check("Ana paid, Ben got his challenge deposit and his share, Cai's share set aside",
   after2[0] - before2[0] === E("0.01") && after2[1] - before2[1] === benDeposit + E("0.01") && after2[2] === before2[2] && (await k2.heldBack()) === E("0.01"), after2.map((x, i) => x - before2[i]).join(","));
+// The jurors give no ruling (0) in Cai's case and nobody appeals: it stands. For this contract that keeps
+// Cai off the list and splits what is left of the challenge deposits in half; the console says so.
+const NO_RULING = 'no ruling (counts as "did not attend"; the challenge money is split in half)';
+await (await liquid.startAppealPeriod(1001, 0, DAY, KGAS)).wait();
+await page.click("#refresh"); await idle();
+check("a 0 vote is labelled as counting as 'did not attend', and stands if no answer is funded",
+  (await row(cai).innerText()).includes(`jurors voted ${NO_RULING}. Appeal window until`) &&
+  (await page.locator("#challenges .warn", { hasText: "The jurors gave no ruling. If no answer is fully funded in time, it stands: the challenger stays off the list and the challenge money is split in half." }).count()) === 1,
+  await row(cai).innerText());
+await skew(DAY + 60);
+await row(cai).locator("a", { hasText: "use this wallet" }).click();
+await clearLog();
+check("deliver the final ruling 0", await click("deliverRuling", /Final ruling delivered/), await logText());
+await page.click("#refresh"); await idle();
+check("final ruling 0 labelled", (await row(cai).innerText()).includes(`Final ruling: ${NO_RULING}. Press Settle.`), await row(cai).innerText());
+const before0 = await Promise.all([ana, ben, cai].map((w) => bal(w)));
+check("settle the 0 ruling", await click("resolveOne", /Challenge of \S+ settled/), await logText());
+const after0 = await Promise.all([ana, ben, cai].map((w) => bal(w)));
+const caiCh = await k2.challenges(cai);
+check("0 ruling: Cai stays off the list with half the challenge money; the set-aside share goes to Ana and Ben",
+  !(await k2.attended(cai)) && after0[2] - before0[2] === (2n * caiCh.deposit - caiCh.arbitrationPaid) / 2n &&
+  after0[0] - before0[0] === E("0.005") && after0[1] - before0[1] === E("0.005") && (await k2.heldBack()) === 0n, after0.map((x, i) => x - before0[i]).join(","));
 check("every transaction carried the network's chainId", sent.length > 0 && sent.every((t) => t.chainId === "0x539"), sent.map((t) => t.chainId).join(","));
 check("no page errors", errs.length === 0, errs.join("; "));
 

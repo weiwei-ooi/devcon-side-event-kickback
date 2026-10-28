@@ -95,7 +95,7 @@
     <div class="row"><select id="apSide"><option value="" selected>Choose the answer to fund…</option><option value="1">Yes, attended</option><option value="2">No, did not attend</option></select><input id="apAmt" placeholder="ETH to add (empty = all still missing)" style="flex:0 1 240px"><button class="secondary" id="fundAppeal" disabled>Fund appeal</button></div>
     <div class="row" style="margin-top:8px"><button class="secondary" id="deliverRuling" disabled>Deliver final ruling</button><button class="secondary" id="collectAppeal" disabled>Collect appeal rewards</button></div>
     <h2 style="margin-top:14px">Send evidence to the Kleros jurors</h2>
-    <p>For the challenger wallet above, while the case is open. Write what happened (door records, who saw them). You can attach a file (a photo or a PDF, up to 5 MB) or paste a link. The console stores the evidence on IPFS (a public file network) through Kleros's upload service, then adds it to the case. Evidence is public and permanent.</p>
+    <p>For the challenger wallet above, while the case is open. Write what happened (door records, who saw them). You can attach a file (a photo or a PDF, up to 5 MB) or paste a link. <b>Photos and documents are best attached as files:</b> Kleros shows jurors only files stored on IPFS. A link to an IPFS file (ipfs://… or https://…/ipfs/…) is attached as that file; any other link goes into the description as text, which jurors have to copy into their browser. The console stores the evidence on IPFS (a public file network) through Kleros's upload service, then adds it to the case. Evidence is public and permanent.</p>
     <div class="row"><input id="evTitle" placeholder="Title, e.g. Door list and host statement" style="flex:1 1 100%"></div>
     <div class="row" style="margin-top:6px"><input id="evText" placeholder="Description"><input id="evLink" placeholder="Link to a file (optional)" style="flex:0 1 240px"></div>
     <div class="row" style="margin-top:6px"><input id="evFile" type="file" style="flex:1 1 220px"><button class="secondary" id="submitEvidence" disabled>Submit evidence</button><button class="secondary" id="sendDetails" disabled>Send challenge details (optional)</button></div>
@@ -155,7 +155,9 @@ const ANYONE_BUTTONS = ["matchOne", "resolveOne", "publishCase", "release", "fun
 //    the appeal window and cost, and passPeriod / executeRuling to deliver the final ruling.
 // Our contract only reads the final ruling, which the Dispute Resolver records (including its
 // override: if only one answer was funded in the last appeal round, that answer wins).
-const RULINGS = ["no ruling (jurors refused or tied)", "Yes, attended", "No, did not attend"];
+// (0: the jurors refused or tied, or "refuse to arbitrate" was funded alone. For this contract it keeps
+// the challenger off the list, like "No", and splits what is left of the challenge deposits in half.)
+const RULINGS = ['no ruling (counts as "did not attend"; the challenge money is split in half)', "Yes, attended", "No, did not attend"];
 // The answers an appeal can fund. The console funds 1 or 2, but anyone can fund 0 on the Dispute
 // Resolver directly, and a final 0 counts as "did not attend" (the challenge money is split in half).
 const ANSWERS = ["Refuse to arbitrate", "Yes, attended", "No, did not attend"];
@@ -908,7 +910,7 @@ function describeAppeal(a) {
   const loneName = (s) => `"${ANSWERS[s]}"${s === 0 ? ' (counts as "did not attend")' : ""}`;
   const unsure = a.fundingUnknown && lone === null ? " (Could not check the appeal funding: if only one answer was fully funded for an appeal, that answer wins instead.)" : "";
   if (a.ruled) return `Final ruling: ${RULINGS[a.finalRuling] ?? a.finalRuling}. Press Settle.`;
-  if (a.period === 4) return `Final ruling: ${lone === null ? RULINGS[a.ruling] ?? a.ruling : `${ANSWERS[lone]}${lone === 0 ? ' (counts as "did not attend")' : ""}`}, not delivered yet.${unsure} Press "Deliver final ruling", then Settle.`;
+  if (a.period === 4) return `Final ruling: ${RULINGS[lone ?? a.ruling] ?? a.ruling}, not delivered yet.${unsure} Press "Deliver final ruling", then Settle.`;
   if (a.period < 3) return `${round}: ${K_PERIODS[a.period]} period. Jurors have not ruled yet.`;
   const now = Math.floor(Date.now() / 1000);
   if (now >= a.end) return `${round}: jurors voted ${RULINGS[a.ruling] ?? a.ruling}. The appeal window is over${lone !== null ? `; only ${loneName(lone)} was funded, so it wins the case` : ""}.${unsure} Press "Deliver final ruling", then Settle.`;
@@ -936,6 +938,8 @@ function describeAppeal(a) {
       : `If neither ${against.map((o) => `"${ANSWERS[o]}" (until ${when(until(o))})`).join(" nor ")} is fully funded`;
     warns.push(`⚠ "${ANSWERS[s]}" is being funded${s === 0 ? ' (it counts as "did not attend", and the challenge money is then split in half)' : ""}. ${unless}, "${ANSWERS[s]}" wins the case.`);
   }
+  // no ruling from the jurors: it stands unless an appeal changes it
+  if (a.ruling === 0 && !a.funded.length) warns.push("⚠ The jurors gave no ruling. If no answer is fully funded in time, it stands: the challenger stays off the list and the challenge money is split in half.");
   if (a.fundingUnknown) warns.push(`⚠ ${fundingUnknownText(a, now)}`);
   return `${round}: jurors voted ${RULINGS[a.ruling] ?? a.ruling}. Appeal window until ${when(a.end)}. Appeal funding: ${sides.join("; ")}.${warns.map((w) => " " + w).join("")}`;
 }
@@ -1055,6 +1059,25 @@ function ipfsPathFrom(j) {
   }
   return null;
 }
+// Kleros Court v1 shows an evidence attachment (fileURI) only when its address is content-addressed
+// (/ipfs/<CID>…); any https link, even to an IPFS gateway, shows to jurors as "flagged as unsafe".
+// A link to an IPFS file (ipfs://<CID>/…, https://<gateway>/ipfs/<CID>/…, https://<CID>.ipfs.<gateway>/…)
+// gives its "/ipfs/<CID>/…" path; any other link gives null.
+function ipfsPathOfLink(link) {
+  let p = null;
+  if (/^ipfs:\/\//i.test(link)) p = "/ipfs/" + link.slice(7).replace(/^ipfs\//, "");
+  else if (link.startsWith("/ipfs/")) p = link;
+  else {
+    let u;
+    try { u = new URL(link); } catch { return null; }
+    const sub = u.hostname.match(/^([a-z0-9]+)\.ipfs\./);
+    if (sub) p = `/ipfs/${sub[1]}${u.pathname}`;
+    else if (u.pathname.startsWith("/ipfs/")) p = u.pathname;
+  }
+  if (!p) return null;
+  p = p.split(/[?#]/)[0].replace(/\/+$/, ""); // no query (?filename=…) or trailing slash
+  return IPFS_PATH_RE.test(p) ? p : null;
+}
 // Pins a file on IPFS through Kleros's upload service (the one Kleros's own apps use), so the court
 // site can show it to jurors. Returns its "/ipfs/…" path.
 async function uploadToIpfs(blob, filename, operation = "evidence") {
@@ -1148,20 +1171,28 @@ async function submitEvidence() {
   if (url && file) throw new Error("Attach a file or paste a link, not both.");
   if (url && !/^(https:\/\/|ipfs:\/\/|\/ipfs\/)\S+$/.test(url)) throw new Error("The link should start with https://, ipfs:// or /ipfs/.");
   if (file && file.size > MAX_FILE) throw new Error(`The file is ${(file.size / 1048576).toFixed(1)} MB. Kleros's upload service takes up to 5 MB: make it smaller (e.g. a screenshot), or ask Claude.`);
-  const attached = file ? `\nFile: ${file.name}` : url ? "\n" + url : "";
+  // jurors only get an attachment for a file on IPFS: any other link goes into the description, as text
+  let fileURI = url ? ipfsPathOfLink(url) : null, linkText = "";
+  if (url && !fileURI) {
+    if (!url.startsWith("https://")) throw new Error(`${url} is not a complete IPFS address. Check the link, or attach the file instead.`);
+    linkText = url;
+  }
+  const attached = file ? `\nFile: ${file.name} (stored on IPFS, shown to jurors as an attachment)`
+    : fileURI ? `\nFile on IPFS: ${fileURI} (shown to jurors as an attachment)`
+    : linkText ? `\nLink: ${linkText}\n\nKleros shows jurors only files stored on IPFS as attachments, so this link goes into the description as text, for jurors to copy into their browser. For a photo or a document, attach the file instead.` : "";
   if (!confirm(`Send this evidence to Kleros case #${ch.disputeID}? It is public and cannot be removed.\n\n${name}\n${description}${attached}`)) return;
-  let fileURI = url || undefined;
   if (file) {
     fileURI = await uploadToIpfs(file, file.name);
     log(`File stored on IPFS: ${settings.kleros.ipfsGateway}${fileURI}`);
   }
-  await fileEvidence(ch, fileURI ? { name, description, fileURI } : { name, description }, "submit evidence");
+  const text = linkText ? `${description}\n\nLink: ${linkText}` : description;
+  await fileEvidence(ch, fileURI ? { name, description: text, fileURI } : { name, description: text }, "submit evidence");
   log(`✅ Evidence sent to Kleros case #${ch.disputeID}: ${caseUrl(ch.disputeID)}`, "ok");
   for (const id of ["evTitle", "evText", "evLink", "evFile"]) $(id).value = "";
 }
 
 // "Challenge details" (optional): the case description already names the wallet and the contract; this
-// evidence adds the Kleros case number and the transaction links.
+// evidence adds the Kleros case number and the transaction links. It has no attachment (fileURI).
 async function challengeDetails(ch) {
   const c = new ethers.Contract(contractAddr(), artifact.abi, rp);
   // one search over all of this contract's events (a few hundred at most), then pick the three needed;
@@ -1179,7 +1210,10 @@ async function challengeDetails(ch) {
     `After the event the organiser posted the list of guests who checked in${tx(posted[0])}. ${ch.wallet} was a registered guest and is not on that list.`,
     `This wallet challenged the list${await utc(challenged[0])}, saying it attended${tx(challenged[0])}. ${ch.matcher} matched the challenge${await utc(matched[0])}, saying it did not attend, which opened this case${tx(matched[0])}.`,
     `Question: did the person behind ${ch.wallet} attend the event? Please rule following the attendance policy of this case.`,
-    `All of this is public in the contract's Challenged and ChallengeMatched events: ${chain.explorer}/address/${contractAddr()}#events. The ChallengeMatched event for ${ch.wallet} names Kleros case #${ch.disputeID}.`,
+    // (not the contract's Events tab: Etherscan lists only the latest 25 events there, and the payouts that
+    // usually follow push these out of it)
+    `Anyone can check this on Etherscan: on ${chain.explorer}/address/${contractAddr()}#readContract, "challenges" with the wallet ${ch.wallet} shows arbitratorDisputeID ${ch.disputeID} (this Kleros case) and matcher ${ch.matcher}.` +
+      (matched[0] ? ` The transaction that opened the case, ${chain.explorer}/tx/${matched[0].transactionHash}#eventlog, shows its ChallengeMatched event (Logs tab), which names ${ch.wallet} and Kleros case #${ch.disputeID}.` : ""),
   ].join("\n\n");
   return { name: `Challenge details: who this case is about (${ch.wallet})`, description };
 }
