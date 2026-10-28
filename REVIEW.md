@@ -21,7 +21,18 @@ For Wei Wei and the developers reviewing the code before the live deployment.
 4. **Jurors only learned the wallet from optional evidence (low).** Solved by the per-case description above.
 5. **A valid deposit pasted on Luma could be listed in `unmatched.csv` as a stray (low).** The verify script now checks every tx link in an answer (a failed send then a good one verifies; two good ones give `MULTIPLE_TX`), and a deposit whose link appears in a guest's answers, or that came from the ETH address a guest gave, is listed with a note naming them, so nobody is told to pay again by mistake. A row that could not be checked yet (`RPC_ERROR`, `TX_PENDING`, `TX_NOT_FOUND`) keeps its deposit out of `unmatched.csv`.
 6. **README and REVIEW said the policy was not pinned while the configs had pins (low).** Rewritten for v7.
-7. Guest page and console findings (low and nits): listed below once merged.
+7. **Guest page (low and nits):** the open-challenges list put the status in a 22px column (one word per line); a rate-limiting RPC was treated as a range error (no pause, failed within a second; now the same range is asked again after a growing pause); a deposit waiting to confirm was forgotten on reload, so Send turned back on (now saved as soon as the wallet returns the hash); open Kleros cases vanished after payouts (now listed as "Open Kleros cases"); after a tied or refused vote the page showed a deadline that applies to neither side (now: both answers until the end of the first half, else a no-show); a wallet error stayed visible after a successful connect; a short payment showed "No deposit found" (now names the amount and what to do); the test that claimed to cover the geth "invalid opcode" path never reached it (now counted).
+8. **Console (medium to low):** when the Kleros appeal funding could not be read, the "the other answer wins the case" warning silently disappeared (now a warning with the case link and both deadlines; failing log searches are split down to one block); "Fund appeal" started on "Yes, attended", the challenger's side (now no default, and the prompt names the side and warns when it is the other side's); the challenge list only showed shortened wallets while every action needs the full address (now full address plus "use this wallet"); "Release payouts" settles unmatched challenges first when the payout would not fit (finding 1).
+
+**Tests (all suites, after merging contract, scripts, console, guest page and docs; local ganache):** `npm test` 44/44 (contract 35 + scripts end to end 9), `npm run test:console` 145/145, `npm run test:site` 165/165. Mainnet-fork test `npm run test:fork` (real Dispute Resolver and KlerosLiquid): see the result below.
+
+**Before going live (v7):**
+1. Pin the v7 juror policy (`docs/attendance-policy.md`, path `/ipfs/QmWVyFdXH5LQJBshyAnxk7o1EGVCnaN3znUvAhntvoDFHE`) through Kleros's upload service and check it byte-identical on cdn.kleros.link.
+2. Mainnet-fork test on the final commit (real Kleros contracts, the live config's constructor arguments).
+3. Developer review of v7 (`contracts/TruthPaysKickback.sol`, `docs/metaevidence.template.json`, `scripts/lib.mjs` `caseTemplate`/`ipfsCidV0`, `console/index.html`, `site/index.html`).
+4. Short v7 rehearsal on Ethereum mainnet (`npm run console:rehearsal`, 0.25 ETH cap): deploy, deposit, register, refund a declined guest, post list, a challenge left unmatched, release payouts; Zerion accepting `chainId`; whether cdn.kleros.link answers the console and the guest page (CORS).
+5. Owner wallet funded on mainnet (the deploy is about 5.3 million gas). Deploy the live contract from `npm run console`, verify the source on Etherscan (`build/TruthPaysKickback.standard-input.json`, 0.8.28, optimizer 200, paris), record `contract`, `receiver`, `deployBlock` and `depositOpensAt` in config.json, rebuild the guest page on `gh-pages`, and put the address and the page link on Luma while the event stays Private.
+6. Go Public only when the organiser says so.
 
 Not confirmed (refuted by both verifiers): the rehearsal's event start in the past, a tx hash typed as the ETH address, the rehearsal Dispute prompt, ownership transfer in the console, the guest page's policy link, the venue wording.
 
@@ -76,7 +87,7 @@ Not confirmed (refuted by both verifiers): the rehearsal's event start in the pa
 
 **Tests (all suites, after merging contract, scripts, console, guest page and docs):** from a clean build (`rm -rf build && npm run compile`), `npm test` 40/40 (contract 32 + scripts end to end 8), `npm run test:site` 127/127, `npm run test:console` 107/107, all on local ganache (after the v6 review fixes).
 
-**Before going live (v6):**
+**Before going live (v6, superseded by the v7 list above):**
 1. She confirms the deposit amount; set `deposit` in config.json (it is fixed in the contract at deploy).
 2. Re-pin the juror policy and pin `docs/metaevidence.json` (its `fileURI` set to the policy pin first) through Kleros's upload service; set `kleros.policyURI` and `kleros.metaEvidenceURI`.
 3. Short v6 rehearsal on Ethereum mainnet (`npm run console:rehearsal`, 0.25 ETH cap): deploy, deposit, register, refund a declined guest, post list, a challenge left unmatched, release payouts; Zerion accepting `chainId`; the Dispute Resolver's event layout.
