@@ -3,14 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Truth Pays Deposit</title>
+<!--baked--><title>Truth Pays Deposit</title><!--generic:<title>Event Deposit</title>-->
 <meta name="claude:viewport-fit-sides" content="cover">
-<meta name="description" content="Send your Committed Spot deposit in ETH for the Truth Pays dinner (Devcon Mumbai) on Ethereum mainnet.">
+<!--baked--><meta name="description" content="Send your Committed Spot deposit in ETH for the Truth Pays dinner (Devcon Mumbai) on Ethereum mainnet."><!--generic:<meta name="description" content="Send a refundable ETH deposit for an event on Ethereum mainnet, to the deposit contract named in the organiser's link.">-->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
 /* Layout: one narrow column that reads like a receipt: event header, network warning, live contract checks, four numbered steps, then a deposit lookup. */
+/* Two builds (scripts/build-site.mjs): Truth Pays with its contract baked in, and --generic for any kickback contract named by the organiser's link. Markup that differs between them sits in "baked" / "generic:" comment pairs. */
 :root {
   --bg: #f3f5f9;
   --surface: #ffffff;
@@ -126,15 +127,23 @@ input[type="file"] { font: 0.9rem var(--font-body); color: var(--muted); max-wid
 footer { color: var(--muted); font-size: 0.86rem; display: grid; gap: 6px; }
 /* two pages in one file: the deposit flow (default) and #status for after the event */
 body.status .deposit-only, body:not(.status) .status-only { display: none !important; }
+/* the generic page when its link names no usable deposit contract: only the header and why */
+body.refused .network, body.refused ol.steps, body.refused .pagelink, body.refused .status-only, body.refused footer { display: none !important; }
 .pagelink { font-size: 0.92rem; }
 @media (prefers-reduced-motion: no-preference) { button { transition: filter .15s; } button:hover:not(:disabled) { filter: brightness(1.08); } }
 </style>
 <body>
 <main>
   <header>
+<!--baked-->
     <span class="eyebrow">Committed Spot deposit · Devcon Mumbai side event</span>
     <h1>Truth Pays: Queryable Data, Prediction Markets &amp; Onchain Justice</h1>
     <div class="meta"><span>Wed 4 Nov 2026 · 18:00–22:00 IST</span><span>Hitchki, BKC, Mumbai</span><span>Kleros · Arkiv · Web3 Mumbai</span></div>
+<!--generic:
+    <span class="eyebrow">Refundable event deposit</span>
+    <h1 id="ev-name">Event deposit</h1>
+    <div class="meta" id="ev-meta"></div>
+-->
   </header>
 
   <div class="network deposit-only" role="note">
@@ -145,6 +154,10 @@ body.status .deposit-only, body:not(.status) .status-only { display: none !impor
   <section class="panel" aria-labelledby="contract-h">
     <h2 id="contract-h">Deposit contract</h2>
     <div id="preview" class="note warn" hidden>Deposits open soon. The deposit address appears here once the contract has passed its security review and is live.</div>
+<!--baked-->
+<!--generic:
+    <div id="link-note" class="note" hidden></div>
+-->
     <div id="contract-box" hidden>
       <div class="addr-row">
         <span class="mono" id="contract-addr">0x…</span>
@@ -189,16 +202,29 @@ body.status .deposit-only, body:not(.status) .status-only { display: none !impor
       </div>
     </li>
     <li class="step locked deposit-only" id="s-luma">
+<!--baked-->
       <h2>Back to Luma to finish registering</h2>
       <div class="body">
         <p class="muted">The button below copies your transaction link and takes you back to Luma. There, pick the <strong>Committed Spot</strong> ticket, use this wallet as your ETH address and paste the link into "Deposit tx link". The link starts with https://etherscan.io/tx/.</p>
+<!--generic:
+      <h2>Back to the registration page</h2>
+      <div class="body">
+        <p class="muted">Copy your transaction link below and go back to the page where you registered for the event. There, give this wallet as your ETH address and paste the link where it asks for your deposit. The link starts with https://etherscan.io/tx/.</p>
+-->
         <div id="luma-box" hidden class="kv">
           <dt>Transaction link</dt><dd><span class="mono" id="tx-link">–</span> <button class="ghost small" id="copy-tx" type="button">Copy</button></dd>
           <dt>Your wallet</dt><dd><span class="mono" id="tx-wallet">–</span> <button class="ghost small" id="copy-wallet" type="button">Copy</button></dd>
         </div>
+<!--baked-->
         <div class="row"><a id="luma-link" class="btn" href="https://luma.com/qewnqhas" rel="noopener">Copy link and go back to Luma</a></div>
+<!--generic:
+-->
         <div id="luma-msg" class="note" hidden></div>
+<!--baked-->
         <p class="muted">After you submit, Luma shows your registration as <strong>pending approval</strong>. The hosts check your deposit and confirm your spot by email. If they can't offer you a spot, your <span class="dep-amt">deposit</span> goes back to this wallet.</p>
+<!--generic:
+        <p class="muted">After you submit, the hosts check your deposit and confirm your spot. If they can't offer you a spot, your <span class="dep-amt">deposit</span> goes back to this wallet.</p>
+-->
       </div>
     </li>
   </ol>
@@ -256,7 +282,7 @@ body.status .deposit-only, body:not(.status) .status-only { display: none !impor
   </section>
 
   <footer>
-    <p>The deposit address shown here is the same one on the Luma event page. Hosts never ask for your recovery phrase or private key. The contract can't pay anything out before the event starts, and a guest left off the attendance list can challenge it on Kleros. If the hosts never publish the attendance list by <span id="deadline">the claim deadline</span>, every confirmed guest can withdraw their own deposit. Once the list is published, anyone can trigger the payout after the challenge window.</p>
+    <p><!--baked-->The deposit address shown here is the same one on the Luma event page.<!--generic:Check that the deposit address shown here is the one the organiser gave you.--> Hosts never ask for your recovery phrase or private key. The contract can't pay anything out before the event starts, and a guest left off the attendance list can challenge it on Kleros. If the hosts never publish the attendance list by <span id="deadline">the claim deadline</span>, every confirmed guest can withdraw their own deposit. Once the list is published, anyone can trigger the payout after the challenge window.</p>
     <p>Show up and check in: you get your <span class="dep-amt">deposit</span> back plus an equal share of the no-shows' deposits. If the event is cancelled, every deposit is refunded.</p>
   </footer>
 </main>
@@ -282,6 +308,8 @@ const CONFIG = {
   "ipfsGateway": "https://cdn.kleros.link"
 };
 /*END CONFIG*/
+// CONFIG.generic (built with --generic): no contract is baked in. loadEvent takes it from the link, then reads the
+// deposit, the jurors' policy and the event from the contract itself.
 const $ = (id) => document.getElementById(id);
 // The deposit contract (TruthPaysKickback v7)
 const SEL = { depositAmount: "0x419759f5", deposit: "0xd0e30db0", eventStart: "0x202887e7", claimDeadline: "0x3ba86c44", phase: "0xb1c9fe6e",
@@ -290,7 +318,9 @@ const SEL = { depositAmount: "0x419759f5", deposit: "0xd0e30db0", eventStart: "0
   challenge: "0xd2ef7398", matchChallenge: "0x6d6df455", resolveChallenge: "0x32064dac",
   disputeResolver: "0xf5a3f4af", arbitrator: "0x6cc6cde1", appealStatus: "0x17e411d5", releasePayouts: "0x766f8426",
   arbitratorExtraData: "0x0c7ac7b6",
-  caseMetaEvidence: "0x6b4249be" }; // caseMetaEvidence(address staker) -> (string text, string uri): the case's own description
+  caseMetaEvidence: "0x6b4249be", // caseMetaEvidence(address staker) -> (string text, string uri): the case's own description
+  // read by the generic page only: the event as the contract knows it
+  eventName: "0x8043c9c0", owner: "0x8da5cb5b", policyURI: "0x8ad4b922", metaEvidenceTemplate: "0xd62426e1" };
 // Kleros Court v1 on Ethereum mainnet. Evidence, appeals and appeal withdrawals go to Kleros's Dispute Resolver
 // (ArbitrableProxy) with the case's local ID, straight from the guest's own wallet, never through the deposit contract,
 // so Kleros pays refunds and rewards back to the wallet that sent the money.
@@ -346,7 +376,8 @@ const isHash = (h) => /^0x[0-9a-fA-F]{64}$/.test(h || "");
 const pad = (hex) => hex.replace(/^0x/, "").toLowerCase().padStart(64, "0");
 const word = (n) => BigInt(n).toString(16).padStart(64, "0");
 const big = (hex) => (!hex || hex === "0x" ? 0n : BigInt(hex));
-const DEPOSIT = BigInt(CONFIG.depositWei); // wei
+// wei; the generic page reads it from the contract (loadEvent)
+let DEPOSIT = BigInt(CONFIG.depositWei);
 // Gas a deposit() call may use, for the fee estimate in step 3 (it uses about 23,000: a transfer plus one event)
 const DEPOSIT_GAS = 50000n;
 // Kleros quotes a huge "non-payable" appeal cost once a case can't be appealed any further
@@ -362,7 +393,7 @@ function eth(wei, dp = 4) {
   const frac = (r % unit).toString().padStart(dp, "0").replace(/0+$/, "");
   return `${(r / unit).toLocaleString("en-US")}${frac ? "." + frac : ""} ETH`;
 }
-const DEP = eth(DEPOSIT, 18);
+let DEP = eth(DEPOSIT, 18);
 const fee = (wei) => (wei > 0n && wei < 10n ** 12n ? "less than 0.000001 ETH" : eth(wei, 6));
 // 32-byte words of an ABI answer. Anything that isn't plain hex gives no words, so nothing else can reach the page.
 const words = (hex) => (typeof hex === "string" && /^0x[0-9a-fA-F]*$/.test(hex) ? hex.slice(2).match(/[0-9a-f]{64}/gi) : null) || [];
@@ -373,8 +404,12 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 const txA = (h, label) => (isHash(h) ? `<a href="${esc(txUrl(h))}" target="_blank" rel="noopener">${esc(label || short(h))}</a>` : "");
 const caseUrl = (id) => `${CONFIG.klerosCourt}/cases/${BigInt(id)}`;
 const caseA = (id) => `<a href="${esc(caseUrl(id))}" target="_blank" rel="noopener">Kleros case #${BigInt(id)}</a>`;
-function ist(ts) {
-  return new Date(Number(ts) * 1000).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false }) + " IST";
+// A time as guests read it: in India time for the Truth Pays dinner in Mumbai; on the generic page, which knows no
+// venue, in the guest's own time zone, named.
+function when(ts) {
+  const d = new Date(Number(ts) * 1000), o = { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false };
+  if (CONFIG.generic) return d.toLocaleString("en-GB", { ...o, timeZoneName: "short" });
+  return d.toLocaleString("en-IN", { timeZone: "Asia/Kolkata", ...o }) + " IST";
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -495,6 +530,8 @@ async function depositHistory(addr) {
   return { live: deposits.filter((d) => d.left >= DEPOSIT), returned: deposits.some((d) => d.left < d.amount),
     short: deposits.reduce((n, d) => (d.left < DEPOSIT ? n + d.left : n), 0n), sent: deposits.map((d) => d.tx.toLowerCase()) };
 }
+// Where guests finish registering: Luma for Truth Pays. The generic page doesn't know the event's registration page.
+const REG_PAGE = CONFIG.generic ? "the event's registration page" : "Luma", YOUR_REG = CONFIG.generic ? "your registration" : "your Luma registration";
 const shortNote = (wei) => `We see ${esc(eth(wei, 18))} from this wallet, less than the ${esc(DEP)} deposit: send a full ${esc(DEP)} deposit; the hosts return the short payment.`;
 
 // prior: undefined = not checked yet, null = couldn't check, else the wallet's deposit history
@@ -515,6 +552,77 @@ async function copy(text, btn) {
   try { await navigator.clipboard.writeText(text); btn.textContent = "Copied"; }
   catch { const el = btn.previousElementSibling; if (el) selectText(el); btn.textContent = "Selected"; }
   setTimeout(() => (btn.textContent = "Copy"), 1500);
+}
+
+// ---------------------------------------------------------------- the generic page: the event its link names
+// A page built with --generic (scripts/build-site.mjs) has no contract of its own. The organiser's link names it and
+// the block it was created in: …/event/?contract=0x…&from=<block>. Everything else (the event's name, the deposit, the
+// times, the organiser, the jurors' policy) is read from that contract. The page refuses an address that isn't a
+// kickback deposit contract, or whose disputes don't go to Kleros's own Dispute Resolver. A look-alike link could still
+// name someone else's kickback contract, so the page says which event, contract and organiser it is for. (The Truth
+// Pays page never reads its link: its contract is baked in.)
+const MAX_NAME = 120; // characters of the event's name shown, at most
+async function loadEvent() {
+  const q = new URLSearchParams(location.search), c = (q.get("contract") || "").trim(), note = $("link-note");
+  const refuse = (html) => { document.body.classList.add("refused"); setNote(note, "bad", html); return false; };
+  const at = `<span class="mono">${esc(c)}</span>`, dont = "Don't send anything to it, and check the link with the organiser.";
+  if (!isAddr(c)) return refuse(`${c ? "The deposit contract address in this link isn't complete." : "This link doesn't name a deposit contract."} Open the deposit link the organiser gave you: it ends with <span class="mono">?contract=0x…&amp;from=…</span>`);
+  setNote(note, "", "Reading the event from its deposit contract…");
+  let ev, block;
+  try { ev = await readEvent(c); if (ev.ok) block = await deployBlockOf(c, q.get("from")); }
+  catch (e) { return refuse(`Couldn't reach Ethereum mainnet to read the deposit contract (${esc(e.message)}). Reload the page in a minute.`); }
+  if (!ev.code) return refuse(`There is no contract at ${at} on Ethereum mainnet. ${dont}`);
+  if (!ev.ok) return refuse(`The contract at ${at} isn't a kickback deposit contract, so this page can't take deposits for it. ${dont}`);
+  if (!ev.kleros) return refuse(`The deposit contract at ${at} sends its attendance disputes to <span class="mono">${esc(ev.resolver)}</span>, not to Kleros Court. This page only works with Kleros's own. ${dont}`);
+  if (block === null) return refuse(`Couldn't find when the deposit contract ${at} was created, so this page can't look up earlier deposits. Ask the organiser for the full link: it ends with <span class="mono">&amp;from=</span> and a block number.`);
+  Object.assign(CONFIG, { contract: c, deployBlock: block, depositWei: String(ev.deposit), klerosPolicy: IPFS_PATH.test(ev.policy) ? ev.policy : "" });
+  DEPOSIT = ev.deposit; DEP = eth(DEPOSIT, 18);
+  document.title = `${ev.name} · Deposit`;
+  $("ev-name").textContent = ev.name;
+  $("ev-meta").innerHTML = `<span>Starts ${esc(when(ev.start))}</span><span>Deposit ${esc(DEP)}</span>`;
+  setNote(note, "warn", `<strong>Only use a link the organiser gave you.</strong> This page is for <strong>${esc(ev.name)}</strong>, deposit contract ${at}, organiser <span class="mono">${esc(ev.owner)}</span>.`);
+  return true;
+}
+// The event as its contract knows it. code: there is a contract at the address; ok: it answers every read a kickback
+// deposit contract answers, in the right shape (a contract without one of them refuses the read); kleros: its Dispute
+// Resolver and court are Kleros's own (the ones this page was built with). Throws if the network can't be reached.
+async function readEvent(c) {
+  const code = await rpc("eth_getCode", [c, "latest"]);
+  if (!code || code === "0x") return { code: false };
+  const reads = ["eventName", "depositAmount", "eventStart", "claimDeadline", "owner", "disputeResolver", "arbitrator", "policyURI", "phase", "metaEvidenceTemplate"];
+  const r = {};
+  try { await Promise.all(reads.map(async (f) => { r[f] = await call(c, SEL[f]); })); }
+  catch (e) { if (e.revert) return { code: true, ok: false }; throw e; }
+  const one = (hex) => words(hex).length === 1, addr = (hex) => one(hex) && /^0{24}/.test(words(hex)[0]);
+  const text = (hex) => { // a returned string, or null if the answer isn't one
+    const w = words(hex), len = w.length >= 2 && big("0x" + w[0]) === 32n ? big("0x" + w[1]) : -1n;
+    return len >= 0n && len <= BigInt((w.length - 2) * 32) ? new TextDecoder().decode(returnedBytes(hex, 0)) : null;
+  };
+  const name = text(r.eventName), policy = text(r.policyURI);
+  const ok = name !== null && policy !== null && one(r.depositAmount) && big(r.depositAmount) > 0n && one(r.eventStart) && one(r.claimDeadline)
+    && addr(r.owner) && addr(r.disputeResolver) && addr(r.arbitrator) && one(r.phase) && big(r.phase) <= 3n && words(r.metaEvidenceTemplate).length >= 2;
+  if (!ok) return { code: true, ok: false };
+  const resolver = addrAt(r.disputeResolver, 0), court = addrAt(r.arbitrator, 0), lc = (a) => String(a).toLowerCase();
+  // the name as the contract has it, without control or text-direction characters (they could disguise it), shortened
+  const clean = name.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g, "").trim();
+  return { code: true, ok: true, name: (clean.length > MAX_NAME ? clean.slice(0, MAX_NAME - 1) + "…" : clean) || "Unnamed event",
+    deposit: big(r.depositAmount), start: Number(big(r.eventStart)), owner: addrAt(r.owner, 0), resolver, policy,
+    kleros: lc(resolver) === lc(CONFIG.klerosResolver) && (!CONFIG.klerosArbitrator || lc(court) === lc(CONFIG.klerosArbitrator)) };
+}
+// The block the contract was created in, where the page starts reading deposits (public RPCs refuse to search the whole
+// chain). The link's from=… is checked with two reads of the contract's code: there in that block, not in the one
+// before. If it is missing or wrong, the block is found by a binary search over the contract's code (about 25 reads).
+// Both need an RPC that keeps old state; with one that doesn't, the link's block is taken as it is. null: no block.
+async function deployBlockOf(c, from) {
+  const latest = Number(big(await rpc("eth_blockNumber", [])));
+  const hint = /^\d{1,12}$/.test(String(from || "").trim()) && Number(from) <= latest ? Number(from) : null;
+  const has = async (b) => { const code = await rpc("eth_getCode", [c, "0x" + b.toString(16)]); return !!code && code !== "0x"; };
+  try {
+    if (hint !== null && (await has(hint)) && (hint === 0 || !(await has(hint - 1)))) return hint;
+    let lo = 0, hi = latest;
+    while (lo < hi) { const m = Math.floor((lo + hi) / 2); if (await has(m)) hi = m; else lo = m + 1; }
+    return lo;
+  } catch { return hint; }
 }
 
 // ---------------------------------------------------------------- contract checks
@@ -541,7 +649,7 @@ async function loadContract() {
     state.info = info;
     renderChecks(info);
     $("stats").innerHTML = `<span>${info.count} spot${info.count === 1n ? "" : "s"} confirmed</span><span>${esc(eth(info.pool))} held in the contract</span>`;
-    $("deadline").textContent = `the claim deadline (${ist(info.deadline)})`;
+    $("deadline").textContent = `the claim deadline (${when(info.deadline)})`;
     // today's Kleros fee for a challenge (it follows the court's fee, so it can change)
     call(c, SEL.challengeDeposit).then((f) => { if (big(f) > 0n) $("fee-now").textContent = `${eth(big(f))} today`; }).catch(() => {});
     if (info.phase === PHASE.Listed || info.phase === PHASE.Finalized) loadOpenChallenges().catch(() => {});
@@ -564,7 +672,7 @@ function renderChecks(info) {
     add(info.klerosOk, info.klerosOk ? "Attendance disputes go to Kleros Court" : "It is set up with a different dispute service. Don't send anything.");
     if (info.phase !== PHASE.Open) add(false, info.phase === PHASE.Listed ? "The attendance list is published and the challenge window is running. Deposits are closed."
       : info.phase === PHASE.Finalized ? "The event has been settled. Deposits are closed." : "The event was cancelled. Deposits are closed and every deposit was refunded.");
-    else add(info.open, info.open ? `Deposits are open until ${ist(info.start)}` : `Deposits closed at ${ist(info.start)}`);
+    else add(info.open, info.open ? `Deposits are open until ${when(info.start)}` : `Deposits closed at ${when(info.start)}`);
   }
   $("checks").innerHTML = rows.join("");
 }
@@ -702,9 +810,9 @@ function verdict() {
   if (st === 3 && state.owed > 0n) return { kind: "warn", text: `The hosts declined this registration, and the ${esc(eth(state.owed, 18))} refund couldn't be delivered to this wallet. <a href="#status">Claim it on the status page</a>.`, send: false };
   // a deposit the history shows comes before one this browser is still waiting for (that one may have been replaced)
   const deps = p ? p.live.filter((d) => d.tx.toLowerCase() !== lastTx) : [];
-  if (deps.length) return { kind: "warn", text: `We already see a deposit from this wallet: ${txA(deps[deps.length - 1].tx)}. Don't send it twice. Paste that link on Luma (shown in step 5).`, send: false };
-  if (state.lastTx && state.pending) return { kind: "warn", text: `Your deposit ${txA(state.lastTx)} is waiting for Ethereum mainnet to confirm it. Don't send another one: you can already paste its link on Luma (step 5).`, send: false };
-  if (state.lastTx) return { kind: "good", text: "Deposit sent from this wallet. Now finish registering on Luma (step 5).", send: false };
+  if (deps.length) return { kind: "warn", text: `We already see a deposit from this wallet: ${txA(deps[deps.length - 1].tx)}. Don't send it twice. Paste that link on ${REG_PAGE} (shown in step 5).`, send: false };
+  if (state.lastTx && state.pending) return { kind: "warn", text: `Your deposit ${txA(state.lastTx)} is waiting for Ethereum mainnet to confirm it. Don't send another one: you can already paste its link on ${REG_PAGE} (step 5).`, send: false };
+  if (state.lastTx) return { kind: "good", text: `Deposit sent from this wallet. Now finish registering on ${REG_PAGE} (step 5).`, send: false };
   if (p === null || st === null) return { kind: "bad", text: "Couldn't check for an earlier deposit. Reload the page.", send: false };
   if (state.eth === null) return { kind: "bad", text: "Couldn't read this wallet's balance. Reload the page.", send: false };
   const f = feeEstimate();
@@ -713,7 +821,7 @@ function verdict() {
   const send = !!(state.info && state.info.ok);
   if (st === 3) return { kind: "warn", text: "This wallet was refunded before. Only send again if the hosts asked you to.", send };
   if (p.short > 0n) return { kind: "warn", text: shortNote(p.short), send };
-  if (p.returned) return { kind: "good", text: "All set. An earlier deposit from this wallet was sent back to it, so send a new one and paste the new link on Luma.", send };
+  if (p.returned) return { kind: "good", text: `All set. An earlier deposit from this wallet was sent back to it, so send a new one and paste the new link on ${REG_PAGE}.`, send };
   return { kind: "good", text: "All set. You have enough ETH on Ethereum mainnet for the deposit and the network fee.", send };
 }
 function refresh() {
@@ -750,7 +858,7 @@ function refresh() {
   $("luma-box").hidden = !linkTx;
   if (linkTx) { $("tx-link").textContent = txUrl(linkTx); $("tx-wallet").textContent = state.account; }
   else setNote($("luma-msg"), "", "");
-  $("luma-link").href = CONFIG.lumaUrl;
+  if (!CONFIG.generic) $("luma-link").href = CONFIG.lumaUrl;
 }
 
 // ---------------------------------------------------------------- send
@@ -791,7 +899,7 @@ async function send() {
     if (state.account !== account) return; // the guest switched accounts meanwhile: this link belongs to the old one
     state.lastTx = hash; state.pending = !receipt;
     if (!receipt) setNote(msg, "warn", `Still waiting for confirmation. You can already copy the link below and check it on ${txA(hash, "Etherscan")}.`);
-    else setNote(msg, "good", `Done. ${esc(DEP)} received by the deposit contract. Now paste the link on Luma.`);
+    else setNote(msg, "good", `Done. ${esc(DEP)} received by the deposit contract. Now paste the link on ${REG_PAGE}.`);
     await afterWalletChange();
   } catch (e) {
     setNote(msg, "bad", e && e.code === 4001 ? "You cancelled in your wallet. Nothing was sent." : (e && e.html) || esc((e && e.message) || String(e)));
@@ -855,7 +963,7 @@ async function loadOpenChallenges() {
     const ch = await call(c, SEL.challenges + pad(a));
     const st = Number(wordAt(ch, 0));
     const ends = Number(wordAt(ch, 2));
-    const what = st === 2 ? caseA(wordAt(ch, 4)) : ends >= Math.floor(Date.now() / 1000) ? `waiting for a match until ${ist(ends)}` : "nobody matched in time: counts as attended";
+    const what = st === 2 ? caseA(wordAt(ch, 4)) : ends >= Math.floor(Date.now() / 1000) ? `waiting for a match until ${when(ends)}` : "nobody matched in time: counts as attended";
     if (st === 2 || (st === 1 && !paid)) rows.push(`<li><span class="mark">·</span><span><span class="mono">${esc(a)}</span> ${what}</span></li>`);
   }
   $("open-ch-h").textContent = paid ? "Open Kleros cases" : "Open challenges";
@@ -1183,7 +1291,7 @@ async function lookup() {
     let kind = "", text = "", ruled = false;
     if (status === 0) {
       if (phase !== PHASE.Open) { text = "No confirmed spot for this wallet."; }
-      else if (latest) { kind = "warn"; text = `Deposit received. Waiting for the hosts to review your Luma registration.${sentLink}`; }
+      else if (latest) { kind = "warn"; text = `Deposit received. Waiting for the hosts to review ${YOUR_REG}.${sentLink}`; }
       else if (!hist) { kind = "warn"; text = "Couldn't check this wallet's deposits right now, so we can't tell whether one arrived. Reload the page and try again before sending anything."; }
       else if (hist.short > 0n) { kind = "warn"; text = shortNote(hist.short); }
       else if (hist.returned) { text = "No deposit waiting: an earlier deposit from this wallet was sent back to it."; }
@@ -1193,11 +1301,11 @@ async function lookup() {
         kind = attended ? "good" : "bad";
         text = attended ? `Challenge settled: on the attendance list.${ch.matched ? " Kleros jurors ruled that this guest attended." : ""}` : `Kleros jurors ruled this spot a no-show.${kleros}`;
       }
-      else if (attended && ch.state !== 2) { kind = "good"; text = `On the attendance list. Payouts are released after the challenge window (until ${ist(windowEnd)}) once no challenge is waiting for a match.`; }
+      else if (attended && ch.state !== 2) { kind = "good"; text = `On the attendance list. Payouts are released after the challenge window (until ${when(windowEnd)}) once no challenge is waiting for a match.`; }
       else if (ch.state === 0 && now <= windowEnd) {
         const cost = big(await call(c, SEL.challengeDeposit));
         kind = "warn";
-        text = `Not on the attendance list. If you were at the event, you can challenge until ${ist(windowEnd)} with a deposit of ${esc(eth(cost))} (the Kleros fee). If nobody matches it within 1 day, you count as attended and get the ETH back. If someone does, Kleros jurors decide.`;
+        text = `Not on the attendance list. If you were at the event, you can challenge until ${when(windowEnd)} with a deposit of ${esc(eth(cost))} (the Kleros fee). If nobody matches it within 1 day, you count as attended and get the ETH back. If someone does, Kleros jurors decide.`;
         showAction(`Challenge (${eth(cost)})`, async () => {
           if (!(await sendTx({ onlyFrom: addr, data: SEL.challenge, value: cost, out, done: "Challenge sent. Check back here: if nobody matches it within 1 day, you count as attended." }))) return;
           loadOpenChallenges().catch(() => {});
@@ -1205,10 +1313,10 @@ async function lookup() {
           try { const uri = await saveCaseDescription(addr); out.insertAdjacentHTML("beforeend", ` The ${caseDescA(uri)} jurors would read is saved on IPFS.`); }
           catch (e) { out.insertAdjacentHTML("beforeend", ` (Couldn't save the case description on IPFS yet: ${esc(e.message)}. Check this wallet again later and it will retry.)`); }
         });
-      } else if (ch.state === 0) { kind = "bad"; text = `Not on the attendance list, and the challenge window closed at ${ist(windowEnd)}. This spot counts as a no-show.`; }
+      } else if (ch.state === 0) { kind = "bad"; text = `Not on the attendance list, and the challenge window closed at ${when(windowEnd)}. This spot counts as a no-show.`; }
       else if (ch.state === 1 && now <= ch.matchEndsAt) {
         kind = "warn";
-        text = `Challenge open: this guest says they attended. If nobody matches the ${esc(eth(ch.deposit))} deposit by ${ist(ch.matchEndsAt)}, they count as attended. If you know they were not there, you can dispute it: you send the same deposit and Kleros jurors decide (the winner gets the remaining ETH; about 3 weeks, and this guest's share is set aside until the final ruling).${caseDesc}`;
+        text = `Challenge open: this guest says they attended. If nobody matches the ${esc(eth(ch.deposit))} deposit by ${when(ch.matchEndsAt)}, they count as attended. If you know they were not there, you can dispute it: you send the same deposit and Kleros jurors decide (the winner gets the remaining ETH; about 3 weeks, and this guest's share is set aside until the final ruling).${caseDesc}`;
         showAction(`Dispute this claim (${eth(ch.deposit)})`, async () => {
           // the case description must be readable on IPFS before the case opens
           setNote(out, "", "Saving the case description on IPFS (Kleros's file storage)…");
@@ -1244,17 +1352,17 @@ async function lookup() {
         else {
           // after a tie or a refusal (0) no answer is the jurors' own: both can only be funded in the first part of the period
           text += a.ruling === 0
-            ? ` ${roundName}: the jurors did not reach an answer (a tie or a refusal to arbitrate). Both answers can be funded for an appeal only until ${ist(a.loserEnd)}. If neither is fully funded, the refusal stands and this guest counts as a no-show.`
-            : ` ${roundName}: jurors voted <b>${esc(ruling(a.ruling))}</b>. Either side can appeal until ${ist(a.end)} (a side the jurors did not vote for only until ${ist(a.loserEnd)}).`;
+            ? ` ${roundName}: the jurors did not reach an answer (a tie or a refusal to arbitrate). Both answers can be funded for an appeal only until ${when(a.loserEnd)}. If neither is fully funded, the refusal stands and this guest counts as a no-show.`
+            : ` ${roundName}: jurors voted <b>${esc(ruling(a.ruling))}</b>. Either side can appeal until ${when(a.end)} (a side the jurors did not vote for only until ${when(a.loserEnd)}).`;
           text += ` An appeal needs both answers fully funded, and anyone can chip in: the ETH goes straight from your wallet to Kleros. After the final ruling, the funders of the winning answer get their ETH back plus a reward, and money for an answer that never got fully funded is returned (collect it here). Kleros also takes funding for "${answer(0)}", which counts as "${ruling(2)}" here, and an answer that ends up the only one fully funded wins the case. Fund from an ordinary wallet, not a Safe or other smart-contract wallet: Kleros pays appeal money back with a basic transfer that such wallets may not accept, and then it is lost.`;
           if (a.known) {
             const lose = state.account && state.account.toLowerCase() === addr.toLowerCase() ? "you count" : "this guest counts";
             if ((a.funded.includes(1) || a.paid[1] > 0n) && !a.funded.includes(2) && !a.funded.includes(0))
-              text += ` <b>⚠ "${ruling(1)}" is being funded. If "${ruling(2)}" is not fully funded by ${ist(a.ruling === 2 ? a.end : a.loserEnd)}, "${ruling(1)}" wins the case.</b>`;
+              text += ` <b>⚠ "${ruling(1)}" is being funded. If "${ruling(2)}" is not fully funded by ${when(a.ruling === 2 ? a.end : a.loserEnd)}, "${ruling(1)}" wins the case.</b>`;
             // "No" or "Refuse to arbitrate" funded while "Yes" isn't: alone, either one wins, and both mean a no-show
             for (const s of [2, 0])
               if ((a.funded.includes(s) || a.paid[s] > 0n) && !a.funded.includes(1))
-                text += ` <b>⚠ "${answer(s)}" is being funded. If "${ruling(1)}" is not fully funded by ${ist(a.ruling === 1 ? a.end : a.loserEnd)}, ${lose} as a no-show.</b>`;
+                text += ` <b>⚠ "${answer(s)}" is being funded. If "${ruling(1)}" is not fully funded by ${when(a.ruling === 1 ? a.end : a.loserEnd)}, ${lose} as a no-show.</b>`;
           }
           const opts = [1, 2].filter((s) => !a.funded.includes(s) && (a.ruling === s ? now < a.end : now < a.loserEnd)).map((s) => {
             const missing = a.need[s] - a.paid[s];
@@ -1280,7 +1388,7 @@ async function lookup() {
       else text = "Paid out. This wallet checked in and received its share.";
     } else if (status === 3) {
       if (owed > 0n) { kind = "warn"; text = `Declined by the hosts. The ${esc(eth(owed, 18))} refund couldn't be delivered to this wallet and is waiting to be claimed: connect this wallet and claim it to another address below.`; showClaim(addr, "owed"); }
-      else if (latest && phase === PHASE.Open) { kind = "warn"; text = `Refunded earlier. A new deposit from this wallet is waiting for the hosts to review your Luma registration.${sentLink}`; }
+      else if (latest && phase === PHASE.Open) { kind = "warn"; text = `Refunded earlier. A new deposit from this wallet is waiting for the hosts to review ${YOUR_REG}.${sentLink}`; }
       else { text = "Refunded. The deposit went back to this wallet."; }
     }
     // shares, refunds and challenge money that couldn't be delivered all wait in owed()
@@ -1308,8 +1416,6 @@ async function claim(mode) {
 const applyMode = () => document.body.classList.toggle("status", location.hash === "#status");
 applyMode();
 addEventListener("hashchange", () => { applyMode(); scrollTo(0, 0); });
-for (const el of document.querySelectorAll(".dep-amt")) el.textContent = DEP;
-if (CONFIG.klerosPolicy) $("policy-link").innerHTML = ` under the event's <a href="${esc(CONFIG.ipfsGateway + CONFIG.klerosPolicy)}" target="_blank" rel="noopener">attendance rules</a>`;
 $("connect").addEventListener("click", connect);
 $("switch").addEventListener("click", switchNetwork);
 $("send").addEventListener("click", send);
@@ -1338,7 +1444,8 @@ $("copy-tx").addEventListener("click", (e) => copy($("tx-link").textContent, e.c
 $("copy-wallet").addEventListener("click", (e) => copy($("tx-wallet").textContent, e.currentTarget));
 // copy the tx link first, then go back to Luma in the same tab (wallet in-app browsers handle new tabs badly).
 // Only leave once the copy worked: otherwise stay, with the link selected, so the guest can copy it by hand.
-$("luma-link").addEventListener("click", async (e) => {
+// (The generic page has no Luma button: the guest copies the link with its Copy button.)
+if (!CONFIG.generic) $("luma-link").addEventListener("click", async (e) => {
   const link = $("tx-link").textContent;
   if (!/^https:\/\//.test(link)) return;
   e.preventDefault();
@@ -1351,18 +1458,25 @@ $("luma-link").addEventListener("click", async (e) => {
   }
   location.href = CONFIG.lumaUrl;
 });
-try {
-  const saved = JSON.parse(localStorage.getItem(SENT_KEY) || "null");
-  if (saved && saved.contract === CONFIG.contract && isAddr(saved.account)) $("lookup-addr").value = saved.account;
-} catch {}
-if (!window.ethereum && isAddr(CONFIG.contract)) {
-  $("no-wallet").hidden = false;
-  // some wallet apps' browsers add their wallet a moment after the page loads
-  const walletAppeared = () => { if (window.ethereum && $("no-wallet").innerHTML === NO_WALLET) $("no-wallet").hidden = true; };
-  addEventListener("ethereum#initialized", walletAppeared, { once: true });
-  setTimeout(walletAppeared, 3000);
+// What needs the contract: on the generic page, once loadEvent has read it from the link.
+function start() {
+  for (const el of document.querySelectorAll(".dep-amt")) el.textContent = DEP;
+  if (CONFIG.klerosPolicy) $("policy-link").innerHTML = ` under the event's <a href="${esc(CONFIG.ipfsGateway + CONFIG.klerosPolicy)}" target="_blank" rel="noopener">attendance rules</a>`;
+  try {
+    const saved = JSON.parse(localStorage.getItem(SENT_KEY) || "null");
+    if (saved && saved.contract === CONFIG.contract && isAddr(saved.account)) $("lookup-addr").value = saved.account;
+  } catch {}
+  if (!window.ethereum && isAddr(CONFIG.contract)) {
+    $("no-wallet").hidden = false;
+    // some wallet apps' browsers add their wallet a moment after the page loads
+    const walletAppeared = () => { if (window.ethereum && $("no-wallet").innerHTML === NO_WALLET) $("no-wallet").hidden = true; };
+    addEventListener("ethereum#initialized", walletAppeared, { once: true });
+    setTimeout(walletAppeared, 3000);
+  }
+  loadContract();
 }
-loadContract();
+if (CONFIG.generic) { refresh(); loadEvent().then((ok) => ok && start()); }
+else start();
 </script>
 </body>
 </html>
