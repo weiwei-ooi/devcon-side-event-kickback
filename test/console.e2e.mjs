@@ -2,18 +2,23 @@
 // stand-ins for Kleros Court v1 (KlerosLiquid and the Dispute Resolver, test/MockKleros.sol) and a
 // stand-in for Kleros's IPFS upload service (the page's requests are intercepted, never sent):
 // deploy (constructor arguments from the scripts' own settings) → register → post attendance list →
-// a guest challenges → its case description (written by the contract) is saved on IPFS → the owner
-// disputes it → the optional "Challenge details" →
+// a guest challenges ("use this wallet" in the list) → its case description (written by the contract)
+// is saved on IPFS → the owner disputes it → the optional "Challenge details" →
 // evidence (text, link, file) → Kleros rules; appeals are funded and collected on the Dispute
-// Resolver from the owner wallet (never through the deposit contract) → deliver the final ruling →
-// settle → release payouts. Also: deploy refuses a changed config and a live config without the
-// pinned files, and asks before a second deploy; single refunds only for registered stakers; stray
-// returns list earlier returns; leftover warning above rounding dust; lists made for another deposit
-// are refused; tokens sent by mistake go back with "Return tokens"; no gas limit above 2^24 (EIP-7825).
+// Resolver from the owner wallet (never through the deposit contract; an answer must be chosen first),
+// with warnings when one answer, "refuse to arbitrate" included, is funded alone and when the funding
+// cannot be read → deliver the final ruling → settle → release payouts. Then a second contract: a
+// rehearsal dispute that saves the case description itself, and a payout too big for one transaction
+// with an unmatched challenge in it, settled first. Also: deploy refuses a changed config and a live
+// config without the pinned juror policy, and asks before a second deploy; single refunds only for
+// registered stakers; stray returns list earlier returns; leftover warning above rounding dust; lists
+// made for another deposit are refused; tokens sent by mistake go back with "Return tokens"; no gas
+// limit above 2^24 (EIP-7825); failing log searches are split.
 // Needs Playwright with Chromium (see test/site.e2e.mjs).
 //   node test/console.e2e.mjs
 import fs from "node:fs";
 import path from "node:path";
+import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 const proj = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
@@ -30,10 +35,12 @@ const RPC = 18747, WEB = 18787, DAY = 86400;
 const KGAS = { gasLimit: 500000 }; // the Kleros stand-ins' test hooks: ganache under-estimates them
 const POLICY = "/ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG/attendance-policy.md";
 const EXTRA = ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256"], [0, 3]);
+// ganache's HTTP fallback adds a listener per open connection, and every page load opens a few
+EventEmitter.defaultMaxListeners = 50;
 const server = ganache.server({ logging: { quiet: true }, chain: { chainId: 1337 }, wallet: { accounts: keys.map((k) => ({ secretKey: k, balance: "0x56BC75E2D63100000" })) } });
 await server.listen(RPC);
 const prov = new ethers.JsonRpcProvider(`http://127.0.0.1:${RPC}`, 1337, { staticNetwork: true, cacheTimeout: -1 });
-const [owner, g1, g2, g3] = keys.map((k) => new ethers.NonceManager(new ethers.Wallet(k, prov)));
+const [owner, g1, g2, g3, stranger] = keys.map((k) => new ethers.NonceManager(new ethers.Wallet(k, prov)));
 const addr = (w) => w.getAddress();
 const bal = async (w) => prov.getBalance(typeof w === "string" ? w : await addr(w));
 const dep = async (n, ...a) => (await new ethers.ContractFactory(load(n).abi, load(n).bytecode, owner).deploy(...a)).waitForDeployment();
@@ -84,16 +91,32 @@ await page.addInitScript(() => {
   Date.now = () => real() + (window.__skew || 0);
   window.ethereum = { request: ({ method, params }) => window.__rpc(method, params), on() {}, removeListener() {} };
 });
-// `bigEstimate`: the chain answers every gas estimate from the page with 13.6 million gas (a big
-// payout batch), so the console's 30% margin would pass the 2^24 per-transaction cap (EIP-7825)
-let bigEstimate = false;
+// `bigEstimate`: the chain answers gas estimates from the page with 13.6 million gas (a big payout
+// batch), so the console's 30% margin would pass the 2^24 per-transaction cap (EIP-7825): true for
+// every estimate, or a function selector for that call's only. `failEstimate` (a selector): that
+// call's estimates fail, like a payout too big for one transaction. `logsFail(from, to)`: the
+// Dispute Resolver's log searches over that block range fail, like an overloaded public RPC.
+let bigEstimate = false, failEstimate = null, logsFail = null;
+const logsServed = []; // Dispute Resolver log searches answered while `logsFail` was set: [from, to]
 await page.route(new RegExp(`127\\.0\\.0\\.1:${RPC}`), async (route) => {
-  if (!bigEstimate || route.request().method() !== "POST") return route.continue();
+  if ((!bigEstimate && !failEstimate && !logsFail) || route.request().method() !== "POST") return route.continue();
   const body = JSON.parse(route.request().postData() || "null");
   const res = await route.fetch();
   const out = await res.json();
-  const big = (q, a) => (q?.method === "eth_estimateGas" ? { ...a, result: "0xd00000" } : a);
-  const json = Array.isArray(out) ? out.map((a) => big([body].flat().find((q) => q.id === a.id), a)) : big(body, out);
+  const fail = (a, message) => ({ jsonrpc: "2.0", id: a.id, error: { code: -32000, message } });
+  const fix = (q, a) => {
+    const p = q?.params?.[0] ?? {};
+    if (q?.method === "eth_estimateGas") {
+      if (failEstimate && String(p.data).startsWith(failEstimate)) return fail(a, "gas required exceeds allowance (16777216)");
+      if (bigEstimate === true || (bigEstimate && String(p.data).startsWith(bigEstimate))) return { ...a, result: "0xd00000" };
+    }
+    if (q?.method === "eth_getLogs" && logsFail && String(p.address).toLowerCase() === proxy.target.toLowerCase()) {
+      if (logsFail(Number(p.fromBlock), Number(p.toBlock))) return fail(a, "block range too large");
+      logsServed.push([Number(p.fromBlock), Number(p.toBlock)]);
+    }
+    return a;
+  };
+  const json = Array.isArray(out) ? out.map((a) => fix([body].flat().find((q) => q.id === a.id), a)) : fix(body, out);
   return route.fulfill({ response: res, body: JSON.stringify(json) });
 });
 // Kleros's IPFS upload service, simulated: each upload gets a new CID and answers like the real one
@@ -101,7 +124,7 @@ await page.route(new RegExp(`127\\.0\\.0\\.1:${RPC}`), async (route) => {
 // and no file name ({ cids: ["/ipfs/<cid>"] }), as the real service answered for the pinned docs. The
 // gateway (cdn.kleros.link) serves what was uploaded. `ipfsFail` makes the next uploads fail with an HTTP 500.
 const uploads = [];
-const stored = new Map();
+const ipfsStore = new Map(); // what the simulated IPFS holds, by "/ipfs/…" path
 let ipfsFail = false;
 const fileOf = (buf) => { // the uploaded file's bytes, from the multipart body
   const head = buf.indexOf("\r\n\r\n", buf.indexOf("filename=")) + 4;
@@ -110,7 +133,7 @@ const fileOf = (buf) => { // the uploaded file's bytes, from the multipart body
 await page.route(/cdn\.kleros\.link/, async (route) => {
   const p = new URL(route.request().url()).pathname;
   const cors = { "access-control-allow-origin": "*" };
-  return stored.has(p) ? route.fulfill({ status: 200, headers: cors, body: stored.get(p) }) : route.fulfill({ status: 404, headers: cors, body: "not found" });
+  return ipfsStore.has(p) ? route.fulfill({ status: 200, headers: cors, body: ipfsStore.get(p) }) : route.fulfill({ status: 404, headers: cors, body: "not found" });
 });
 const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 const fakeCid = (n) => "Qm" + Array.from({ length: 44 }, (_, i) => B58[(n * 7 + i * 13 + 5) % 58]).join("");
@@ -123,7 +146,7 @@ await page.route(/kleros-api\.netlify\.app/, async (route) => {
   const content = fileOf(r.postDataBuffer());
   const p = file === "metaevidence.json" ? `/ipfs/${ipfsCidV0(content)}` : `/ipfs/${fakeCid(uploads.length)}/${file}`;
   uploads.push({ url: r.url(), method: r.method(), body, file, path: p, content: content.toString("utf8") });
-  stored.set(p, content);
+  ipfsStore.set(p, content);
   return route.fulfill({ status: 200, headers: { ...cors, "content-type": "application/json" }, body: JSON.stringify({ message: "File has been stored successfully", cids: [file === "metaevidence.json" ? p : "ipfs:/" + p.slice(5)] }) });
 });
 // confirm() → yes; prompt() → the word it asks for. A queued answer overrides: false = Cancel, a string = typed.
@@ -142,9 +165,13 @@ const waitLog = async (re) => { for (let i = 0; i < 120 && !re.test(await logTex
 // the status panel refreshes after the log line, so wait for it instead of reading it once
 const waitStatus = async (...res) => { const ok = async () => { const t = await txt("status"); return res.every((re) => re.test(t)); }; for (let i = 0; i < 120 && !(await ok()); i++) await page.waitForTimeout(250); return ok(); };
 const click = async (id, re) => { await page.click("#" + id); return waitLog(re); };
-const skew = async (secs) => { await prov.send("evm_increaseTime", [secs]); await prov.send("evm_mine", []); await page.evaluate((s) => (window.__skew = (window.__skew || 0) + s * 1000), secs); };
+let skewMs = 0; // how far the chain (and so the page's clock) was moved forward
+const skew = async (secs) => { await prov.send("evm_increaseTime", [secs]); await prov.send("evm_mine", []); skewMs += secs * 1000; await page.evaluate((ms) => (window.__skew = ms), skewMs); };
 const nonce = () => prov.getTransactionCount(me);
-const open = async () => { await page.goto(`http://localhost:${WEB}/`); await page.waitForTimeout(800); };
+// (a reload starts the page's clock afresh: move it forward again with the chain)
+const open = async () => { await page.goto(`http://localhost:${WEB}/`); await page.evaluate((ms) => (window.__skew = ms), skewMs); await page.waitForTimeout(800); };
+// the current action (a click) has finished: the buttons are enabled again
+const idle = async () => { await page.waitForTimeout(150); for (let i = 0; i < 240 && (await page.isDisabled("#refresh")); i++) await page.waitForTimeout(250); };
 
 // a live config without the pinned juror policy cannot be deployed
 const cfgPath = path.join(proj, dir, "config.json");
@@ -282,7 +309,10 @@ const cai = await addr(g3);
 const challengeTx = (await (await kick.connect(g3).challenge({ value: await kick.challengeDeposit() })).wait()).hash;
 await page.click("#refresh"); await page.waitForTimeout(800);
 check("challenge listed with the Kleros fee as deposit", /waiting for a match/.test(await txt("challenges")) && /Challenge deposit\s*0\.0162 ETH \(the Kleros fee\)/.test(await txt("challenges")), await txt("challenges"));
-await page.fill("#chAddr", cai);
+// finding 16: the list shows the full wallet, and "use this wallet" puts it in "Challenger wallet"
+check("challenge list shows the full wallet", (await txt("challenges")).includes(cai), await txt("challenges"));
+await page.click("#challenges a:has-text('use this wallet')");
+check("'use this wallet' fills the challenger wallet", (await page.inputValue("#chAddr")) === cai, await page.inputValue("#chAddr"));
 // the case description (the contract's own text: event, wallet, contract) is linked in the list, not on IPFS yet
 const [caseText, caseUri] = await kick.caseMetaEvidence(cai);
 await page.waitForTimeout(500);
@@ -291,18 +321,26 @@ check("case description linked in the challenge list, not on IPFS yet",
 check("case description names the event, the wallet and the deposit contract",
   JSON.parse(caseText).question.includes(cai) && caseText.includes(kAddr) && caseText.includes('\\"Console E2E\\"') && JSON.parse(caseText).fileURI === POLICY, caseText.slice(0, 400));
 ipfsFail = true;
+// a dispute first saves the case description; if that fails it asks, and Cancel sends nothing
+answers.push("DISPUTE", false);
+n0 = await nonce();
+check("dispute: a failed save of the case description asks first; Cancel sends nothing", await click("matchOne", /Dispute not sent/) && (await nonce()) === n0 && uploads.length === 0, await logText());
+check("dispute: it says the jurors could not read the case description yet", /could not be saved on IPFS, so the jurors could not read it yet/.test(lastDialog()) && /Send the dispute anyway\?/.test(lastDialog()), lastDialog());
 check("publish case description: a failed upload says so", await click("publishCase", /Could not upload "metaevidence\.json" to IPFS/), await logText());
 ipfsFail = false;
 check("publish case description", await click("publishCase", /Case description for 0x\w+…\w+ saved on IPFS: https:\/\/cdn\.kleros\.link\/ipfs\/Qm/), await logText());
 check("published through Kleros's service (operation=file): exactly the contract's text, at the contract's IPFS address",
-  uploads.length === 2 && /operation=file/.test(uploads[1].url) && uploads[1].file === "metaevidence.json" && uploads[1].content === caseText && uploads[1].path === caseUri, JSON.stringify(uploads[1] ?? {}).slice(0, 300));
+  uploads.length === 1 && /operation=file/.test(uploads[0].url) && uploads[0].file === "metaevidence.json" && uploads[0].content === caseText && uploads[0].path === caseUri, JSON.stringify(uploads[0] ?? {}).slice(0, 300));
 uploads.length = 0;
 await page.click("#refresh"); await page.waitForTimeout(800);
 check("challenge list shows it on IPFS", /case description ↗ \(on IPFS ✓\)/.test(await txt("challenges")), await txt("challenges"));
 n0 = await nonce();
+const dialogsBefore = dialogs.length;
 check("dispute (match) from console", await click("matchOne", /Sent to Kleros: case #1000.*names/), await logText());
-check("dispute prompt shows the ETH deposit", /You send 0\.0162 ETH/.test(dialogs.find((m) => /Dispute the claim of/.test(m)) ?? ""), dialogs.join(" | "));
+check("dispute prompt shows the ETH deposit, no rehearsal line on a local chain", /You send 0\.0162 ETH/.test(dialogs[dialogsBefore] ?? "") && !/REHEARSAL/.test(dialogs[dialogsBefore] ?? "x"), dialogs.slice(dialogsBefore).join(" | "));
 check("dispute: the case description was already on IPFS, so nothing uploaded again; one transaction", uploads.length === 0 && (await nonce()) === n0 + 1 && /is on IPFS/.test(await logText()), await logText());
+await idle();
+check("dispute: one confirmation only, the challenge details are no longer offered", dialogs.length === dialogsBefore + 1 && !/Challenge details/.test(dialogs.slice(dialogsBefore).join(" ")), dialogs.slice(dialogsBefore).join(" | "));
 const localID = (await kick.challenges(cai)).localDisputeID;
 check("Kleros case created with this case's own description", (await proxy.queryFilter(proxy.filters.MetaEvidence(localID)))[0]?.args._evidence === caseUri);
 // the optional "Challenge details": case number and transaction links
@@ -375,17 +413,51 @@ check("appeal window shown", /Round 1: jurors voted No, did not attend\. Appeal 
 check("settle refused before the final ruling", await click("resolveOne", /has not ruled yet/), await logText());
 const kickEth = await bal(kAddr);
 const sentBefore = sent.length;
+// finding 15: no answer is chosen in advance, and funding is refused until one is
+n0 = await nonce();
+check("fund appeal: no answer chosen at first", (await page.inputValue("#apSide")) === "", await page.inputValue("#apSide"));
+check("fund appeal refused until an answer is chosen", await click("fundAppeal", /Choose which answer to fund first\. If you disputed this challenge, your side is "No, did not attend"/) && (await nonce()) === n0, await logText());
 await page.selectOption("#apSide", "1");
 check("fund the losing side's appeal", await click("fundAppeal", /Appeal funding sent to Kleros for "Yes, attended"/), await logText());
 check("appeal prompt names the Dispute Resolver and the amount (fee + 2x)", lastDialog().includes(proxy.target.slice(0, 6)) && /You send 0\.1134 ETH/.test(lastDialog()), lastDialog());
+check("appeal prompt starts with the chosen answer, and says it is the other side's for the wallet that disputed",
+  lastDialog().startsWith("You are funding: YES, ATTENDED (the challenger's side)\n⚠ You disputed this challenge: this is the OTHER side's answer."), lastDialog());
+check("answer cleared after funding", (await page.inputValue("#apSide")) === "", await page.inputValue("#apSide"));
 await page.waitForTimeout(800);
-check("losing side shown fully funded, with the warning", /Yes, attended: fully funded/.test(await txt("challenges")) && /"Yes, attended" wins the case/.test(await txt("challenges")), await txt("challenges"));
+check("losing side shown fully funded, with the warning (in the warning colour)", /Yes, attended: fully funded/.test(await txt("challenges")) && /"Yes, attended" wins the case/.test(await txt("challenges")) &&
+  (await page.locator("#challenges .warn", { hasText: '"Yes, attended" wins the case' }).count()) === 1, await txt("challenges"));
+// finding 12: reading the Dispute Resolver's logs. A search over more than one block fails: the console
+// splits the range down to single blocks and still reads the funding.
+for (let i = 0; i < 3; i++) await prov.send("evm_mine", []);
+logsServed.length = 0;
+logsFail = (from, to) => to > from;
+await page.click("#refresh"); await idle();
+check("a log search that keeps failing is split (down to single blocks); the funding is still read",
+  logsServed.some(([f, t]) => f === t) && /Yes, attended: fully funded/.test(await txt("challenges")) && !/Could not read the appeal funding/.test(await txt("challenges")),
+  JSON.stringify(logsServed) + "\n" + await txt("challenges"));
+// every search fails: the list says so in the warning colour, with the Kleros case page and the deadlines; the log says it once
+await clearLog();
+logsFail = () => true;
+await prov.send("evm_mine", []);
+await page.click("#refresh"); await idle();
+const unknownRe = /Could not read the appeal funding from Kleros right now\. Check https:\/\/court\.kleros\.io\/cases\/1000 now: if one answer is being funded and yours is not, fund yours in time \("Yes, attended" until [^"]+, "No, did not attend" until [^)]+\), or the other answer wins the case/;
+check("funding unreadable: warning in the challenge list", unknownRe.test(await txt("challenges")) && /Yes, attended: \? of 0\.1134 ETH/.test(await txt("challenges")) &&
+  (await page.locator("#challenges .warn", { hasText: "Could not read the appeal funding" }).count()) === 1, await txt("challenges"));
+check("funding unreadable: warning in the log", unknownRe.test(await logText()) && /Kleros case #1000 \(challenge of 0x\w+…\w+\)/.test(await logText()), await logText());
+await prov.send("evm_mine", []);
+await page.click("#refresh"); await idle();
+check("funding unreadable: logged once only", (await logText()).match(/Could not read the appeal funding/g)?.length === 1 && unknownRe.test(await txt("challenges")), await logText());
+logsFail = null;
+await page.click("#refresh"); await idle();
+check("funding readable again: shown, no warning", /Yes, attended: fully funded/.test(await txt("challenges")) && !/Could not read/.test(await txt("challenges")), await txt("challenges"));
 await page.selectOption("#apSide", "2");
 await page.fill("#apAmt", "0.01");
 check("chip in part of the other side", await click("fundAppeal", /Appeal funding sent to Kleros for "No, did not attend"/), await logText());
+check("funding your own side: no 'other side' line", lastDialog().startsWith("You are funding: NO, DID NOT ATTEND (the side of whoever disputed the challenge)\n\n"), lastDialog());
 await page.waitForTimeout(800);
 check("partial funding shown (from the Dispute Resolver's events)", /No, did not attend: 0\.01 of 0\.0756 ETH/.test(await txt("challenges")), await txt("challenges"));
 await clearLog(); // fresh log for the next checks
+await page.selectOption("#apSide", "2");
 check("fund the rest of the other side", await click("fundAppeal", /Appeal funding sent to Kleros for "No, did not attend"/), await logText());
 check("both funded: round 2", (await liquid.rounds(1000)) === 2n);
 const fundTxs = sent.slice(sentBefore);
@@ -399,6 +471,14 @@ check("round 2 shown as in progress", /Round 2: evidence period/.test(await txt(
 check("collect refused before the final ruling", await click("collectAppeal", /only be collected once the case has its final ruling/), await logText());
 // round 2: jurors say Cai attended; nobody appeals; anyone delivers the final ruling
 await (await liquid.startAppealPeriod(1000, 1, DAY, KGAS)).wait();
+// findings 20/22: someone else (not a guest) chips in for "refuse to arbitrate" (0) on the Dispute Resolver directly (never fully funded here)
+await (await proxy.connect(stranger).fundAppeal(localID, 0, { value: E("0.01") })).wait();
+await page.click("#refresh"); await idle();
+check("'refuse to arbitrate' funding shown", /Round 2: jurors voted Yes, attended\./.test(await txt("challenges")) &&
+  /Refuse to arbitrate: 0\.01 of [\d.]+ ETH, until [^(]+\(counts as "did not attend"; the challenge money is then split in half\)/.test(await txt("challenges")), await txt("challenges"));
+check("'refuse to arbitrate' warning: it wins unless another answer is fully funded (warning colour)",
+  /⚠ "Refuse to arbitrate" is being funded \(it counts as "did not attend", and the challenge money is then split in half\)\. If neither "Yes, attended" \(until [^)]+\) nor "No, did not attend" \(until [^)]+\) is fully funded, "Refuse to arbitrate" wins the case\./.test(await txt("challenges")) &&
+  (await page.locator("#challenges .warn", { hasText: '"Refuse to arbitrate" wins the case' }).count()) === 1, await txt("challenges"));
 await skew(DAY + 60);
 await page.click("#refresh"); await page.waitForTimeout(800);
 check("appeal window over shown", /appeal window is over/.test(await txt("challenges")), await txt("challenges"));
@@ -442,6 +522,74 @@ check("nothing left over", await click("sweep", /Nothing left over/), await logT
 check("contract holds no ETH", (await bal(kAddr)) === 0n, String(await bal(kAddr)));
 await page.waitForTimeout(1000);
 check("phase shows paid out", await waitStatus(/Paid out/), await txt("status"));
+check("staked pool shown as paid out", await waitStatus(/Staked pool\s*paid out/), await txt("status"));
+
+// A second contract (deployed here, not from the console). Ana is on the list; Ben and Cai challenge.
+// In a rehearsal the dispute prompt says the Kleros case is real; the dispute saves Cai's case description
+// on IPFS itself. Nobody matches Ben: his challenge counts as attended, and the payout settles it inline.
+// Finding 0: when that payout would be too big for one transaction (simulated), the console settles it first.
+const k2 = await dep("TruthPaysKickback", ...deployArgs(loadConfig(cfgPath), me));
+const k2Addr = k2.target;
+for (const g of [g1, g2, g3]) await (await g.sendTransaction({ to: k2Addr, value: E("0.01") })).wait();
+await (await k2.registerStakers([ana, ben, cai])).wait();
+await (await k2.postAttendance([ana], E("0.03"))).wait();
+for (const g of [g2, g3]) await (await k2.connect(g).challenge({ value: await k2.challengeDeposit() })).wait();
+const benDeposit = (await k2.challenges(ben)).deposit;
+const [, k2CaseUri] = await k2.caseMetaEvidence(cai);
+write("config.json", { ...config, mode: "rehearsal" });
+await open();
+await page.click("#connect"); await idle();
+await page.fill("#addr", k2Addr);
+await page.click("#refresh"); await idle();
+check("rehearsal banner", /^REHEARSAL/.test(await txt("banner")), await txt("banner"));
+const row = (w) => page.locator("#challenges div", { hasText: w });
+await row(cai).locator("a", { hasText: "use this wallet" }).click();
+check("'use this wallet' in a list of two fills the right wallet", (await page.inputValue("#chAddr")) === cai, await page.inputValue("#chAddr"));
+await clearLog();
+uploads.length = 0;
+n0 = await nonce();
+const dialogs2 = dialogs.length;
+check("rehearsal: dispute", await click("matchOne", /Sent to Kleros: case #1001/), await logText());
+check("rehearsal: the dispute prompt says it opens a real Kleros case", /REHEARSAL: this still opens a REAL Kleros case on Ethereum mainnet/.test(dialogs[dialogs2] ?? ""), dialogs.slice(dialogs2).join(" | "));
+check("dispute saved the case description on IPFS first, then one transaction",
+  uploads.length === 1 && uploads[0].file === "metaevidence.json" && uploads[0].path === k2CaseUri && /saved on IPFS/.test(await logText()) && (await nonce()) === n0 + 1, JSON.stringify(uploads[0] ?? {}).slice(0, 300) + "\n" + await logText());
+check("second Kleros case created with its own description",
+  (await proxy.queryFilter(proxy.filters.MetaEvidence((await k2.challenges(cai)).localDisputeID)))[0]?.args._evidence === k2CaseUri);
+write("config.json", config);
+await open();
+await page.click("#connect"); await idle();
+await page.fill("#addr", k2Addr);
+await skew(2 * DAY);
+await page.click("#refresh"); await idle();
+check("expired unmatched challenge: counts as attended, no case description", /nobody matched in time: counts as attended/.test(await row(ben).innerText()) &&
+  !/case description/.test(await row(ben).innerText()) && /case description ↗ \(on IPFS ✓\)/.test(await row(cai).innerText()), await txt("challenges"));
+const releaseSel = k2.interface.getFunction("releasePayouts").selector;
+// the payout's gas estimate fails: offer to settle Ben first; Cancel sends nothing
+failEstimate = releaseSel;
+answers.push(false);
+await clearLog();
+n0 = await nonce();
+check("release: estimate fails → offer to settle first; Cancel sends nothing", await click("release", /Payout not sent\. Settle the unmatched challenges first/) && (await nonce()) === n0, await logText());
+check("release: the offer says why", /1 challenge\(s\) nobody matched in time count as attended/.test(lastDialog()) && /could not work out the fee for that payout/.test(lastDialog()) &&
+  /Settle them first, one transaction each \(1 confirmation\(s\)/.test(lastDialog()), lastDialog());
+failEstimate = null;
+// the payout would need 13.6 million gas (over 2^24 with the 30% margin): settle Ben, then pay
+bigEstimate = releaseSel;
+const before2 = await Promise.all([ana, ben, cai].map((w) => bal(w)));
+const sent2 = sent.length;
+await clearLog();
+n0 = await nonce();
+const dialogs3 = dialogs.length;
+check("release: settle first, then pay", await click("release", /Paid out/), await logText());
+bigEstimate = false;
+check("release: the offer names the gas", /that payout would need about 13,631,488 gas, too close to the 16,777,216 one Ethereum transaction may use/.test(dialogs[dialogs3] ?? ""), dialogs.slice(dialogs3).join(" | "));
+check("release: two transactions, settle Ben then release", (await nonce()) === n0 + 2 && sent.length === sent2 + 2 &&
+  sent[sent2].data === k2.interface.encodeFunctionData("resolveChallenge", [ben]) && sent[sent2 + 1].data === releaseSel && BigInt(sent[sent2 + 1].gas) === 16_777_216n,
+  sent.slice(sent2).map((t) => `${t.data.slice(0, 10)} ${t.gas}`).join("; "));
+check("release prompt after settling: 2 attendees, Cai's share set aside", /Pay 2 attendees 0\.01 ETH each/.test(lastDialog()) && /0\.01 ETH is set aside/.test(lastDialog()), lastDialog());
+const after2 = await Promise.all([ana, ben, cai].map((w) => bal(w)));
+check("Ana paid, Ben got his challenge deposit and his share, Cai's share set aside",
+  after2[0] - before2[0] === E("0.01") && after2[1] - before2[1] === benDeposit + E("0.01") && after2[2] === before2[2] && (await k2.heldBack()) === E("0.01"), after2.map((x, i) => x - before2[i]).join(","));
 check("every transaction carried the network's chainId", sent.length > 0 && sent.every((t) => t.chainId === "0x539"), sent.map((t) => t.chainId).join(","));
 check("no page errors", errs.length === 0, errs.join("; "));
 
