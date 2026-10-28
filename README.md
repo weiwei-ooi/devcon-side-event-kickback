@@ -22,6 +22,19 @@ Guests who want a guaranteed spot send a **refundable deposit in ETH on Ethereum
 
 **Example (with a 0.01 ETH deposit):** 100 stakers make a 1 ETH pool. If 80 show up, each of them gets **0.0125 ETH** back: their own 0.01 plus 0.0025 from the no-shows.
 
+## Live deployment (Truth Pays, Ethereum mainnet)
+
+| | |
+|---|---|
+| Deposit contract | [`0xd5c6A73c05FA431c748781DaBAA99Fe2590d677D`](https://etherscan.io/address/0xd5c6A73c05FA431c748781DaBAA99Fe2590d677D#code) (source verified on Etherscan, Exact Match) |
+| Deployed | 28 Oct 2026 09:07:59 UTC, block 26290226, tx [`0xddab9133…e184ec`](https://etherscan.io/tx/0xddab913311c6f8f856c6359697c15f8bd33bb5fdd7869e964b16c29efae184ec), from the owner wallet `0x259a1084C2043a7B3b5b288596E05C41b8EFa5d6` |
+| Code | `contracts/TruthPaysKickback.sol` as of commit 21b8f58 (v7), solc 0.8.28, optimizer 200, EVM paris |
+| Settings | 0.01 ETH deposit; attendance list from 4 Nov 2026 18:00 IST; settle by 18 Nov 2026 18:00 IST; Kleros Court v1, General Court, 3 jurors, through the Dispute Resolver `0x4b89…82a4`; juror policy `/ipfs/QmPzb9q9TyHS2jPmoCd1U9eDfZ9Nijh5NSFhhvJGVU7knE` |
+| Guest deposit page | https://weiwei-ooi.github.io/devcon-side-event-kickback/ |
+| Luma | step 1 of "How to get in" names the contract and links the deposit page (event still Private) |
+
+`deployments/truth-pays-mainnet/` keeps the record (`deployment.json`) and the two files used for the Etherscan verification (`standard-input.json`, `constructor-arguments.txt`), so anyone can check the deployed code again.
+
 ## What's here
 
 | File | What it does |
@@ -224,7 +237,7 @@ This setup isn't trustless, but anyone can check it:
 >
 > ⚠️ **Ethereum mainnet only.** ETH sent on any other network may be lost.
 >
-> 1. **Send** exactly 0.01 ETH to **`<contract address>`** from your own wallet, not an exchange. Refunds go back to that wallet. We accept <u>**ETH only**</u> (not USDC or other tokens).
+> 1. **Send** exactly 0.01 ETH to **0xd5c6A73c05FA431c748781DaBAA99Fe2590d677D** from your own wallet, not an exchange, or use our [deposit page](https://weiwei-ooi.github.io/devcon-side-event-kickback/). Refunds go back to that wallet. We accept <u>**ETH only**</u> (not USDC or other tokens).
 > 2. **Register** with the *Committed Spot (0.01 ETH)* ticket, use the same wallet and paste your transaction link. It starts with https://etherscan.io/tx/
 > 3. **Check in** at the event to get your 0.01 ETH back, plus an equal share of the no-shows' deposits. No-shows lose their deposit.
 >
@@ -238,6 +251,6 @@ This setup isn't trustless, but anyone can check it:
 > - If you were there but are not on it, challenge it from the deposit page within 1 day. The challenge deposit is the Kleros fee, about 0.0162 ETH.
 > - If nobody disputes it within a day, you count as attended and get that deposit back. If someone does, Kleros jurors decide.
 
-This is the copy on Luma since 27 Oct (she asked for short, clean steps). The deposit page explains the rest live: appeals (fund your side if the other side appeals), payouts for everyone else going ahead during a case, and `emergencyWithdraw` if no list is posted by `claimDeadline`.
+This is the copy on Luma since 27 Oct (she asked for short, clean steps); since 28 Oct step 1 names the live contract and links the deposit page. The deposit page explains the rest live: appeals (fund your side if the other side appeals), payouts for everyone else going ahead during a case, and `emergencyWithdraw` if no list is posted by `claimDeadline`.
 
-(Replace 0.01 ETH with the final `deposit` amount if it changes, and `<contract address>` with the deployed contract.) Most wallets estimate the gas for a transfer to a contract, so a plain send works; a wallet or exchange that uses a fixed 21,000 gas limit fails (`TX_FAILED`, only the network fee is lost). The guest deposit page avoids this by calling `deposit()`.
+(For another event: replace 0.01 ETH with its `deposit` amount, and the address and page link with its own deployed contract and guest page.) Most wallets estimate the gas for a transfer to a contract, so a plain send works; a wallet or exchange that uses a fixed 21,000 gas limit fails (`TX_FAILED`, only the network fee is lost). The guest deposit page avoids this by calling `deposit()`.

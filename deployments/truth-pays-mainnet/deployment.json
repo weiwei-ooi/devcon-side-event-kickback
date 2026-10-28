@@ -1,0 +1,35 @@
+{
+  "event": "Truth Pays: Queryable Data, Prediction Markets & Onchain Justice (Devcon Mumbai side event, 4 Nov 2026)",
+  "network": "Ethereum mainnet",
+  "chainId": 1,
+  "contract": "0xd5c6A73c05FA431c748781DaBAA99Fe2590d677D",
+  "etherscan": "https://etherscan.io/address/0xd5c6A73c05FA431c748781DaBAA99Fe2590d677D#code",
+  "sourceVerified": "Etherscan, Exact Match (28 Oct 2026), from standard-input.json and constructor-arguments.txt in this folder",
+  "deployTx": "0xddab913311c6f8f856c6359697c15f8bd33bb5fdd7869e964b16c29efae184ec",
+  "deployBlock": 26290226,
+  "deployedAt": "2026-10-28T09:07:59Z",
+  "owner": "0x259a1084C2043a7B3b5b288596E05C41b8EFa5d6",
+  "sourceCommit": "21b8f58 (contracts/TruthPaysKickback.sol unchanged since)",
+  "compiler": {
+    "solc": "v0.8.28+commit.7893614a",
+    "optimizer": {
+      "enabled": true,
+      "runs": 200
+    },
+    "evmVersion": "paris",
+    "license": "MIT"
+  },
+  "constructor": {
+    "depositAmount": "0.01 ETH",
+    "eventName": "Truth Pays: Devcon Mumbai 2026",
+    "eventStart": "2026-11-04T18:00:00+05:30",
+    "claimDeadline": "2026-11-18T18:00:00+05:30",
+    "disputeResolver": "0x4B89e798B10478A839Ea0Abcf86C4B94A3C782A4",
+    "arbitrator": "0x988b3A538b618C7A603e1c11Ab82Cd16dbE28069",
+    "court": 0,
+    "jurors": 3,
+    "policyURI": "/ipfs/QmPzb9q9TyHS2jPmoCd1U9eDfZ9Nijh5NSFhhvJGVU7knE",
+    "metaEvidenceTemplate": "docs/metaevidence.template.json (filled at deploy; each case description comes from caseMetaEvidence(wallet))"
+  },
+  "guestPage": "https://weiwei-ooi.github.io/devcon-side-event-kickback/ (gh-pages, built from config.json with the contract)"
+}
