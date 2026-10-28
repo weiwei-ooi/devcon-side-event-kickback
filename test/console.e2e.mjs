@@ -13,7 +13,8 @@
 // config without the pinned juror policy, and asks before a second deploy; single refunds only for
 // registered stakers; stray returns list earlier returns; leftover warning above rounding dust; lists
 // made for another deposit are refused; tokens sent by mistake go back with "Return tokens"; no gas
-// limit above 2^24 (EIP-7825); failing log searches are split.
+// limit above 2^24 (EIP-7825); failing log searches are split; the shared core (scripts/core.mjs) loads in
+// the browser from the console with an import map and gives the scripts' results.
 // Needs Playwright with Chromium (see test/site.e2e.mjs).
 //   node test/console.e2e.mjs
 import fs from "node:fs";
@@ -651,6 +652,35 @@ const caiCh = await k2.challenges(cai);
 check("0 ruling: Cai stays off the list with half the challenge money; the set-aside share goes to Ana and Ben",
   !(await k2.attended(cai)) && after0[2] - before0[2] === (2n * caiCh.deposit - caiCh.arbitrationPaid) / 2n &&
   after0[0] - before0[0] === E("0.005") && after0[1] - before0[1] === E("0.005") && (await k2.heldBack()) === 0n, after0.map((x, i) => x - before0[i]).join(","));
+// The shared core (scripts/core.mjs) runs in the browser as an ES module, "ethers" mapped to the ethers
+// ESM build with an import map, both served by the console: same results as the scripts in Node.
+const corePage = await browser.newPage();
+const coreErrs = []; corePage.on("pageerror", (e) => coreErrs.push(e.message));
+await corePage.route(`http://localhost:${WEB}/core-check.html`, (route) => route.fulfill({ contentType: "text/html", body:
+  '<!doctype html><script type="importmap">{ "imports": { "ethers": "/node_modules/ethers/dist/ethers.min.js" } }</script>' +
+  '<script type="module">import * as core from "/scripts/core.mjs"; window.core = core;</script>' }));
+const served = await Promise.all(["/scripts/core.mjs", "/node_modules/ethers/dist/ethers.min.js"].map(async (p) => (await fetch(`http://localhost:${WEB}${p}`)).headers.get("content-type")));
+check("the console serves the shared core and the ethers ESM build as JavaScript", served.every((t) => t === "text/javascript"), served.join(", "));
+await corePage.goto(`http://localhost:${WEB}/core-check.html`);
+await corePage.waitForFunction(() => !!window.core, null, { timeout: 10000 }).catch(() => {});
+const tplText = fs.readFileSync(path.join(proj, "docs/metaevidence.template.json"), "utf8");
+const lumaCsv = '﻿name,email,eth_address,"Deposit tx link, etherscan.io"\r\n"Ana ""A""",ana@x.io,0xab,"line 1\nline 2"\r\nBen,ben@x.io\r\n';
+const inBrowser = await corePage.evaluate(async ({ cfgText, tplText, me, lumaCsv }) => {
+  const core = window.core;
+  if (!core) return null;
+  const cfg = core.normalizeConfig(JSON.parse(cfgText), "config.json");
+  const args = core.deployArgs(cfg, me, tplText, { name: "metaevidence.template.json" });
+  const t = core.caseTemplate(tplText, core.templateValues(cfg, me));
+  return { args: JSON.stringify(args, (_, x) => (typeof x === "bigint" ? x.toString() : x)), cid: core.ipfsPathOf(t.sample), rows: core.parseCsv(lumaCsv) };
+}, { cfgText: fs.readFileSync(cfgPath, "utf8"), tplText, me, lumaCsv });
+const nodeArgs = JSON.stringify(deployArgs(loadConfig(cfgPath), me), (_, x) => (typeof x === "bigint" ? x.toString() : x));
+const { caseTemplate: nodeTemplate } = await import(path.join(proj, "scripts/lib.mjs"));
+const { parse: csvParse } = req("csv-parse/sync");
+check("the core runs in the browser with an import map: same constructor arguments, case description path and CSV rows as the scripts",
+  !!inBrowser && inBrowser.args === nodeArgs && inBrowser.cid === `/ipfs/${ipfsCidV0(nodeTemplate(loadConfig(cfgPath), me).sample)}` &&
+  JSON.stringify(inBrowser.rows) === JSON.stringify(csvParse(lumaCsv, { columns: true, skip_empty_lines: true, bom: true, relax_column_count: true })) && !coreErrs.length,
+  JSON.stringify(inBrowser).slice(0, 300) + coreErrs.join("; "));
+await corePage.close();
 check("every transaction carried the network's chainId", sent.length > 0 && sent.every((t) => t.chainId === "0x539"), sent.map((t) => t.chainId).join(","));
 check("no page errors", errs.length === 0, errs.join("; "));
 

@@ -4,7 +4,7 @@
   "description": "Kickback-style refundable ETH deposits on Ethereum mainnet for Luma events, with Kleros attendance challenges",
   "scripts": {
     "compile": "node scripts/compile.mjs",
-    "test": "node --test --test-concurrency=1 --test-timeout=600000 test/contract.test.mjs test/kickback.test.mjs",
+    "test": "node --test --test-concurrency=1 --test-timeout=600000 test/contract.test.mjs test/kickback.test.mjs test/core.test.mjs",
     "verify": "node scripts/verify-deposits.mjs",
     "payout": "node scripts/build-payout.mjs",
     "deploy": "node scripts/deploy.mjs",

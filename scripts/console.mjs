@@ -25,6 +25,10 @@ const OUT = arg("--out") || "out";
 const ALLOWED = [
   "console/index.html",
   "node_modules/ethers/dist/ethers.umd.min.js",
+  // the shared core (scripts/core.mjs) as an ES module, and the ethers ESM build it imports: a page maps
+  // "ethers" to /node_modules/ethers/dist/ethers.min.js with an import map
+  "scripts/core.mjs",
+  "node_modules/ethers/dist/ethers.min.js",
   "build/TruthPaysKickback.json",
   "config.json",
   "out/new-stakers.json",
@@ -33,7 +37,7 @@ const ALLOWED = [
   "out/payout-plan.json",
   "out/payout-summary.md",
 ];
-const TYPES = { ".html": "text/html", ".js": "text/javascript", ".json": "application/json", ".md": "text/plain" };
+const TYPES = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".json": "application/json", ".md": "text/plain" };
 
 if (!fs.existsSync(path.join(root, "build/TruthPaysKickback.json"))) {
   console.error("Run `npm run compile` first.");
