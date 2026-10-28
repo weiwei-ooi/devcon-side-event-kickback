@@ -13,7 +13,7 @@
   - Capacity 150 with a waitlist, and every registration needs approval.
   - Ticket types: **"Committed Spot (0.01 ETH)"** (renamed 27 Oct; Luma caps ticket names at 30 characters) and **"Request to Join (Free)"**.
   - Questions: ETH Address (optional, connected wallet), Company/Project + job title, X, LinkedIn, "What are you building?", and "Deposit tx link (Committed Spot only)…".
-- Since 27 Oct the Luma description, Committed Spot ticket, "Deposit tx link" question and Declined email describe the **0.01 ETH deposit on Ethereum mainnet** (⚠️ "Ethereum mainnet ONLY" warning, etherscan.io links, Kleros fee about 0.0162 ETH). The description still contains the placeholder **[DEPOSIT ADDRESS]**: replace it with the deployed live contract.
+- Since 27 Oct the Luma description, Committed Spot ticket, "Deposit tx link" question and Declined email describe the **0.01 ETH deposit on Ethereum mainnet** (⚠️ "Ethereum mainnet ONLY" warning, etherscan.io links, Kleros fee about 0.0162 ETH). Since 28 Oct the description's step 1 names the live contract `0xd5c6A73c05FA431c748781DaBAA99Fe2590d677D` and links the guest page ("deposit page").
 
 ## The mechanism (decided with Wei Wei)
 - Guests choosing the Committed Spot send the **ETH deposit** on **Ethereum mainnet** from their own wallet to the deposit contract, then paste the tx link (etherscan.io) on Luma.
@@ -45,7 +45,7 @@
 - [ ] Owner wallet: move a little ETH to Ethereum mainnet (about 0.05 ETH for gas, more if she will dispute challenges).
 - [ ] Short v7 rehearsal on Ethereum mainnet (`npm run console:rehearsal`, 0.25 ETH cap): deploy, deposit, register, refund a declined guest, post list, a challenge left unmatched, release payouts; Zerion accepting `chainId`. Matching a challenge there opens a **real** Kleros case (about 0.0162 ETH, real jurors, about 3 weeks): only on purpose, after the juror policy is pinned. Check the Dispute Resolver's event layout (indexed fields) against Etherscan during the rehearsal.
 - [ ] Her developers review the v7 code (REVIEW.md v7 section first). Zero open issues before going public.
-- [ ] Deploy the live contract with `npm run console` (config.json), set `receiver`, `contract`, `deployBlock` and `depositOpensAt` (deploy time), verify the source on Etherscan (0.8.28, optimizer 200, EVM paris), rebuild the guest page with the contract (`node scripts/build-site.mjs --out <dir>`, replace `index.html` on `gh-pages`, push; live at https://weiwei-ooi.github.io/devcon-side-event-kickback/), and put the address and the page link on Luma in place of [DEPOSIT ADDRESS] (event stays **Private**). The rest of the Luma copy was switched to 0.01 ETH on Ethereum mainnet on 27 Oct.
+- [x] **Live contract deployed 28 Oct 2026 09:07:59 UTC** by her from the v7 console: `0xd5c6A73c05FA431c748781DaBAA99Fe2590d677D` (tx 0xddab913311c6f8f856c6359697c15f8bd33bb5fdd7869e964b16c29efae184ec, block 26290226, fee 0.0011 ETH). Initcode checked equal to the v7 build; owner, deposit (0.01 ETH), times, Kleros settings, policy and case template read back on-chain. `contract`, `receiver`, `deployBlock` and `depositOpensAt` set in config.json; guest page rebuilt with the contract (gh-pages, all four checks green); Luma description shows the address and the deposit page link (event stays **Private**). Etherscan source verification: standard-JSON input `build/TruthPaysKickback.standard-input.json`, 0.8.28, optimizer 200, EVM paris, MIT.
 - [ ] Switch Luma from Private to Public only when she says so.
 
 ## How to run things
