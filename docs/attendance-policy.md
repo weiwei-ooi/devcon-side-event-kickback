@@ -4,10 +4,11 @@ This policy applies to disputes created by the Truth Pays deposit contract on Et
 
 ## Which wallet a dispute is about
 
-Each dispute has its own case description, which names the wallet concerned and the deposit contract. The deposit contract writes it when the challenge is matched, from a template fixed when the contract was deployed, so neither side chooses the wording.
+Each dispute has its own case description, which names the wallet concerned, the organiser's wallet and the deposit contract. The deposit contract writes it when the challenge is matched, from a template fixed when the contract was deployed, so neither side chooses the wording.
 
-- To check it on Etherscan: open the deposit contract's events and find the `ChallengeMatched` event whose `arbitratorDisputeID` is this case's number. Its `staker` field is the wallet concerned. The `Challenged` event for the same wallet shows when the challenge was made.
-- If the evidence and the contract's events disagree, the contract's events are correct.
+- To check it on Etherscan: in the deposit contract's Read Contract tab, `challenges(<wallet>)` gives this case's number (`arbitratorDisputeID`) and the wallet that matched the challenge (`matcher`). The Match Challenge transaction that created the case logs a `ChallengeMatched` event with the same wallet and case number.
+- Evidence sent from the organiser's wallet named in the case description is the organiser's own statement. A statement presented as the organiser's but sent from another wallet is not.
+- If the evidence and the contract disagree, the contract is correct.
 
 ## The event
 

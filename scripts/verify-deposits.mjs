@@ -28,7 +28,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ethers } from "ethers";
 import {
-  args, loadConfig, provider, readCsv, writeCsv, writeJson, verifyRegistrations, resolveClaims,
+  args, loadConfig, provider, readCsv, writeCsv, writeJson, verifyRegistrations, resolveClaims, UNREAD_CODES,
   pairReturns, getLogsChunked, incomingDeposits, depKey, isContractCode, safeBatch, loadAbi, fmt, fmtEth, STATUS, MONEY_CODES, normAddress,
 } from "./lib.mjs";
 
@@ -257,7 +257,10 @@ if (new Set(listed).size !== listed.length || listed.includes(ethers.ZeroAddress
 // here; only a row we could not check yet (RPC_ERROR, TX_PENDING, or TX_NOT_FOUND although the
 // deposit is there by now) keeps its whole tx out until the next run.
 const claimedDep = new Set(results.filter((r) => MONEY_CODES.has(r.code)).map((r) => depKey(r.tx, r.wallet)));
-const unchecked = new Set(results.filter((r) => ["RPC_ERROR", "TX_PENDING", "TX_NOT_FOUND"].includes(r.code)).map((r) => String(r.tx).toLowerCase()));
+const unchecked = new Set([
+  ...results.filter((r) => UNREAD_CODES.has(r.code)).map((r) => r.tx),
+  ...results.flatMap((r) => r.unread ?? []),
+].map((t) => String(t).toLowerCase()));
 // Luma answers that mention a deposit's tx, and the ETH addresses guests gave: a deposit nobody
 // claimed may still be a guest's (a second link they pasted, or a send they never pasted)
 const mentions = (tx) => rows.filter((row) => Object.values(row).some((v) => String(v ?? "").toLowerCase().includes(tx)));

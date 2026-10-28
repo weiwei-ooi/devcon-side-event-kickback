@@ -78,7 +78,7 @@ interface IERC20Transfer {
 ///     `appealStatus` shows the deadlines and the amount each side needs.
 ///     Each case has its own case description (ERC-1497 metaevidence, whose fileURI is the juror
 ///     policy, `policyURI`), written by this contract from the template fixed at deployment: it
-///     names the event, the challenged wallet and this contract. `caseMetaEvidence(staker)` returns
+///     names the event, the challenged wallet, the organiser's wallet and this contract. `caseMetaEvidence(staker)` returns
 ///     the exact text and its IPFS path ("/ipfs/Qm..."), computed here the way `ipfs add` does with
 ///     its default settings, so neither side chooses the wording and anyone can publish the file
 ///     (Kleros's IPFS upload service gives the same path). The path is sent to Kleros when the
@@ -227,8 +227,10 @@ contract TruthPaysKickback {
         IArbitrableProxy disputeResolver;
         bytes extraData; // abi.encode(uint256 subcourtID, uint256 minJurors), e.g. General Court (0), 3 jurors
         // The case description (ERC-1497 metaevidence) as text pieces with a value between each two:
-        // pieces[0] + value(slots[0]) + pieces[1] + ... + pieces[n]. Slot 1 is the challenged wallet,
-        // slot 2 this contract, each written as a checksummed 0x address. At least one slot 1.
+        // pieces[0] + value(slots[0]) + pieces[1] + ... + pieces[n]. Slot 1 is the challenged wallet
+        // and slot 2 this contract, each as a checksummed 0x address; slot 3 is the challenged wallet
+        // in lower case (Kleros Court matches evidence senders against `aliases` in lower case).
+        // At least one slot 1.
         string[] metaEvidenceTemplate;
         bytes metaEvidenceSlots;
         string policyURI; // the attendance policy jurors apply (the metaevidence's fileURI), e.g. /ipfs/Qm...
@@ -241,6 +243,7 @@ contract TruthPaysKickback {
     /// @notice Values written into the case description template (`metaEvidenceSlots`).
     uint8 public constant SLOT_STAKER = 1;
     uint8 public constant SLOT_CONTRACT = 2;
+    uint8 public constant SLOT_STAKER_LOWER = 3;
     uint256 public constant CHALLENGE_PERIOD = 1 days;
     uint256 public constant MATCH_PERIOD = 1 days;
     /// @notice Minimum time between the event start and the deadline, so a late list is still possible.
@@ -340,7 +343,7 @@ contract TruthPaysKickback {
         bool namesStaker;
         for (uint256 i; i < slots.length; ++i) {
             uint8 slot = uint8(slots[i]);
-            require(slot == SLOT_STAKER || slot == SLOT_CONTRACT, BadMetaEvidenceTemplate());
+            require(slot >= SLOT_STAKER && slot <= SLOT_STAKER_LOWER, BadMetaEvidenceTemplate());
             if (slot == SLOT_STAKER) namesStaker = true;
         }
         require(namesStaker, BadMetaEvidenceTemplate());
@@ -450,9 +453,11 @@ contract TruthPaysKickback {
         (string[] memory pieces, bytes memory slots) = metaEvidenceTemplate();
         bytes memory wallet = _checksummed(staker);
         bytes memory self = _checksummed(address(this));
+        bytes memory lower = _lowerHex(staker);
         bytes memory out = bytes(pieces[0]);
         for (uint256 i; i < slots.length; ++i) {
-            out = bytes.concat(out, uint8(slots[i]) == SLOT_STAKER ? wallet : self, bytes(pieces[i + 1]));
+            uint8 slot = uint8(slots[i]);
+            out = bytes.concat(out, slot == SLOT_STAKER ? wallet : slot == SLOT_CONTRACT ? self : lower, bytes(pieces[i + 1]));
         }
         return (string(out), string.concat("/ipfs/", _ipfsPath(out)));
     }
@@ -876,8 +881,8 @@ contract TruthPaysKickback {
         _send(staker, c.deposit);
     }
 
-    /// @dev The address as "0x" + 40 hex digits with the EIP-55 checksum (mixed case), as Etherscan shows it.
-    function _checksummed(address a) private pure returns (bytes memory out) {
+    /// @dev The address as "0x" + 40 lower-case hex digits.
+    function _lowerHex(address a) private pure returns (bytes memory out) {
         out = new bytes(42);
         out[0] = "0";
         out[1] = "x";
@@ -887,6 +892,11 @@ contract TruthPaysKickback {
             out[i] = bytes1(uint8(d < 10 ? 48 + d : 87 + d)); // 0-9, a-f
             v >>= 4;
         }
+    }
+
+    /// @dev The address as "0x" + 40 hex digits with the EIP-55 checksum (mixed case), as Etherscan shows it.
+    function _checksummed(address a) private pure returns (bytes memory out) {
+        out = _lowerHex(a);
         uint256 hash;
         assembly ("memory-safe") {
             hash := keccak256(add(out, 34), 40) // of the 40 lower-case digits

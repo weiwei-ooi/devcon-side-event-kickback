@@ -171,8 +171,10 @@ export const STALE_PINS = [
 //  - filled by the contract for each case: {{wallet}} (the challenged wallet) and {{contract}} (the
 //    deposit contract), both as checksummed addresses. The template is passed as the text pieces
 //    between them plus one slot byte per value (1 wallet, 2 contract).
-export const SLOT = { wallet: 1, contract: 2 };
-const RUNTIME_SLOTS = { "{{wallet}}": SLOT.wallet, "{{contract}}": SLOT.contract };
+// values the contract writes into each case: the challenged wallet and itself (checksummed), and the
+// wallet in lower case (Kleros Court looks up evidence senders in "aliases" in lower case)
+export const SLOT = { wallet: 1, contract: 2, walletLower: 3 };
+const RUNTIME_SLOTS = { "{{wallet}}": SLOT.wallet, "{{contract}}": SLOT.contract, "{{walletLower}}": SLOT.walletLower };
 export const MAX_METAEVIDENCE_BYTES = 262_144; // one IPFS block: the CID formula below (and the contract's) needs that
 export const MAX_TEMPLATE_BYTES = 24_575; // the contract keeps abi.encode(pieces, slots) as contract code (24 KB limit)
 export const DEFAULT_METAEVIDENCE_TEMPLATE = "docs/metaevidence.template.json";
@@ -196,7 +198,8 @@ export function renderCase({ pieces, slots }, wallet, contract) {
   const values = ethers.getBytes(slots);
   let out = pieces[0];
   values.forEach((v, i) => {
-    out += ethers.getAddress(v === SLOT.wallet ? wallet : contract) + pieces[i + 1];
+    const value = v === SLOT.wallet ? ethers.getAddress(wallet) : v === SLOT.contract ? ethers.getAddress(contract) : ethers.getAddress(wallet).toLowerCase();
+    out += value + pieces[i + 1];
   });
   return out;
 }
@@ -219,17 +222,18 @@ export function caseTemplate(cfg, owner) {
     "{{deposit}}": `${ethers.formatEther(cfg.depositUnits)} ${SYMBOL}`,
     "{{policyURI}}": k.policyURI ?? "",
     "{{owner}}": organiser,
+    "{{ownerLower}}": organiser.toLowerCase(),
     "{{explorer}}": cfg.explorer ?? "",
   };
   const text = raw.replace(/\{\{\w+\}\}/g, (m) => {
     if (m in RUNTIME_SLOTS) return m;
     if (!(m in deployTime)) throw new Error(`Unknown placeholder ${m} in ${path.basename(file)}`);
-    if (m === "{{owner}}" && !organiser) throw new Error(`Set "owner" in the config: the case description (${path.basename(file)}) names the organiser's wallet`);
+    if ((m === "{{owner}}" || m === "{{ownerLower}}") && !organiser) throw new Error(`Set "owner" in the config: the case description (${path.basename(file)}) names the organiser's wallet`);
     return JSON.stringify(String(deployTime[m])).slice(1, -1);
   });
   const pieces = [], slots = [];
   let rest = text;
-  for (let m; (m = /\{\{(wallet|contract)\}\}/.exec(rest)); ) {
+  for (let m; (m = /\{\{(wallet|contract|walletLower)\}\}/.exec(rest)); ) {
     pieces.push(rest.slice(0, m.index));
     slots.push(RUNTIME_SLOTS[m[0]]);
     rest = rest.slice(m.index + m[0].length);
@@ -237,7 +241,8 @@ export function caseTemplate(cfg, owner) {
   pieces.push(rest);
   if (!slots.includes(SLOT.wallet)) throw new Error(`${path.basename(file)} must name the challenged wallet ({{wallet}})`);
   const t = { pieces, slots: ethers.hexlify(new Uint8Array(slots)) };
-  const sampleWallet = "0x00000000000000000000000000000000000000aa", sampleContract = "0x00000000000000000000000000000000000000cc";
+  // EIP-55 test vectors: mixed case once checksummed, so a lower-case alias key can be told apart
+  const sampleWallet = "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed", sampleContract = "0xfb6916095ca1df60bb79ce92ce3ea74c37c5d359";
   const sample = renderCase(t, sampleWallet, sampleContract);
   if (ethers.getBytes(ethers.AbiCoder.defaultAbiCoder().encode(["string[]", "bytes"], [t.pieces, t.slots])).length > MAX_TEMPLATE_BYTES)
     throw new Error(`${path.basename(file)} is too long: the contract can keep about 24 KB of template`);
@@ -250,6 +255,11 @@ export function caseTemplate(cfg, owner) {
   if (!Array.isArray(meta.rulingOptions?.titles) || meta.rulingOptions.titles.length !== 2)
     throw new Error(`${path.basename(file)}: "rulingOptions.titles" must list the 2 answers (1 attended, 2 did not attend)`);
   if ((meta.fileURI ?? "") !== (k.policyURI ?? "")) throw new Error(`${path.basename(file)}: "fileURI" must be the juror policy ("{{policyURI}}")`);
+  // Kleros Court labels each piece of evidence with aliases[sender], the sender in lower case
+  const aliasKeys = Object.keys(meta.aliases ?? {});
+  for (const key of aliasKeys)
+    if (/^0x[0-9a-fA-F]{40}$/.test(key) && !aliasKeys.includes(key.toLowerCase()))
+      throw new Error(`${path.basename(file)}: alias ${key} also needs a lower-case key ({{walletLower}} / {{ownerLower}}): Kleros Court looks senders up in lower case`);
   return { file, ...t, sample };
 }
 
@@ -560,12 +570,16 @@ export async function verifyRegistrations(prov, cfg, rows, { onlyDepositTicket =
     // deposit. If more than one is, a person decides which (the others are given back).
     let txUsed = txHash;
     let res = await check(txHash);
+    let unread = [];
     const hashes = extractTxHashes(rawTx);
     if (hashes.length > 1) {
       const checked = await Promise.all(hashes.map(async (h) => ({ h, res: await check(h) })));
       const good = checked.filter((c) => c.res.ok);
       const money = checked.filter((c) => MONEY_CODES.has(c.res.code));
-      const pick = good[0] ?? money[0] ?? checked[0];
+      // a link that could not be read this run may be the deposit: say so rather than an earlier link's failure
+      const notYet = checked.filter((c) => UNREAD_CODES.has(c.res.code));
+      unread = notYet.map((c) => c.h);
+      const pick = good[0] ?? money[0] ?? notYet.find((c) => c.res.code !== "TX_NOT_FOUND") ?? checked[0];
       txUsed = pick.h;
       res = pick.res;
       if (good.length > 1)
@@ -583,6 +597,7 @@ export async function verifyRegistrations(prov, cfg, rows, { onlyDepositTicket =
       amount: res.amount !== undefined ? fmt(res.amount, cfg.decimals) : "",
       sent_at: res.ts ? new Date(res.ts * 1000).toISOString() : "",
       tx: txUsed,
+      unread, // other pasted links that could not be read yet (their deposits wait for the next run)
       explorer: cfg.explorer ? `${cfg.explorer}/tx/${txUsed}` : "",
       block: res.block ?? "",
       code: res.code,
@@ -594,6 +609,8 @@ export async function verifyRegistrations(prov, cfg, rows, { onlyDepositTicket =
 
 // Rows whose own wallet really sent ETH to the contract in their tx (whether or not it counts as a deposit).
 export const MONEY_CODES = new Set(["VERIFIED", "OUTSIDE_WINDOW", "AMOUNT_TOO_LOW"]);
+/** A tx that could not be read this run (it may still turn out to be a deposit). */
+export const UNREAD_CODES = new Set(["RPC_ERROR", "TX_PENDING", "TX_NOT_FOUND"]);
 
 /**
  * Several Luma rows can point at the same deposit (a copied tx link, a second sign-up) or at the

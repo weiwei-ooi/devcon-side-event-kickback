@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import net from "node:net";
+import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync, execFile } from "node:child_process";
@@ -684,6 +685,42 @@ test("several tx links in one answer: the one that is a deposit counts; two depo
   assert.equal(s.umRow(good), undefined);
   for (const t of [d1, d2]) assert.match(s.umRow(t).note, /This tx link is in the Luma answers of dua@x\.io: ask them about it before returning it/);
   assert.match(s.umRow(nTx).note, /Sent from the ETH address nia@x\.io gave on Luma: ask them for this tx link instead of returning it/);
+});
+
+test("several tx links: one that can't be read this run is reported as unreadable, and its deposit waits for the next run", async () => {
+  const s = await scenario();
+  const raj = await guests[0].getAddress();
+  const bad = await failedPayment(guests[0], s.kAddr, U(25), 21_000);
+  const good = await s.pay(guests[0], 25);
+  // a busy public RPC that refuses to read Raj's second link this time
+  const refused = (m) => /^eth_getTransaction(Receipt|ByHash)$/.test(m.method) && String(m.params?.[0]).toLowerCase() === good.toLowerCase();
+  const server = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const c of req) body += c;
+    const msgs = JSON.parse(body);
+    const out = await Promise.all([msgs].flat().map(async (m) => refused(m)
+      ? { jsonrpc: "2.0", id: m.id, error: { code: -32005, message: "too many requests" } }
+      : (await fetch(`http://127.0.0.1:${PORT}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(m) })).json()));
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify(Array.isArray(msgs) ? out : out[0]));
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  try {
+    const line = `Raj,raj@x.io,${T25},approved,,${raj},"first one failed https://etherscan.io/tx/${bad} then https://etherscan.io/tx/${good}"`;
+    s.config({ rpcUrl: `http://127.0.0.1:${server.address().port}` });
+    await s.verify([line]);
+    const issue = s.csv("issues.csv").find((i) => i.email === "raj@x.io");
+    assert.equal(issue.code, "RPC_ERROR"); // not the first link's TX_FAILED ("ask for a new deposit")
+    assert.equal(issue.tx, good.toLowerCase());
+    assert.equal(s.umRow(good), undefined); // not listed to give back
+    assert.deepEqual(s.wallets("new-stakers.json"), []);
+    // the next run reads it: Raj verifies
+    s.config();
+    await s.verify([line]);
+    assert.deepEqual(s.wallets("new-stakers.json"), [raj]);
+  } finally {
+    server.close();
+  }
 });
 
 test("a copied tx link never knocks out the real guest, and build-payout still pays them", async () => {

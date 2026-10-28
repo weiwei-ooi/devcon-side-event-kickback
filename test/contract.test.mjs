@@ -665,6 +665,10 @@ test("matched challenge opens a Kleros v1 case through the Dispute Resolver; pay
   assert.deepEqual([...meta.args], [c.localDisputeID, uri]);
   const json = JSON.parse(text);
   assert.ok(json.question.includes(await addr(g)) && json.description.includes(kick.target), "names the wallet and the deposit contract");
+  assert.ok(json.description.includes(await addr(owner)), "names the organiser's wallet");
+  // Kleros Court labels evidence with aliases[sender], the sender in lower case
+  assert.equal(json.aliases[(await addr(g)).toLowerCase()], "Challenger (the guest's wallet)");
+  assert.equal(json.aliases[(await addr(owner)).toLowerCase()], "Organiser (Truth Pays owner wallet)");
   assert.equal(json.fileURI, POLICY);
   assert.ok(r.gasUsed < 800_000n, `matchChallenge used ${r.gasUsed} gas`); // about 650,000 with this template
   const [disp] = logsOf(r, proxy, "Dispute");
@@ -1206,7 +1210,9 @@ test("case description: bad templates are refused at deployment; the template is
     { pieces: ["a", "b"], slots: "0x" }, // one piece too many
     { pieces: ["a", "b"], slots: "0x0101" }, // one piece too few
     { pieces: ["a", "b"], slots: "0x02" }, // never names the wallet
-    { pieces: ["a", "b"], slots: "0x03" }, // unknown value
+    { pieces: ["a", "b"], slots: "0x03" }, // only the lower-case wallet: never names it checksummed
+    { pieces: ["a", "b"], slots: "0x04" }, // unknown value
+    { pieces: ["a", "b"], slots: "0x00" }, // unknown value
     { pieces: [fill(n + 1), ""], slots: "0x01" }, // over the contract code limit
   ]) {
     await assert.rejects(f.deploy(D, "x", o, t + 100, t + 100 + W, arb(bad)));
@@ -1224,6 +1230,13 @@ test("case description: bad templates are refused at deployment; the template is
   assert.equal(ethers.dataSlice(code, 1), ethers.AbiCoder.defaultAbiCoder().encode(["string[]", "bytes"], [[fill(n), ""], "0x01"]));
   const r = await send(guests[0].sendTransaction({ to: store, data: "0x1234", gasLimit: 100_000 }));
   assert.equal(r.status, 1);
+  // every value: the wallet checksummed, in lower case, and the contract checksummed
+  const k3 = await f.deploy(D, "x", o, t + 100, t + 100 + W, arb({ pieces: ["A", "B", "C", "D"], slots: "0x010302" }));
+  await k3.waitForDeployment();
+  const w = "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed"; // EIP-55 test vector
+  const [t3] = await k3.caseMetaEvidence(w);
+  assert.equal(t3, `A0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAedB${w}C${k3.target}D`);
+  assert.equal(t3, renderCase({ pieces: ["A", "B", "C", "D"], slots: "0x010302" }, w, k3.target));
 });
 
 test("case description: the IPFS path matches `ipfs add` (known vectors, varint boundaries) and every wallet is checksummed", async () => {
