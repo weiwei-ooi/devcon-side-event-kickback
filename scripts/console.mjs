@@ -105,6 +105,8 @@ http
   .listen(PORT, "127.0.0.1", () => {
     const url = `http://localhost:${PORT}`;
     console.log(`Owner console: ${url}  (${CONFIG}, ${OUT}/)  (Ctrl+C to stop)`);
+    // the files it serves are fixed when it starts: an updated page would ask for files this process refuses
+    console.log("After updating these files, stop this console (Ctrl+C) and start it again before reloading the page.");
     const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
     exec(`${opener} ${url}`, () => {});
   });

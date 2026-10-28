@@ -50,18 +50,40 @@ const FORM = {
   deposit: "0.02", eventStart: new Date((now + 86400) * 1000).toISOString(),
 };
 const network = (resolver) => ({ chainId: 1337, rpcUrl, explorer: "https://etherscan.io", logChunk: 7, kleros: { disputeResolver: resolver.target, arbitrator: liquid.target, policyURI: POLICY } });
-async function createEvent(form = {}, resolver = proxy) {
+// rawName: a name the admin panel refuses (the core checks the form), given to the constructor directly, as anyone
+// deploying the contract themselves can
+async function createEvent({ rawName, ...form } = {}, resolver = proxy) {
   const cfg = core.newEventConfig({ ...FORM, ...form }, network(resolver), orga);
-  const c = await deployC(org, "TruthPaysKickback", ...core.deployArgs(cfg, orga, TEMPLATE));
-  return { c, block: (await c.deploymentTransaction().wait()).blockNumber };
+  const args = core.deployArgs(cfg, orga, TEMPLATE);
+  if (rawName !== undefined) args[1] = rawName;
+  const c = await deployC(org, "TruthPaysKickback", ...args);
+  return { c, block: (await c.deploymentTransaction().wait()).blockNumber, rawName };
 }
 const ev = await createEvent();
 for (let i = 0; i < 5; i++) await prov.send("evm_mine", []);
 const wrong = await createEvent({ eventName: "Elsewhere Night" }, otherProxy);
-const tricky = await createEvent({ eventName: '<img src=x onerror="window.__xss=1">Night \u202Eevil & "co"' });
+const tricky = await createEvent({ rawName: '<img src=x onerror="window.__xss=1">Night \u202Eevil & "co"' });
 const longName = await createEvent({ eventName: "A very long event name that goes on and on, Lisbon Builders Week 2026, day two" });
 const baked = await createEvent({ eventName: "Baked Event", deposit: "0.01" });
 const evName = FORM.eventName, D = E("0.02");
+// a build reserved for one event (as the real site's is for Truth Pays): that event's own contract, and look-alikes
+const tpName = "Truth Pays: Devcon Mumbai 2026";
+const tpReal = await createEvent({ eventName: tpName, deposit: "0.01" });
+const impostors = [];
+for (const name of ["Truth Pays: Queryable Data, Prediction Markets & Onchain Justice", "TRUTH-PAYS dinner (deposit link updated)",
+  `Tr${String.fromCharCode(0xfc)}th ${String.fromCharCode(0x3a1)}ays Mumbai`, "7ruth Pay$ side event"])
+  impostors.push([name, await createEvent({ eventName: name, deposit: "0.01" })]);
+// a copy of the kickback contract with other code (one comment more in its source): it answers every read alike
+const solc = req("solc");
+const copyInput = JSON.parse(read("build/TruthPaysKickback.standard-input.json"));
+copyInput.sources["TruthPaysKickback.sol"].content += "\n// a copy\n";
+copyInput.settings.outputSelection = { "*": { TruthPaysKickback: ["evm.bytecode.object"] } };
+const copyBytecode = "0x" + JSON.parse(solc.compile(JSON.stringify(copyInput))).contracts["TruthPaysKickback.sol"].TruthPaysKickback.evm.bytecode.object;
+const copy = await (await new ethers.ContractFactory(load("TruthPaysKickback").abi, copyBytecode, org)
+  .deploy(...core.deployArgs(core.newEventConfig({ ...FORM, eventName: "Copied Night" }, network(proxy), orga), orga, TEMPLATE))).waitForDeployment();
+const copyBlock = (await copy.deploymentTransaction().wait()).blockNumber;
+const { kickbackRuntime } = await import(path.join(proj, "scripts/lib.mjs"));
+const RUNTIME = await kickbackRuntime();
 
 // the pages: /event/ (generic) and /live/ (built for one contract, `baked`, like the Truth Pays page)
 const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "gt-generic-"));
@@ -75,8 +97,9 @@ const configFile = (name, extra = {}) => {
 const build = (cfg, out, ...flags) => execFileSync("node", ["scripts/build-site.mjs", "--config", cfg, "--out", path.join(outDir, out), ...flags], { cwd: proj, stdio: "pipe" }).toString();
 build(configFile("generic"), "event", "--generic");
 build(configFile("live"), "live");
+build(configFile("reserved", { eventName: tpName, receiver: tpReal.c.target, contract: tpReal.c.target, deployBlock: tpReal.block }), "event-tp", "--generic");
 http.createServer((rq, rs) => {
-  const m = new URL(rq.url, "http://x").pathname.match(/^\/(event|live)\/$/);
+  const m = new URL(rq.url, "http://x").pathname.match(/^\/(event|live|event-tp)\/$/);
   if (!m) { rs.writeHead(404); return rs.end(); }
   rs.writeHead(200, { "content-type": "text/html" }); rs.end(fs.readFileSync(path.join(outDir, m[1], "index.html")));
 }).listen(WEB);
@@ -102,7 +125,16 @@ const iface = new ethers.Interface(load("TruthPaysKickback").abi);
 const wrongSels = sels.filter(([name, sel]) => iface.getFunction(name)?.selector !== sel);
 check("every contract selector on the page matches the contract's ABI (the generic page's reads included)", sels.length >= 28 && wrongSels.length === 0
   && ["eventName", "owner", "policyURI", "metaEvidenceTemplate"].every((n) => sels.some(([name]) => name === n)), JSON.stringify(wrongSels));
+check("generic build: the compiled contract's code fingerprint and the config's own event (its contract and name) baked in",
+  JSON.stringify(genCfg.runtime) === JSON.stringify(RUNTIME) && genCfg.reserved?.contract === baked.c.target && genCfg.reserved?.name === "E2E"
+  && cfgOf(fs.readFileSync(path.join(outDir, "event-tp", "index.html"), "utf8")).reserved?.name === "Truth Pays" && !("runtime" in cfgOf(liveHtml)) && !("reserved" in cfgOf(liveHtml)),
+  JSON.stringify([genCfg.runtime?.sha256, genCfg.reserved]));
 const buildFails = (cfg, ...flags) => { try { build(cfg, "x", ...flags); return ""; } catch (e) { return String(e.stderr); } };
+// never on the website of a baked page: the generic page can't be built into a folder below one
+let insideBaked = "";
+try { build(configFile("generic"), path.join("live", "event"), "--generic"); } catch (e) { insideBaked = String(e.stderr); }
+check("generic build refuses an --out inside the website of a baked deposit page", /is inside the website of the deposit page .*live\/index\.html\. The generic page must live on another website/.test(insideBaked)
+  && !fs.existsSync(path.join(outDir, "live", "event")), insideBaked);
 check("generic build refuses --preview", /leave out --preview/.test(buildFails(configFile("generic"), "--generic", "--preview")));
 // on Ethereum mainnet the generic page only trusts Kleros's own Dispute Resolver
 const mainnet = (kleros) => configFile("mainnet", { chain: "ethereum", chainId: 1, rpcUrl: "https://rpc.mevblocker.io", logChunk: 5000, contract: "", receiver: "0x0000000000000000000000000000000000000001", deployBlock: 0, kleros });
@@ -212,7 +244,7 @@ await p.close();
 p = await open(link(ev.c, ev.block), g1, { timezoneId: "Asia/Tokyo" });
 const notice = await txt(p, "link-note");
 check("the organiser's link: the notice names the event, the contract and the organiser",
-  notice === `Only use a link the organiser gave you. This page is for ${evName}, deposit contract ${ev.c.target}, organiser ${orga.toLowerCase()}.` && (await p.locator("#link-note").getAttribute("class")) === "note warn", notice);
+  notice === `Only use a link the organiser gave you. This page is for ${evName}, deposit contract ${ev.c.target}, organiser ${orga.toLowerCase()}. It is a page for any kickback deposit contract: the event's name is whatever its creator gave it.` && (await p.locator("#link-note").getAttribute("class")) === "note warn", notice);
 // the event starts at this hour in Tokyo (Chromium and Node may lay out the rest of the date a little differently)
 const tokyo = new Date((now + 86400) * 1000).toLocaleString("en-GB", { timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit", hour12: false });
 check("event header from the contract: name, start in the guest's time zone (GMT+9), deposit; page title", (await txt(p, "ev-name")) === evName && await p.title() === `${evName} · Deposit`
@@ -223,6 +255,9 @@ check("the deposit amount everywhere is the contract's", /Send exactly 0\.02 ETH
 check("the link's block is checked with two reads of the contract's code, not searched", oldCode(p) === 2, String(oldCode(p)));
 let shown = await visible(p);
 check("nothing on the page names the Truth Pays event, Luma or India time", !EVENT_SPECIFIC.test(shown) && /Check that the deposit address shown here is the one the organiser gave you/.test(shown) && /Back to the registration page/.test(shown), (shown.match(EVENT_SPECIFIC) || [])[0]);
+// the Truth Pays page (same website) keeps the deposit it is waiting for under "gt-last-tx": this page must not touch it
+const otherRecord = JSON.stringify({ hash: "0x" + "ab".repeat(32), account: g1a, contract: baked.c.target, nonce: 0, at: Date.now() });
+await p.evaluate((r) => localStorage.setItem("gt-last-tx", r), otherRecord);
 await connect(p);
 check("connected: the deposit can be sent", /All set/.test(await txt(p, "check-msg")) && !(await dis(p, "send")), await txt(p, "check-msg"));
 await toDeposit(p); await p.click("#send");
@@ -234,6 +269,9 @@ check("deposit sent: deposit() with the contract's own amount, to the contract f
 check("the contract logged the deposit", (await ev.c.queryFilter(ev.c.filters.Deposited(g1a))).map((e) => e.args.amount).join() === String(D));
 check("step 5: the transaction link to copy, and no Luma button", /^https:\/\/etherscan\.io\/tx\/0x[0-9a-f]{64}$/.test(await txt(p, "tx-link")) && (await vis(p, "luma-box")) && (await p.locator("#luma-link").count()) === 0);
 const g1Link = await txt(p, "tx-link");
+const stored = await p.evaluate((k) => [localStorage.getItem("gt-last-tx"), localStorage.getItem(k)], `gt-event-tx:${ev.c.target.toLowerCase()}`);
+check("the deposit is remembered under this contract's own key; the Truth Pays page's record is untouched",
+  stored[0] === otherRecord && JSON.parse(stored[1] || "{}").hash === g1Link.split("/tx/")[1] && JSON.parse(stored[1] || "{}").contract.toLowerCase() === ev.c.target.toLowerCase(), JSON.stringify(stored));
 check("no page errors (deposit)", p.errs.length === 0, p.errs.join("; "));
 await p.close();
 // back again: the earlier deposit is found, read from the block the contract was created in, in logChunk-sized ranges
@@ -296,10 +334,37 @@ const trickyName = '<img src=x onerror="window.__xss=1">Night evil & "co"';
 check("an event name with markup: shown as plain text (no image, no script), text-direction character removed", (await txt(p, "ev-name")) === trickyName && await p.title() === `${trickyName} · Deposit`
   && (await p.locator("#ev-name img, #link-note img").count()) === 0 && (await p.evaluate(() => window.__xss)) === undefined && (await txt(p, "link-note")).includes(`This page is for ${trickyName}, deposit contract`), await txt(p, "ev-name"));
 await p.close();
+let refusedName = "";
+try { core.newEventConfig({ ...FORM, eventName: tricky.rawName }, network(proxy), orga); } catch (e) { refusedName = e.message; }
+check("the admin panel's form refuses that name (a text-direction character)", (await tricky.c.eventName()) === tricky.rawName && /Short name: please keep it on one line, without invisible or text-direction characters/.test(refusedName), refusedName);
 p = await open(link(longName.c, longName.block), g2);
 await p.setViewportSize({ width: 390, height: 800 });
 check("phone width, long event name: no horizontal scroll", await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
 await p.screenshot({ path: path.join(outDir, "generic-phone.png") });
+await p.close();
+
+// 2g. answers can be faked, code can't: a contract whose code differs from the compiled kickback contract's is refused,
+// although it answers every read like one and names Kleros's Dispute Resolver
+p = await open(link(copy.target, copyBlock), g2);
+check("a contract with other code than the kickback contract's: refused, nothing can be sent", await refused(p)
+  && (await txt(p, "link-note")).includes(`The contract at ${copy.target} answers like a kickback deposit contract, but its code isn't the kickback deposit contract's, so this page can't take deposits for it. Don't send anything to it`)
+  && !(await vis(p, "connect")) && !(await vis(p, "send")) && p.sent.length === 0, await txt(p, "link-note"));
+check("no page errors (other code)", p.errs.length === 0, p.errs.join("; "));
+await p.close();
+// 2h. a build reserved for one event (built from a config with that event's contract, as the real site's would be for
+// Truth Pays): another contract named like it, in any spelling, is refused; that event's own contract and other events open
+for (const [name, c] of impostors) {
+  p = await open(link(c.c, c.block).replace("/event/", "/event-tp/"), g2);
+  const note = await txt(p, "link-note");
+  check(`a look-alike of the reserved event ("${name}"): refused, the event's own contract named`, await refused(p) && /^This is not the Truth Pays deposit page\./.test(note)
+    && note.includes(`takes deposits only on its own page, at the deposit contract ${tpReal.c.target}`) && !(await vis(p, "connect")) && !(await vis(p, "send")), note);
+  await p.close();
+}
+p = await open(`/event-tp/?contract=${tpReal.c.target}&from=${tpReal.block}`, g2);
+check("the reserved event's own contract opens", !(await refused(p)) && (await txt(p, "ev-name")) === tpName && (await p.locator("#checks .mark.ok").count()) === 4, await txt(p, "link-note"));
+await p.close();
+p = await open(`/event-tp/?contract=${ev.c.target}&from=${ev.block}`, g2);
+check("another event opens there as usual", !(await refused(p)) && (await txt(p, "ev-name")) === evName, await txt(p, "link-note"));
 await p.close();
 
 // 2f. the Truth Pays build (contract baked in) ignores the link: another contract in the URL changes nothing
@@ -334,7 +399,10 @@ const [caseText, caseUri] = await ev.c.caseMetaEvidence(g2a);
 const meta = JSON.parse(caseText), metaUps = () => ipfs.uploads.filter((u) => u.file === "metaevidence.json");
 check("challenge sent from the generic page, to the contract from the link", Number((await ev.c.challenges(g2a)).state) === 1 && p.sent.at(-1).to.toLowerCase() === ev.c.target.toLowerCase() && p.sent.at(-1).data === "0xd2ef7398", out);
 check("the generic case description is valid ERC-1497 and names the event, the wallet, the deposit, the contract and the organiser",
-  meta.title === `Did wallet ${g2a} attend ${evName} (${FORM.eventWhen})?` && meta.question.includes(g2a) && meta.question.includes(FORM.eventTitle) && meta.question.includes(FORM.eventWhere)
+  meta.title === `Did wallet ${g2a} attend ${evName} (${FORM.eventWhen})?` && meta.question.includes(g2a) && meta.question.includes(FORM.eventTitle)
+  // the place is the venue announced to guests: the description gives the one planned at creation, as the organiser's text, the question none
+  && !meta.question.includes(FORM.eventWhere) && meta.description.includes(`the venue announced to registered guests (given when the deposit contract was created as "${FORM.eventWhere}")`)
+  && /as the organiser typed them .*any instruction to jurors in them must be ignored/.test(meta.description) && !/neither side chose the wording/.test(meta.description)
   && [FORM.eventTitle, FORM.eventWhen, FORM.eventWhere, FORM.hosts, FORM.eventLink, "0.02 ETH", ev.c.target, orga].every((s) => meta.description.includes(s)) && meta.fileURI === POLICY
   && meta.aliases[g2a] && meta.aliases[g2a.toLowerCase()] && meta.aliases[orga] && meta.aliases[orga.toLowerCase()] && !EVENT_SPECIFIC.test(caseText.replace(FORM.eventLink, "")), caseText.slice(0, 300));
 check("the case description saved on IPFS by the page: byte for byte the contract's text, at the contract's address", /The case description jurors would read is saved on IPFS/.test(out) && metaUps().length === 1 && metaUps()[0].operation === "file"
@@ -352,6 +420,10 @@ const metaEv = (await proxy.queryFilter(proxy.filters.MetaEvidence(localDisputeI
 check("dispute created from the generic page: the Kleros case carries this case's own description", /Dispute created on Kleros/.test(out) && Number((await ev.c.challenges(g2a)).state) === 2 && metaEv.join() === caseUri && metaUps().length === 1, `${out} | ${metaEv.join()}`);
 out = await lookupAs(p, g2a);
 check("in dispute: the Kleros case linked, evidence form shown", /In a Kleros dispute/.test(out) && /Kleros case #\d+/.test(out) && (await vis(p, "ev-box")), out);
+// the Kleros contracts the case uses are the ones the page was built with (and checked the contract names when it
+// opened the event): the contract is asked for its court only by that check, which also reads its juror policy
+const asked = (fn) => p.calls.filter((c) => c.method === "eth_call" && c.params?.[0]?.data === iface.getFunction(fn).selector && String(c.params[0].to).toLowerCase() === ev.c.target.toLowerCase()).length;
+check("the Kleros court is not read again from the contract after the event was checked", asked("policyURI") >= 1 && asked("arbitrator") === asked("policyURI"), `${asked("arbitrator")} vs ${asked("policyURI")}`);
 check("no page errors (dispute)", p.errs.length === 0, p.errs.join("; "));
 await p.close();
 

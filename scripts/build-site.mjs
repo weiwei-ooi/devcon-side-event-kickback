@@ -11,8 +11,14 @@
 // builds instead the guest page for any kickback deposit contract (published at /event/): it has no
 // contract of its own and takes it from the organiser's link, ?contract=0x…&from=<block it was created
 // in>, then reads the event, the deposit and the jurors' policy from that contract. It refuses a
-// contract that isn't a kickback contract or whose disputes don't go to Kleros's own Dispute Resolver.
-// From the config it only takes the network: chain, RPC, explorer, log chunk and the Kleros addresses.
+// contract whose code isn't the compiled kickback contract's (build/, checked byte for byte but for
+// the constructor's values), or whose disputes don't go to Kleros's own Dispute Resolver. From the
+// config it takes the network (chain, RPC, explorer, log chunk, the Kleros addresses) and the
+// config's own event: a contract whose name looks like that event's ("Truth Pays") is refused
+// unless it is the config's contract, so the page can't be used to dress up a look-alike.
+// Never publish it (or the admin panel) on the website of a baked page such as the live Truth Pays
+// page: guests were told to trust that address. The build refuses an --out inside a folder that
+// holds a baked page.
 //
 // site/index.html holds both. Markup that differs sits in comment pairs, on their own lines or on one:
 //   <!--baked-->Truth Pays markup<!--generic:generic markup-->
@@ -20,7 +26,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ethers } from "ethers";
-import { args, loadConfig, klerosConfig, isIpfsPath, KLEROS, isKnownResolver } from "./lib.mjs";
+import { args, loadConfig, klerosConfig, isIpfsPath, KLEROS, isKnownResolver, kickbackRuntime, bakedGuestPageAbove } from "./lib.mjs";
 
 const a = args();
 const cfg = loadConfig(a.config ?? "config.json");
@@ -32,6 +38,8 @@ const fail = (msg) => {
   process.exit(1);
 };
 if (generic && a.preview) fail("--generic builds a page for the contract named in its link: leave out --preview.");
+const baked = generic && bakedGuestPageAbove(out);
+if (baked) fail(`${out} is inside the website of the deposit page ${baked}. The generic page must live on another website: guests trust that one for its own event only.`);
 if (!generic && !isAddr(cfg.contract) && !a.preview)
   fail('No live "contract" in the config yet. Deploy first, or pass --preview for a page without an address.');
 // The page reads each guest's earlier deposits from this block on. Without it, it would search the whole chain,
@@ -61,6 +69,10 @@ const network = {
 // and the IPFS upload service and gateway for evidence
 const kleros = { klerosResolver: k.disputeResolver, klerosArbitrator: k.arbitrator, klerosCourt: k.courtUrl };
 const ipfs = { ipfsUpload: k.ipfsUpload, ipfsGateway: k.ipfsGateway };
+let runtime = null;
+if (generic) {
+  try { runtime = await kickbackRuntime(); } catch (e) { fail(e.message); }
+}
 const site = generic
   ? {
       generic: true,
@@ -72,6 +84,10 @@ const site = generic
       ...kleros,
       klerosPolicy: "",
       ...ipfs,
+      // the compiled contract's code (the page compares the linked contract's code with it)
+      runtime,
+      // the config's own event: another contract whose name looks like it is refused
+      reserved: { contract: isAddr(cfg.contract) ? cfg.contract : "", name: String(cfg.eventName ?? "").split(":")[0].trim() },
     }
   : {
       contract: a.preview ? "" : cfg.contract,

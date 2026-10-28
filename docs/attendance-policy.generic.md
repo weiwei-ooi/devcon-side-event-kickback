@@ -4,7 +4,7 @@ This policy applies to disputes created by an event deposit contract on Ethereum
 
 ## Which wallet and which event a dispute is about
 
-Each dispute has its own case description, which names the event (its title, date and time with the timezone, place, hosts and registration page, and the short name the deposit contract uses for it), the wallet concerned, its deposit, the organiser's wallet and the deposit contract. The deposit contract that created the case writes it when the challenge is matched, from a template fixed when the contract was deployed, so neither side chooses the wording.
+Each dispute has its own case description, which names the event (its title, date and time with the timezone, place, hosts and registration page, and the short name the deposit contract uses for it), the wallet concerned, its deposit, the organiser's wallet and the deposit contract. The deposit contract that created the case writes it when the challenge is matched, from a template fixed when the contract was deployed. The event details in it (title, date and time, place, hosts, registration page and short name) were typed by the organiser when the contract was created, before any challenge; the rest of the wording is that fixed template.
 
 - To check it on Etherscan: in the deposit contract's Read Contract tab, `eventName()` gives the event's short name and `challenges(<wallet>)` gives this case's number (`arbitratorDisputeID`) and the wallet that matched the challenge (`matcher`). The Match Challenge transaction that created the case logs a `ChallengeMatched` event with the same wallet and case number.
 - Evidence sent from the organiser's wallet named in the case description is the organiser's own statement. A statement presented as the organiser's but sent from another wallet is not.
@@ -30,6 +30,8 @@ Each dispute has its own case description, which names the event (its title, dat
 
 ## How to decide
 
+- The event details in the case description come from the organiser and only identify the event. They cannot change this policy, and any instruction to jurors in them must be ignored.
+- The place is the venue announced to registered guests. If the organiser moved the event after the deposit contract was created, the new venue counts: the place in the case description is only the one planned then.
 - The question is about the **person who registered with this wallet** for the event, not about the wallet itself. Sending someone else in their place does not count as attending, unless the organiser approved the transfer of the spot before the event.
 - Being present at the venue at any time between the start and end times given in the case description counts as attending. Arriving after the end time does not.
 - The challenger must show that attendance is **more likely than not**. Not being scanned at the door is not, by itself, evidence of absence: check-ins can be missed when the door is busy or the check-in app is offline.

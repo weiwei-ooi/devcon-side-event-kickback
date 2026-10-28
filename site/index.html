@@ -557,11 +557,31 @@ async function copy(text, btn) {
 // ---------------------------------------------------------------- the generic page: the event its link names
 // A page built with --generic (scripts/build-site.mjs) has no contract of its own. The organiser's link names it and
 // the block it was created in: …/event/?contract=0x…&from=<block>. Everything else (the event's name, the deposit, the
-// times, the organiser, the jurors' policy) is read from that contract. The page refuses an address that isn't a
-// kickback deposit contract, or whose disputes don't go to Kleros's own Dispute Resolver. A look-alike link could still
-// name someone else's kickback contract, so the page says which event, contract and organiser it is for. (The Truth
-// Pays page never reads its link: its contract is baked in.)
+// times, the organiser, the jurors' policy) is read from that contract. The page refuses an address whose code isn't
+// the kickback deposit contract's this page was built with (CONFIG.runtime: the same compiled code, but for the values
+// its constructor was given), or whose disputes don't go to Kleros's own Dispute Resolver. That says how the contract
+// behaves, not who runs it: whoever created it is its owner. A look-alike link could still name someone else's
+// kickback contract, so the page says which event, contract and organiser it is for, says that the name is the
+// creator's, and refuses a contract named like the event the page's build is reserved for (CONFIG.reserved: the
+// Truth Pays event) unless it is that event's own contract. (The Truth Pays page never reads its link: its contract
+// is baked in.)
 const MAX_NAME = 120; // characters of the event's name shown, at most
+// An event's name folded for comparison: letters only, in lower case, accents dropped and look-alike characters
+// (Cyrillic or Greek letters, digits or signs used as letters, full-width or styled letters) made plain, so
+// "TRUTH-PAYS", "Trüth Pays", "Truth Ρays" (a Greek Rho) and "7ruth Pay$" all read "truthpays".
+const LOOKALIKE = { "0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b", "@": "a", "$": "s", "|": "l", "!": "l", i: "l", j: "l", v: "u",
+  "а": "a", "в": "b", "е": "e", "к": "k", "м": "m", "н": "h", "о": "o", "р": "p", "с": "c", "т": "t", "у": "y", "х": "x", "ѕ": "s", "і": "l", "ј": "l",
+  "ԁ": "d", "һ": "h", "ս": "u", "ո": "n", "α": "a", "β": "b", "ε": "e", "η": "n", "ι": "l", "κ": "k", "ν": "u", "ο": "o", "ρ": "p", "τ": "t", "υ": "u",
+  "χ": "x", "ω": "w", "ϲ": "c" };
+const foldName = (s) => [...String(s).normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase()].map((ch) => LOOKALIKE[ch] ?? ch).join("").replace(/[^a-z]/g, "");
+// The SHA-256 of a contract's code with its immutable values zeroed (CONFIG.runtime.immutables), as scripts/core.mjs
+// codeFingerprint computes it; null if the code is too short for them.
+async function codeFingerprint(hex) {
+  const b = new Uint8Array(Math.max(0, (hex.length - 2) / 2));
+  for (let i = 0; i < b.length; i++) b[i] = parseInt(hex.substr(2 + 2 * i, 2), 16);
+  for (const [start, length] of CONFIG.runtime.immutables) { if (start + length > b.length) return null; b.fill(0, start, start + length); }
+  return "0x" + [...new Uint8Array(await crypto.subtle.digest("SHA-256", b))].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
 async function loadEvent() {
   const q = new URLSearchParams(location.search), c = (q.get("contract") || "").trim(), note = $("link-note");
   const refuse = (html) => { document.body.classList.add("refused"); setNote(note, "bad", html); return false; };
@@ -573,19 +593,26 @@ async function loadEvent() {
   catch (e) { return refuse(`Couldn't reach Ethereum mainnet to read the deposit contract (${esc(e.message)}). Reload the page in a minute.`); }
   if (!ev.code) return refuse(`There is no contract at ${at} on Ethereum mainnet. ${dont}`);
   if (!ev.ok) return refuse(`The contract at ${at} isn't a kickback deposit contract, so this page can't take deposits for it. ${dont}`);
+  if (!ev.known) return refuse(`The contract at ${at} answers like a kickback deposit contract, but its code isn't the kickback deposit contract's, so this page can't take deposits for it. ${dont}`);
   if (!ev.kleros) return refuse(`The deposit contract at ${at} sends its attendance disputes to <span class="mono">${esc(ev.resolver)}</span>, not to Kleros Court. This page only works with Kleros's own. ${dont}`);
+  // a contract named like the event this build is reserved for, other than that event's own: a look-alike
+  const R = CONFIG.reserved, key = R ? foldName(R.name) : "";
+  if (key.length >= 6 && foldName(ev.fullName).includes(key) && c.toLowerCase() !== String(R.contract).toLowerCase())
+    return refuse(`<strong>This is not the ${esc(R.name)} deposit page.</strong> The contract at ${at} calls its event “${esc(ev.name)}”, but ${esc(R.name)} takes deposits only on its own page${isAddr(R.contract) ? `, at the deposit contract <span class="mono">${esc(R.contract)}</span>` : ""}. ${dont}`);
   if (block === null) return refuse(`Couldn't find when the deposit contract ${at} was created, so this page can't look up earlier deposits. Ask the organiser for the full link: it ends with <span class="mono">&amp;from=</span> and a block number.`);
   Object.assign(CONFIG, { contract: c, deployBlock: block, depositWei: String(ev.deposit), klerosPolicy: IPFS_PATH.test(ev.policy) ? ev.policy : "" });
   DEPOSIT = ev.deposit; DEP = eth(DEPOSIT, 18);
   document.title = `${ev.name} · Deposit`;
   $("ev-name").textContent = ev.name;
   $("ev-meta").innerHTML = `<span>Starts ${esc(when(ev.start))}</span><span>Deposit ${esc(DEP)}</span>`;
-  setNote(note, "warn", `<strong>Only use a link the organiser gave you.</strong> This page is for <strong>${esc(ev.name)}</strong>, deposit contract ${at}, organiser <span class="mono">${esc(ev.owner)}</span>.`);
+  setNote(note, "warn", `<strong>Only use a link the organiser gave you.</strong> This page is for <strong>${esc(ev.name)}</strong>, deposit contract ${at}, organiser <span class="mono">${esc(ev.owner)}</span>. It is a page for any kickback deposit contract: the event's name is whatever its creator gave it.`);
   return true;
 }
 // The event as its contract knows it. code: there is a contract at the address; ok: it answers every read a kickback
-// deposit contract answers, in the right shape (a contract without one of them refuses the read); kleros: its Dispute
-// Resolver and court are Kleros's own (the ones this page was built with). Throws if the network can't be reached.
+// deposit contract answers, in the right shape (a contract without one of them refuses the read); known: its code is
+// the kickback deposit contract's (CONFIG.runtime), so its answers can be trusted to be what that code does; kleros:
+// its Dispute Resolver and court are Kleros's own (the ones this page was built with). Throws if the network can't be
+// reached.
 async function readEvent(c) {
   const code = await rpc("eth_getCode", [c, "latest"]);
   if (!code || code === "0x") return { code: false };
@@ -605,7 +632,8 @@ async function readEvent(c) {
   const resolver = addrAt(r.disputeResolver, 0), court = addrAt(r.arbitrator, 0), lc = (a) => String(a).toLowerCase();
   // the name as the contract has it, without control or text-direction characters (they could disguise it), shortened
   const clean = name.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g, "").trim();
-  return { code: true, ok: true, name: (clean.length > MAX_NAME ? clean.slice(0, MAX_NAME - 1) + "…" : clean) || "Unnamed event",
+  const known = !CONFIG.runtime || (await codeFingerprint(code)) === CONFIG.runtime.sha256;
+  return { code: true, ok: true, known, fullName: clean, name: (clean.length > MAX_NAME ? clean.slice(0, MAX_NAME - 1) + "…" : clean) || "Unnamed event",
     deposit: big(r.depositAmount), start: Number(big(r.eventStart)), owner: addrAt(r.owner, 0), resolver, policy,
     kleros: lc(resolver) === lc(CONFIG.klerosResolver) && (!CONFIG.klerosArbitrator || lc(court) === lc(CONFIG.klerosArbitrator)) };
 }
@@ -733,18 +761,30 @@ async function afterWalletChange() {
 // (otherwise the hosts may have returned it since). It is forgotten once it failed, once the wallet replaced it (sped
 // up or cancelled: the history shows another deposit, or a later transaction used its nonce), or when the network
 // still doesn't know it 30 minutes on (dropped).
+// The Truth Pays page keeps it under "gt-last-tx" (records it already saved still count). The generic page shares its
+// website with that page and with other events' pages, so it keeps one record per contract under its own key and never
+// writes "gt-last-tx"; it still reads a "gt-last-tx" record made for the same contract.
 const SENT_KEY = "gt-last-tx";
+const sentKey = () => (CONFIG.generic ? "gt-event-tx:" + String(CONFIG.contract).toLowerCase() : SENT_KEY);
+const sameContract = (s) => !!s && String(s.contract || "").toLowerCase() === String(CONFIG.contract).toLowerCase();
 let sentHere = null; // what this tab sent, also when the browser can't save it
-function saveSentTx(rec) { sentHere = rec; try { localStorage.setItem(SENT_KEY, JSON.stringify(rec)); } catch {} }
+function saveSentTx(rec) { sentHere = rec; try { localStorage.setItem(sentKey(), JSON.stringify(rec)); } catch {} }
 function forgetSentTx(hash) {
   if (sentHere && sentHere.hash === hash) sentHere = null;
-  try { const s = JSON.parse(localStorage.getItem(SENT_KEY) || "null"); if (!s || s.hash === hash) localStorage.removeItem(SENT_KEY); } catch {}
+  try { const s = JSON.parse(localStorage.getItem(sentKey()) || "null"); if (!s || s.hash === hash) localStorage.removeItem(sentKey()); } catch {}
+}
+// the saved record of this page's contract, or null
+function savedSentTx() {
+  const read = (k) => { try { return JSON.parse(localStorage.getItem(k) || "null"); } catch { return null; } };
+  const own = read(sentKey());
+  if (sameContract(own)) return own;
+  const shared = CONFIG.generic ? read(SENT_KEY) : null;
+  return sameContract(shared) ? shared : null;
 }
 async function loadSentTx(acct) {
   const lc = (s) => String(s || "").toLowerCase(), p = state.prior;
-  const mine = (s) => !!s && s.contract === CONFIG.contract && isHash(s.hash) && lc(s.account) === lc(acct);
-  let saved = null;
-  try { saved = JSON.parse(localStorage.getItem(SENT_KEY) || "null"); } catch {}
+  const mine = (s) => sameContract(s) && isHash(s.hash) && lc(s.account) === lc(acct);
+  const saved = savedSentTx();
   const rec = mine(saved) ? saved : mine(sentHere) ? sentHere : null;
   let lastTx = null, pending = false;
   if (rec) {
@@ -985,10 +1025,13 @@ async function releasePayouts() {
   if (ok) loadContract();
 }
 
-// The Kleros contracts this deposit contract uses, as it reports them: the Dispute Resolver and KlerosLiquid.
+// The Kleros contracts this deposit contract uses, as it reports them: the Dispute Resolver and KlerosLiquid. The
+// generic page uses the ones it was built with, which loadEvent checked the contract names: never a later answer.
 let klerosAt = null;
 async function klerosContracts() {
   if (klerosAt) return klerosAt;
+  if (CONFIG.generic && isAddr(CONFIG.klerosResolver) && isAddr(CONFIG.klerosArbitrator))
+    return (klerosAt = { proxy: CONFIG.klerosResolver.toLowerCase(), court: CONFIG.klerosArbitrator.toLowerCase() });
   const [r, a] = await Promise.all([call(CONFIG.contract, SEL.disputeResolver), call(CONFIG.contract, SEL.arbitrator)]);
   return (klerosAt = { proxy: addrAt(r, 0), court: addrAt(a, 0) });
 }
@@ -1462,10 +1505,8 @@ if (!CONFIG.generic) $("luma-link").addEventListener("click", async (e) => {
 function start() {
   for (const el of document.querySelectorAll(".dep-amt")) el.textContent = DEP;
   if (CONFIG.klerosPolicy) $("policy-link").innerHTML = ` under the event's <a href="${esc(CONFIG.ipfsGateway + CONFIG.klerosPolicy)}" target="_blank" rel="noopener">attendance rules</a>`;
-  try {
-    const saved = JSON.parse(localStorage.getItem(SENT_KEY) || "null");
-    if (saved && saved.contract === CONFIG.contract && isAddr(saved.account)) $("lookup-addr").value = saved.account;
-  } catch {}
+  const saved = savedSentTx();
+  if (saved && isAddr(saved.account)) $("lookup-addr").value = saved.account;
   if (!window.ethereum && isAddr(CONFIG.contract)) {
     $("no-wallet").hidden = false;
     // some wallet apps' browsers add their wallet a moment after the page loads

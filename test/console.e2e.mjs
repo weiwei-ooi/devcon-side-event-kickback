@@ -681,6 +681,17 @@ check("the core runs in the browser with an import map: same constructor argumen
   JSON.stringify(inBrowser.rows) === JSON.stringify(csvParse(lumaCsv, { columns: true, skip_empty_lines: true, bom: true, relax_column_count: true })) && !coreErrs.length,
   JSON.stringify(inBrowser).slice(0, 300) + coreErrs.join("; "));
 await corePage.close();
+// a console started before its files were updated refuses the new page's code (here: /scripts/core.mjs answers 404):
+// the page says so and how to restart, instead of buttons that do nothing
+const deadPage = await browser.newPage();
+await deadPage.route(/\/scripts\/core\.mjs/, (route) => route.fulfill({ status: 404, body: "not found" }));
+await deadPage.goto(`http://localhost:${WEB}/`);
+await deadPage.waitForFunction(() => window.__pageFailed === true, null, { timeout: 15000 }).catch(() => {});
+const deadText = `${await deadPage.locator("#banner").innerText()} | ${await deadPage.locator("#log").innerText()}`;
+check("console code that did not load: the page says to restart the console",
+  /The console's code did not load, so its buttons do nothing\. Stop the console \(press Ctrl\+C in its terminal window\) and start it again with: npm run console\. Then reload this page\./.test(deadText) &&
+  (await deadPage.locator("#log .err").count()) === 1, deadText);
+await deadPage.close();
 check("every transaction carried the network's chainId", sent.length > 0 && sent.every((t) => t.chainId === "0x539"), sent.map((t) => t.chainId).join(","));
 check("no page errors", errs.length === 0, errs.join("; "));
 

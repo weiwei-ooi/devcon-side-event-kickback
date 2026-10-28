@@ -254,9 +254,17 @@ test("the generic case description is valid ERC-1497 once filled in: it names th
 test("the new-event form and the generic template refuse what would not work, with plain messages", () => {
   const refuse = (over, re) => assert.throws(() => core.newEventConfig({ ...FORM, ...over }, MAINNET, ORGANISER), re, JSON.stringify(over));
   refuse({ eventTitle: " " }, /^Error: Event title: please fill this in\.$/);
-  refuse({ eventWhere: "" }, /Where: please fill this in/);
+  refuse({ eventWhere: "" }, /Venue or city: please fill this in/);
   refuse({ eventName: "x".repeat(81) }, /Short name is too long \(81 characters, at most 80\)/);
   refuse({ hosts: "Ann\nBob" }, /Hosts: please keep it on one line/);
+  // characters that disguise a text (the generic guest page strips the same ones from a name): next line (C1),
+  // line and paragraph separators, zero-width characters, text-direction overrides and isolates, the byte-order mark
+  const ch = (code) => String.fromCharCode(code);
+  for (const code of [0x85, 0x9f, 0x2028, 0x2029, 0x200b, 0x200f, 0x202e, 0x202a, 0x2066, 0x2069, 0xfeff])
+    refuse({ eventWhere: `Caf${ch(0xe9)} ${ch(code)}nilreb` }, /Venue or city: please keep it on one line, without invisible or text-direction characters/);
+  refuse({ eventName: `OJN${ch(0x200b)}${ch(0x2066)}x${ch(0x2069)}` }, /Short name: please keep it on one line, without invisible/);
+  // NFC: "é" typed as e + combining accent is kept as the single character the preview shows
+  assert.equal(core.eventDetails({ ...FORM, eventWhere: `Cafe${ch(0x301)}, Berlin` }).eventWhere, `Caf${ch(0xe9)}, Berlin`);
   refuse({ eventTitle: "{{wallet}}" }, /Event title can't contain "\{\{" or "\}\}"/);
   refuse({ eventLink: "luma.com/x" }, /Registration link must be a web address starting with https:\/\//);
   refuse({ deposit: "" }, /Deposit: type an amount of ETH such as 0\.01/);
@@ -272,7 +280,7 @@ test("the new-event form and the generic template refuse what would not work, wi
   // the template itself: a generic placeholder with no value, and the live checks still apply
   const cfg = core.newEventConfig(FORM, MAINNET, ORGANISER);
   const values = core.templateValues(cfg, ORGANISER);
-  assert.throws(() => core.caseTemplate(GENERIC_TEXT, { ...values, eventWhere: "" }, { name: "the template" }), /the template names the event's "Where" \(\{\{eventWhere\}\}\), but it is empty/);
+  assert.throws(() => core.caseTemplate(GENERIC_TEXT, { ...values, eventWhere: "" }, { name: "the template" }), /the template names the event's "Venue or city" \(\{\{eventWhere\}\}\), but it is empty/);
   assert.throws(() => core.caseTemplate(GENERIC_TEXT, { ...values, owner: "" }), /names the organiser's wallet/);
   assert.throws(() => core.deployArgs({ ...cfg, kleros: { policyURI: "" } }, ORGANISER, GENERIC_TEXT), /kleros\.policyURI/);
   assert.throws(() => core.deployArgs(cfg, ORGANISER, undefined), /No case description template/);
@@ -289,6 +297,20 @@ test("describeWhen writes the date and time in the event's own timezone", () => 
   assert.equal(core.describeWhen("2027-03-12T22:00:00-05:00", "2027-03-13T02:30:00-05:00", "EST"), "Friday 12 March 2027, 22:00 to Saturday 13 March 2027, 02:30 EST");
   assert.throws(() => core.describeWhen("2027-03-12T19:00", "2027-03-12T23:00"), /with a timezone/);
   assert.throws(() => core.describeWhen("2027-03-12T19:00:00Z", "2027-03-12T18:00:00Z"), /must end after it starts/);
+  // a timezone name that contradicts the offset is refused: jurors would read another time than the contract keeps
+  // (a Berlin summer event created in winter with the winter offset, or India's IST typed with Tokyo's +09:00)
+  const summer = ["2027-06-12T19:00:00+01:00", "2027-06-12T23:00:00+01:00"];
+  for (const zone of ["CEST", "EST", "UTC", "GMT+2", "UTC+02:00", "Berlin time (CEST)"])
+    assert.throws(() => core.describeWhen(...summer, zone), new RegExp(`Timezone name: "${zone.match(/CEST|EST|UTC\+02:00|GMT\+2|UTC/)[0].replace("+", "\\+")}" is not UTC\\+01:00`), zone);
+  assert.throws(() => core.describeWhen("2027-06-12T19:00:00+09:00", "2027-06-12T23:00:00+09:00", "IST"), /Timezone name: "IST" is not UTC\+09:00/);
+  for (const zone of ["CET", "BST", "UTC+1", "GMT+01:00", "Berlin time", "West Africa Time"])
+    assert.match(core.describeWhen(...summer, zone), new RegExp(`19:00-23:00 ${zone.replace("+", "\\+").replace("(", "\\(").replace(")", "\\)")}$`), zone);
+  assert.equal(core.describeWhen("2027-06-12T19:00:00+02:00", "2027-06-12T23:00:00+02:00", "CEST"), "Saturday 12 June 2027, 19:00-23:00 CEST");
+  assert.equal(core.describeWhen("2027-06-12T19:00:00+05:30", "2027-06-12T23:00:00+05:30", "IST"), "Saturday 12 June 2027, 19:00-23:00 IST");
+  const ch = (code) => String.fromCharCode(code);
+  for (const code of [0x202e, 0x2028, 0x200b, 0x85]) assert.throws(() => core.describeWhen(...summer, `C${ch(code)}ET`), /Timezone name: please keep it on one line, without invisible/);
+  assert.throws(() => core.describeWhen(...summer, "x".repeat(41)), /Timezone name is too long/);
+  assert.throws(() => core.describeWhen(...summer, "{{wallet}}"), /Timezone name can't contain/);
 });
 
 // ---------------------------------------------------------------- the lists, on a local chain
@@ -340,6 +362,15 @@ test("checkGuests and buildPayout give exactly the lists the scripts write (a co
   await assert.rejects(core.readEvent(prov, await addr(eve), abi), (e) => e.code === "NO_KICKBACK_CONTRACT" && /no contract at/.test(e.message));
   await assert.rejects(core.readEvent(prov, liquid.target, abi), (e) => e.code === "NOT_KICKBACK" && /not a kickback deposit contract/.test(e.message));
   await assert.rejects(core.readEvent(prov, "0x1234", abi), (e) => e.code === "NOT_KICKBACK");
+  // its code is the compiled contract's, but for the constructor's values (zeroed): answers alone can be faked
+  const runtime = await lib.kickbackRuntime();
+  assert.ok(runtime.immutables.length > 0 && /^0x[0-9a-f]{64}$/.test(runtime.sha256));
+  assert.equal(core.codeFingerprint(await prov.getCode(kick.target), runtime.immutables), runtime.sha256);
+  assert.notEqual(core.codeFingerprint(await prov.getCode(kick.target)), runtime.sha256); // the immutables do differ from the compiled code's zeros
+  assert.deepEqual(await core.readEvent(prov, kick.target, abi, { runtime }), ev);
+  await assert.rejects(core.readEvent(prov, kick.target, abi, { runtime: { ...runtime, sha256: ethers.ZeroHash } }),
+    (e) => e.code === "UNKNOWN_CODE" && /answers like a kickback deposit contract, but its code is not/.test(e.message));
+  await assert.rejects(core.readEvent(prov, liquid.target, abi, { runtime }), (e) => e.code === "NOT_KICKBACK");
   const cfg = core.contractConfig(ev, network, deployBlock);
   assert.deepEqual(await core.depositsOverview({ prov, cfg, abi, scanFrom: deployBlock }), { deposits: [], returns: [], check: null }); // no deposit yet
   assert.equal(cfg.receiver, kick.target);
@@ -439,10 +470,26 @@ test("checkGuests and buildPayout give exactly the lists the scripts write (a co
     ["Cai", "registered", "0.015", "VERIFIED", false, true], ["Dan", "registered", "0.01", "VERIFIED", false, true],
     ["Eve", "unregistered", "0.005", "AMOUNT_TOO_LOW", false, false], ["Pat", "unregistered", "0.01", "VERIFIED", true, true],
     ["Sid", "unregistered", "0.01", "VERIFIED", true, true]]);
+  // whether a whole deposit of each payment is still held for a spot (staked, or not returned)
+  assert.deepEqual(o.deposits.map((d) => [nameOf.get(d.from), d.heldForSpot]),
+    [["Ana", true], ["Ben", false], ["Cai", true], ["Dan", true], ["Eve", false], ["Pat", true], ["Sid", true]]);
+  // Ben, refunded, pays again: the new deposit can be registered (the contract accepts a refunded wallet)
+  const benAgain = await pay(ben, "0.01");
+  o = await overview();
+  const benNew = o.deposits.find((d) => d.tx === benAgain);
+  assert.deepEqual([benNew.status, benNew.code, benNew.heldForSpot, benNew.canRegister, benNew.canRefund], ["refunded, paid again", "VERIFIED", true, true, false]);
 
   // after the event: Ana checked in on Luma, Cai is on the door list, Dan did not come
   await prov.send("evm_increaseTime", [3600 + 600]);
   await prov.send("evm_mine", []);
+  // a late payment: "unregistered" whatever happens to it, so only heldForSpot says whether it is still there
+  const gusLate = await pay(gus, "0.01");
+  const gusRow = async () => (await core.depositsOverview({ prov, cfg, abi, scanFrom: cfg.deployBlock })).deposits.find((d) => d.tx === gusLate);
+  let g = await gusRow();
+  assert.deepEqual([g.status, g.code, g.heldForSpot, g.canRegister], ["unregistered", "OUTSIDE_WINDOW", true, false]);
+  await (await kick.connect(owner).refund(await addr(gus), E("0.01"))).wait(); // returned with "Return a stray transfer"
+  g = await gusRow();
+  assert.deepEqual([g.status, g.held, g.heldForSpot], ["unregistered", 0n, false]);
   const afterCsv = [H, ...(await lines({ Ana: "2027-03-12T19:30:00.000Z", Hal: "2027-03-12T19:40:00.000Z" }))].join("\n");
   fs.writeFileSync(path.join(dir, "after.csv"), afterCsv);
   const doorCsv = "email,note\ncai@x.io,came late\nnobody@x.io,\n";
@@ -464,6 +511,11 @@ test("checkGuests and buildPayout give exactly the lists the scripts write (a co
   const lost = await core.buildPayout({ prov, cfg, abi, checkins: core.parseCsv(afterCsv), verified: r.verified.filter((v) => v.name !== "Dan"), claims: [] });
   assert.deepEqual(lost.unknown, [await addr(dan)]);
   assert.match(lost.unknownNote, /^1 registered stakers have no Luma registration that verified their wallet/);
+  // a door list with a wallet column alone (no Luma export, e.g. a registration page without a tx link question)
+  const doorOnly = await core.buildPayout({ prov, cfg, abi, checkins: null, extra: core.parseCsv(`wallet\n${await addr(ana)}\n${await addr(cai)}\n`), extraName: "door.csv" });
+  assert.deepEqual([doorOnly.plan.attendees, doorOnly.plan.share, doorOnly.plan.stakers], [[await addr(ana), await addr(cai)], E("0.015").toString(), 3]);
+  assert.deepEqual(doorOnly.unknown, [await addr(ana), await addr(cai), await addr(dan)]); // nobody verified: the caller decides about Dan
+  await assert.rejects(core.buildPayout({ prov, cfg, abi, checkins: null }), /Give the Luma export after the event, a door list, or both/);
 
   // the plan is what the contract accepts: post it, wait out the challenge window, pay
   await (await kick.connect(owner).postAttendance(p.plan.attendees, BigInt(p.plan.share))).wait();

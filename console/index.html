@@ -78,15 +78,15 @@
       <label>Short name (kept in the contract)<input id="neName" placeholder="Onchain Justice Night, Berlin 2027"></label>
       <label>Starts<input id="neStart" type="datetime-local"></label>
       <label>Ends at<input id="neEnd" type="time"></label>
-      <label>Timezone of the event<select id="neTz"></select></label>
+      <label>Timezone of the event (its UTC offset on that date)<select id="neTz"></select></label>
       <label>Timezone name (optional)<input id="neZone" placeholder="e.g. CET or IST"></label>
-      <label>Where<input id="neWhere" placeholder="Café Example, Main Street 1, Berlin"></label>
+      <label>Venue or city (as planned now; a city is enough if the venue isn't booked)<input id="neWhere" placeholder="Café Example, Main Street 1, Berlin"></label>
       <label>Hosts<input id="neHosts" placeholder="Kleros and friends"></label>
       <label>Registration page<input id="neLink" placeholder="https://luma.com/your-event"></label>
       <label>Deposit per guest, in ETH<input id="neDeposit" placeholder="0.01" inputmode="decimal"></label>
       <label>Settle within (days after the start)<input id="neDays" type="number" min="7" max="365" value="14"></label>
     </div>
-    <p>The attendance list can be posted from the start time. If it is never posted, each guest can take their own deposit back once the settlement time is over (at least 7 days after the start; 14 is usual). <b>Preview</b> shows what Kleros jurors would read in a case about one guest.</p>
+    <p>The attendance list can be posted from the start time. If it is never posted, each guest can take their own deposit back once the settlement time is over (at least 7 days after the start; 14 is usual). The timezone is the one of the event's city on the event's date (summer time included); the preview shows the start in UTC and on this computer. The venue is written into every Kleros case as the one planned when the contract is created; jurors are told that the venue announced to registered guests counts. <b>Preview</b> shows what Kleros jurors would read in a case about one guest.</p>
     <div class="row"><button class="secondary" id="previewEvent" disabled>Preview</button><button id="createEvent" disabled>Create event</button></div>
     <div id="nePreview" class="preview" hidden></div>
     <div id="neDone" class="result" hidden></div>
@@ -128,7 +128,14 @@
     <div class="row" style="margin-top:10px"><button id="registerSel" disabled>Register selected</button><button class="secondary" id="refundSel" disabled>Refund selected</button></div>
 
     <h2 style="margin-top:18px">Check the Luma guest list</h2>
-    <p>On Luma: Manage → Guests → Export CSV. Pick that file here. The page checks every pasted deposit link on the blockchain, then ticks the guests you approved (Register) and the paying guests you declined (Refund) in the table above, and lists who is still waiting for your decision and what needs a look. The file stays on this computer: nothing is uploaded.</p>
+    <p>On Luma: Manage → Guests → Export CSV. Pick that file here. The page checks every pasted deposit link on the blockchain, then ticks the guests you approved (Register) and the paying guests you declined (Refund) in the table above, and lists who is still waiting for your decision and what needs a look. The file stays on this computer: nothing is uploaded. The checks need the event's registration page set up like this:</p>
+    <ul id="lumaSetup" class="sub">
+      <li>Every registration needs your approval.</li>
+      <li>The ticket for guests who pay the deposit has "deposit", "commit" or "stake" in its name (for example "Committed spot (deposit)"); a free ticket has none of these words.</li>
+      <li>The ETH address question is turned on.</li>
+      <li>A question where guests paste the link of their deposit transaction, named like "Deposit tx link (etherscan.io)": its name must contain "tx", "transaction", "deposit … link" or "etherscan".</li>
+      <li>After the event, the export's check-in column (checked_in_at) and the guests' emails show who came.</li>
+    </ul>
     <div class="row"><input id="lumaFile" type="file" accept=".csv,text/csv" style="flex:1 1 220px"><button class="secondary" id="checkLuma" disabled>Check the Luma list</button></div>
     <div id="lumaResult" class="result"></div>
 
@@ -141,7 +148,7 @@
   <div class="card">
     <h2><span class="local-only">5.</span><span class="hosted-only">4.</span> Post the attendance list after the event</h2>
     <p class="local-only">Loads <code>out/payout-plan.json</code> (stakers who checked in). Publishes the list on-chain and opens a <b>1-day challenge window</b>: a staker left off the list can challenge through Kleros. The button stays locked until the event starts, and you must type POST to confirm. Only possible once.</p>
-    <p class="hosted-only">After the event, export the Luma guest list again (Manage → Guests → Export CSV): its check-in column shows who was scanned at the door. Pick it here and press <b>Build the attendance list</b>; a door list (a CSV with an email or wallet column) adds guests checked in by hand. <b>Post attendance list</b> then publishes it on-chain and opens a <b>1-day challenge window</b>: a staker left off the list can challenge through Kleros. The button stays locked until the event starts, and you must type POST to confirm. Only possible once.</p>
+    <p class="hosted-only">After the event, export the Luma guest list again (Manage → Guests → Export CSV): its check-in column shows who was scanned at the door. Pick it here and press <b>Build the attendance list</b>; a door list (a CSV with an email or wallet column) adds guests checked in by hand. A door list with a wallet column can also be used alone, for example if the registration page had no deposit link question. <b>Post attendance list</b> then publishes it on-chain and opens a <b>1-day challenge window</b>: a staker left off the list can challenge through Kleros. The button stays locked until the event starts, and you must type POST to confirm. Only possible once.</p>
     <div class="hosted-only" style="margin-bottom:10px">
       <div class="row"><label class="file">Luma export after the event<input id="checkinFile" type="file" accept=".csv,text/csv"></label><label class="file">Door list (optional)<input id="doorFile" type="file" accept=".csv,text/csv"></label></div>
       <div class="row" style="margin-top:6px"><button class="secondary" id="buildPlan" disabled>Build the attendance list</button></div>
@@ -208,7 +215,24 @@
 <!-- ethers and the shared core (scripts/core.mjs) as ES modules. The local console serves both;
      scripts/build-admin.mjs points these at the copies next to the hosted admin panel. -->
 <script type="importmap">{ "imports": { "ethers": "/node_modules/ethers/dist/ethers.min.js", "kickback/core": "/scripts/core.mjs" } }</script>
-<script type="module">
+<script>
+// If the page's code below can't load (a console server started before its files were updated doesn't serve the new
+// ones; a browser without import maps can't load them) or stops while starting, every button would do nothing and
+// nothing would say why. pageCodeFailed says it instead: the module calls it on error and sets __pageReady when done.
+function pageCodeFailed() {
+  if (window.__pageReady || window.__pageFailed) return;
+  window.__pageFailed = true;
+  var msg = document.body.classList.contains("hosted")
+    ? "This page's code did not load, so its buttons do nothing. Reload the page. If this message comes back, open the page in an up-to-date browser (Chrome, Firefox, Edge or Safari)."
+    : "The console's code did not load, so its buttons do nothing. Stop the console (press Ctrl+C in its terminal window) and start it again with: npm run console. Then reload this page.";
+  var b = document.getElementById("banner");
+  b.hidden = false; b.className = "banner live"; b.textContent = msg;
+  var d = document.createElement("div"); d.className = "err"; d.textContent = msg;
+  document.getElementById("log").prepend(d);
+}
+window.addEventListener("load", function () { setTimeout(pageCodeFailed, 1500); });
+</script>
+<script type="module" onerror="pageCodeFailed()">
 import { ethers } from "ethers";
 import * as core from "kickback/core";
 
@@ -224,7 +248,10 @@ const hosted = !!HOSTED;
 const T = (local, other) => (hosted ? other : local);
 // (in the hosted panel, the texts written for the local console and the scripts, worded for this page)
 const ui = (s) => (hosted ? String(s).replace(/\bin the console\b/g, "on this page").replace(/\bThe console\b/g, "This page").replace(/\bthe console\b/g, "this page")
-  .replace(/, or set another "rpcUrl" \(or a smaller "logChunk"\) in the config\./g, ".") : s);
+  .replace(/, or set another "rpcUrl" \(or a smaller "logChunk"\) in the config\./g, ".")
+  // the scripts' button names and settings, as this page has them
+  .replace(/'Refund declined guests'/g, "'Refund selected'").replace(/\bRefund declined guests\b/g, "Refund selected")
+  .replace(/\. Set config\.columns\.tx\b/g, ". Add a question named like \"Deposit tx link (etherscan.io)\" to the registration form") : s);
 const confirmBox = (m) => confirm(ui(m));
 const promptBox = (m) => prompt(ui(m));
 const $ = (id) => document.getElementById(id);
@@ -245,7 +272,7 @@ const HOSTED_READ_BUTTONS = ["loadDeposits", "checkLuma", "buildPlan"];
 const HOSTED_FORM_BUTTONS = ["previewEvent", "createEvent"];
 // hosted panel: what to do when a list is out of date (the local console asks Claude instead)
 const REDO = {
-  deposits: 'Press "Load deposits" again and check the ticked guests before you try again.',
+  deposits: 'Press "Load deposits" again (and "Check the Luma list" again if you used it), then check the ticked guests before you try again.',
   plan: "Build the attendance list again.",
   file: "Run the scripts' check again and load the new file.",
 };
@@ -704,7 +731,9 @@ async function refresh() {
     pairs.unshift(["Event", ev.eventName]);
     pairs.push(
       ["Deploy block", String(ev.deployBlock)],
-      ["Juror policy", ev.policyURI ? link(settings.kleros.ipfsGateway + ev.policyURI, ev.policyURI + " ↗") : "none", ev.policyURI ? "mono" : "warn"],
+      // a link only for an IPFS path: the contract keeps any text, and gateway + text could lead to another website
+      ["Juror policy", !ev.policyURI ? "none" : core.isIpfsPath(ev.policyURI) ? link(settings.kleros.ipfsGateway + ev.policyURI, ev.policyURI + " ↗")
+        : `${ev.policyURI} (not an IPFS path: jurors may not be able to open it)`, core.isIpfsPath(ev.policyURI) ? "mono" : "warn"],
       ["Kleros", ev.notKleros ? "⚠ not Kleros's own Dispute Resolver (see the warning above)" : `Kleros Court, through Kleros's Dispute Resolver ${short(ev.disputeResolver)}`, ev.notKleros ? "err" : ""],
       ["Guest deposit page", link(guestLink(), "link for guests ↗")],
       ["This page for this event", link(adminLink(), "admin link ↗")],
@@ -1517,19 +1546,32 @@ async function initHosted() {
   if ($("addr").value) await wrap(refresh)();
 }
 
-// The event's timezone as an offset; the computer's own is preselected.
-const TZ_OFFSETS = ["-12:00", "-11:00", "-10:00", "-09:30", "-09:00", "-08:00", "-07:00", "-06:00", "-05:00", "-04:00", "-03:30", "-03:00", "-02:00", "-01:00", "+00:00",
+// The event's timezone as an offset. Preselected: this computer's offset on the event's date (daylight saving time
+// included), recomputed when the date changes until an offset is picked by hand. Nothing is preselected when this
+// computer's offset is not in the list: the organiser picks one.
+const TZ_OFFSETS = ["-12:00", "-11:00", "-10:00", "-09:30", "-09:00", "-08:00", "-07:00", "-06:00", "-05:00", "-04:00", "-03:30", "-03:00", "-02:30", "-02:00", "-01:00", "+00:00",
   "+01:00", "+02:00", "+03:00", "+03:30", "+04:00", "+04:30", "+05:00", "+05:30", "+05:45", "+06:00", "+06:30", "+07:00", "+08:00", "+08:45", "+09:00", "+09:30",
-  "+10:00", "+10:30", "+11:00", "+12:00", "+12:45", "+13:00", "+14:00"];
+  "+10:00", "+10:30", "+11:00", "+12:00", "+12:45", "+13:00", "+13:45", "+14:00"];
+// this computer's UTC offset on the date and time of a datetime-local value (read as this computer's time), or today
+const offsetOn = (value) => {
+  const d = value ? new Date(value) : new Date();
+  return Number.isNaN(d.getTime()) ? null : core.offsetText(-d.getTimezoneOffset());
+};
 function timezones() {
-  const m = -new Date().getTimezoneOffset();
-  const here = `${m < 0 ? "-" : "+"}${String(Math.floor(Math.abs(m) / 60)).padStart(2, "0")}:${String(Math.abs(m) % 60).padStart(2, "0")}`;
-  for (const o of TZ_OFFSETS) {
-    const opt = document.createElement("option");
-    opt.value = o; opt.textContent = `UTC${o}${o === here ? " (this computer)" : ""}`;
-    $("neTz").append(opt);
-  }
-  $("neTz").value = TZ_OFFSETS.includes(here) ? here : "+00:00";
+  const sel = $("neTz");
+  const none = document.createElement("option");
+  none.value = ""; none.textContent = "Choose the event's timezone…";
+  sel.append(none);
+  for (const o of TZ_OFFSETS) { const opt = document.createElement("option"); opt.value = o; sel.append(opt); }
+  let picked = false;
+  sel.addEventListener("change", () => (picked = true));
+  const follow = () => {
+    const dated = !!$("neStart").value, here = offsetOn($("neStart").value);
+    for (const opt of sel.options) if (opt.value) opt.textContent = `UTC${opt.value}${opt.value === here ? (dated ? " (this computer, on that date)" : " (this computer)") : ""}`;
+    if (!picked) sel.value = TZ_OFFSETS.includes(here) ? here : "";
+  };
+  for (const e of ["input", "change"]) $("neStart").addEventListener(e, follow);
+  follow();
 }
 
 // ------------------------------------------------------------ opening an event
@@ -1550,10 +1592,12 @@ async function openEvent() {
   if (typed && !/^\d+$/.test(typed)) throw new Error("Deploy block: type the block number only (digits), or leave it empty.");
   forgetEvent();
   let e;
-  try { e = await core.readEvent(rp, a, artifact.abi); }
+  // the contract's code must be the kickback contract this page was built with: answers alone can be faked
+  try { e = await core.readEvent(rp, a, artifact.abi, { runtime: HOSTED?.runtime }); }
   catch (err) {
     if (err.code === "NO_KICKBACK_CONTRACT") throw new Error(`There is no contract at ${a} on ${chain.name}. Check the address (a contract on another network can't be used here).`);
     if (err.code === "NOT_KICKBACK") throw new Error(`The contract at ${a} is not a kickback deposit contract, so this page can't run it.`);
+    if (err.code === "UNKNOWN_CODE") throw new Error(`The contract at ${a} answers like a kickback deposit contract, but its code is not the one this page knows, so this page can't run it. Don't send ETH to it.`);
     throw err;
   }
   const from = typed ? Number(typed) : await findDeployBlock(a);
@@ -1621,6 +1665,7 @@ function eventForm() {
   const start = v("neStart").slice(0, 16), off = $("neTz").value, end = v("neEnd").slice(0, 5);
   if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(start)) throw new Error("Starts: pick the date and time the event starts.");
   if (!/^\d\d:\d\d$/.test(end)) throw new Error("Ends at: pick the time the event ends.");
+  if (!TZ_OFFSETS.includes(off)) throw new Error("Timezone of the event: choose the event's UTC offset on its date (the time in the event's city, daylight saving time included).");
   const startIso = `${start}:00${off}`;
   const t0 = Date.parse(startIso);
   if (!(t0 > Date.now())) throw new Error("Starts: the event must start in the future.");
@@ -1628,6 +1673,10 @@ function eventForm() {
   if (t1 <= t0) t1 += 86_400_000; // ends after midnight
   const days = Number(v("neDays"));
   if (!Number.isInteger(days) || days < 7 || days > 365) throw new Error("Settle within: a whole number of days, at least 7 (14 is usual) and at most 365.");
+  // a moment as the event's clock shows it, in UTC, and on this computer, so a wrong timezone shows before anything is sent
+  const offMin = (off[0] === "-" ? -1 : 1) * (Number(off.slice(1, 3)) * 60 + Number(off.slice(4, 6)));
+  const clock = (ms, o) => new Date(ms + o * 60_000).toISOString().slice(0, 16).replace("T", " ");
+  const at = (ms) => `${clock(ms, offMin)} (UTC${off}) = ${clock(ms, 0)} UTC = ${when(ms / 1000)} on this computer`;
   const form = {
     eventTitle: v("neTitle"), eventName: v("neName"), eventWhere: v("neWhere"), hosts: v("neHosts"), eventLink: v("neLink"),
     eventWhen: core.describeWhen(startIso, new Date(t1).toISOString(), v("neZone")),
@@ -1637,7 +1686,7 @@ function eventForm() {
   const name = "The case description";
   const args = core.deployArgs(cfgN, account, HOSTED.template.text, { name });
   const sample = JSON.parse(core.caseTemplate(HOSTED.template.text, core.templateValues(cfgN, account), { name }).sample);
-  return { form, cfg: cfgN, args, sample, days };
+  return { form, cfg: cfgN, args, sample, days, starts: at(t0), settles: at(t0 + days * 86_400_000) };
 }
 
 function renderPreview(f) {
@@ -1646,8 +1695,10 @@ function renderPreview(f) {
   const m = f.sample;
   const add = (h, text) => { const t = document.createElement("h3"); t.textContent = h; const d = document.createElement("div"); d.textContent = text; el.append(t, d); };
   const top = document.createElement("div"); top.className = "warn";
+  const starts = document.createElement("div");
+  starts.textContent = `The event starts (deposits close, the attendance list can be posted): ${f.starts}. Check that this is the start time in the event's city.`;
   top.textContent = "What Kleros jurors would read in a case about one guest (the wallet here is an example; each case names the challenged guest's own wallet):";
-  el.append(top);
+  el.append(starts, top);
   add("Title", m.title);
   add("Question", m.question);
   add("Answers", m.rulingOptions.titles.map((t, i) => `${i + 1}. ${t}: ${m.rulingOptions.descriptions?.[i] ?? ""}`).join("\n"));
@@ -1678,7 +1729,7 @@ async function ensurePolicyPinned() {
 async function createEvent() {
   const f = eventForm();
   renderPreview(f);
-  const [depositWei, name, , start, end, [resolver, , , , policyURI]] = f.args;
+  const [depositWei, name, , , , [resolver, , , , policyURI]] = f.args;
   // only Kleros's own Dispute Resolver (on Ethereum mainnet, the known address)
   const known = settings.knownKleros?.disputeResolver ?? HOSTED.kleros.disputeResolver;
   if (resolver.toLowerCase() !== known.toLowerCase()) throw new Error(`This page names ${resolver} as Kleros's Dispute Resolver, not the known address ${known}. Not created.`);
@@ -1689,7 +1740,7 @@ async function createEvent() {
     if (typed !== "NEW") { log("Not created: no new contract."); return; }
   }
   const k = HOSTED.kleros;
-  if (!confirmBox(`Create the deposit contract for this event on ${chain.name}?\n\nEvent: ${f.form.eventTitle}\nShort name (in the contract): ${name}\nWhen: ${f.form.eventWhen}\nWhere: ${f.form.eventWhere}\nHosts: ${f.form.hosts}\nRegistration page: ${f.form.eventLink}\nDeposit: ${ethers.formatEther(depositWei)} ETH per guest\nAttendance list from: ${when(start)} (the event start)\nSettle by: ${when(end)} (${f.days} days later; if no list by then, each guest can withdraw their own deposit)\nChallenges: Kleros Court, ${Number(k.court) === 0 ? "General Court" : "court " + k.court}, ${k.jurors} jurors (Kleros's Dispute Resolver ${short(resolver)})\nJuror policy: ${policyURI}\nOwner: ${account} (this wallet)\n\nNone of this can be changed after the contract is created.`)) return;
+  if (!confirmBox(`Create the deposit contract for this event on ${chain.name}?\n\nEvent: ${f.form.eventTitle}\nShort name (in the contract): ${name}\nWhen: ${f.form.eventWhen}\nWhere: ${f.form.eventWhere}\nHosts: ${f.form.hosts}\nRegistration page: ${f.form.eventLink}\nDeposit: ${ethers.formatEther(depositWei)} ETH per guest\nStarts (deposits close, the attendance list can be posted): ${f.starts}\nSettle by: ${f.settles} (${f.days} days later; if no list by then, each guest can withdraw their own deposit)\nChallenges: Kleros Court, ${Number(k.court) === 0 ? "General Court" : "court " + k.court}, ${k.jurors} jurors (Kleros's Dispute Resolver ${short(resolver)})\nJuror policy: ${policyURI}\nOwner: ${account} (this wallet)\n\nNone of this can be changed after the contract is created.`)) return;
   await ensurePolicyPinned();
   const dtx = await new ethers.ContractFactory(artifact.abi, artifact.bytecode).getDeployTransaction(...f.args);
   const at = Math.floor(Date.now() / 1000);
@@ -1703,6 +1754,10 @@ async function createEvent() {
   const h = document.createElement("h3"); h.textContent = `✅ "${name}" is ready: contract ${addr}, created in block ${r.blockNumber}.`;
   done.append(h, copyRow("Admin link: this page for your event (keep it)", adminLink(addr, r.blockNumber)),
     copyRow("Guest page link: give it to guests (e.g. on Luma) to send their deposit", guestLink(addr, r.blockNumber)));
+  // the registration page must be set up so the Luma checks of this page can read it
+  const setup = $("lumaSetup").cloneNode(true);
+  setup.removeAttribute("id");
+  done.append(heading("Now set up the registration page (Luma) like this, before guests register"), setup);
   showMyEvents();
   log(`✅ Event contract created at ${addr} (block ${r.blockNumber})\n${chain.explorer}/address/${addr}\nGive guests the guest page link; keep the admin link to come back to this event.`, "ok");
   await refresh();
@@ -1778,8 +1833,12 @@ const STATUS_TEXT = { unregistered: "received, not registered", registered: "reg
 const STATUS_NUM = { unregistered: 0, returned: 0, registered: 1, paid: 2, refunded: 3, "refunded, paid again": 3 };
 // What the core allows for this deposit now, or what the Luma check decided, as long as the deposit is
 // still in the same situation on-chain (a reload keeps the ticks of deposits that can still be ticked).
-const canReg = (r) => deposits.listOpen && r.status === "unregistered" && (r.canRegister || r.lumaRegister);
-const canRef = (r) => r.canRefund || (r.lumaRefund && (r.status === "unregistered" || (r.status === "registered" && deposits.listOpen)));
+// The contract counts money in total, not per wallet: registering or refunding a payer whose deposit was
+// returned (in full or in part) would be paid with another guest's deposit, so an unregistered payer's
+// deposit must still be held in full (heldForSpot), whatever its status text says. A refunded guest who
+// paid again can be registered (the contract accepts a refunded wallet), not refunded twice.
+const canReg = (r) => deposits.listOpen && r.heldForSpot && (r.status === "unregistered" || r.status === "refunded, paid again") && (r.canRegister || r.lumaRegister);
+const canRef = (r) => r.canRefund || (r.lumaRefund && ((r.status === "unregistered" && r.heldForSpot) || (r.status === "registered" && deposits.listOpen)));
 
 // Every deposit since the deploy block (core.depositsOverview): which ones can be registered or refunded.
 async function loadDeposits() {
@@ -1858,9 +1917,14 @@ function renderDeposits() {
   }
   const box = document.createElement("div"); box.className = "scroll"; box.append(t);
   el.append(box);
-  if (deposits.returns.length) {
+  // one instruction per deposit: a deposit the Luma check ticks for Register or Refund is not also listed to give
+  // back (the Luma check's own list, below it, has what is left to give back from those)
+  const decided = luma && luma.contract === deposits.contract
+    ? new Set([...luma.check.newStakers, ...luma.check.refunds].map((g) => core.depKey(g.tx, g.wallet))) : new Set();
+  const returns = deposits.returns.filter((x) => !decided.has(core.depKey(x.tx, x.wallet)));
+  if (returns.length) {
     el.append(heading("To give back with “Return a stray transfer” (Other actions)"),
-      table(["Amount", "To", "Why"], deposits.returns.map((x) => [`${x.to_return} ETH`, walletLink(x.wallet), ui(`${x.code}: ${x.note}`)])));
+      table(["Amount", "To", "Why"], returns.map((x) => [`${x.to_return} ETH`, walletLink(x.wallet), ui(`${x.code}: ${x.note}`)])));
   }
 }
 
@@ -1914,7 +1978,11 @@ async function checkLuma() {
     if (/tx-link column/.test(e.message)) throw new Error(`${f.name} has no deposit tx link column. Is it this event's Luma guest export? Its columns: ${Object.keys(rows[0]).join(", ")}.`);
     throw e;
   }
-  luma = { contract: ev.contract, file: f.name, check };
+  // a deposit ticket the check can recognise: without one, guests on the paid ticket who never pasted a link go unnoticed
+  const ticketCol = core.detectColumns(Object.keys(rows[0] ?? {}), evCfg.columns).ticket;
+  if (ticketCol && !rows.some((r) => /deposit|commit|stake/i.test(r[ticketCol] ?? "")))
+    log(`No ticket name in ${f.name} contains "deposit", "commit" or "stake", so a guest who chose the paid ticket but never pasted a deposit link is not listed anywhere. Rename the deposit ticket on Luma (see the setup list on this page) and check again.`, "warn");
+  luma = { contract: ev.contract, file: f.name, check, ticked: { register: 0, refund: 0 } };
   for (const r of deposits.rows) r.register = r.refund = r.lumaRegister = r.lumaRefund = false;
   const byKey = new Map(deposits.rows.map((r) => [r.key, r]));
   for (const [kind, list] of [["register", check.newStakers], ["refund", check.refunds]]) {
@@ -1923,12 +1991,15 @@ async function checkLuma() {
       if (!r) { log(`${g.name || g.email || g.wallet}: their deposit (${g.tx}) is not in the deposits table. Press "Load deposits" and check again.`, "warn"); continue; }
       r[kind === "register" ? "lumaRegister" : "lumaRefund"] = true;
       r[kind] = true;
+      // counted only when the table can really do it (the same rules as the boxes)
+      if ((kind === "register" ? canReg : canRef)(r)) luma.ticked[kind]++;
+      else log(`${g.name || g.email || g.wallet}: ${kind === "register" ? "approved" : "declined"} on Luma, but this page can't ${kind} them now (${STATUS_TEXT[r.status] ?? r.status}, still held: ${core.fmtEth(r.held)}). Check their row in the deposits table.`, "warn");
     }
   }
   lumaNames();
   renderDeposits();
   renderLuma();
-  log(`Luma list checked: ${check.newStakers.length} ticked to register, ${check.refunds.length} ticked to refund, ${check.toReview.length} waiting for your decision, ${check.issues.length} to look at.`, "ok");
+  log(`Luma list checked: ${luma.ticked.register} ticked to register, ${luma.ticked.refund} ticked to refund, ${check.toReview.length} waiting for your decision, ${check.issues.length} to look at.`, "ok");
 }
 
 function renderLuma() {
@@ -1940,8 +2011,8 @@ function renderLuma() {
   el.append(
     line(`From ${luma.file}:`),
     line(`✅ Deposits that check out: ${c.verified.length} (${c.held.length} still held by the contract)`),
-    line(`🆕 Approved on Luma, ticked to register: ${c.newStakers.length}`),
-    line(`↩️ Declined on Luma, ticked to refund: ${c.refunds.length}`),
+    line(`🆕 Approved on Luma, ticked to register: ${luma.ticked.register}${luma.ticked.register !== c.newStakers.length ? ` (of ${c.newStakers.length}: see the log)` : ""}`, luma.ticked.register !== c.newStakers.length ? "warn" : ""),
+    line(`↩️ Declined on Luma, ticked to refund: ${luma.ticked.refund}${luma.ticked.refund !== c.refunds.length ? ` (of ${c.refunds.length}: see the log)` : ""}`, luma.ticked.refund !== c.refunds.length ? "warn" : ""),
     line(`🕒 Waiting for your decision on Luma: ${c.toReview.length}`, c.toReview.length ? "warn" : ""),
     line(`💸 To give back with “Return a stray transfer”: ${c.returns.length}${c.returns.length ? ` (${sum(c.returns)})` : ""}`, c.returns.length ? "warn" : ""),
     line(`⚠️ Needs a look: ${c.issues.length}`, c.issues.length ? "warn" : ""),
@@ -1968,24 +2039,36 @@ function renderLuma() {
 
 // ------------------------------------------------------------ the attendance list
 // The same matching as build-payout.mjs (core.buildPayout): the Luma export after the event (its check-in
-// column), checked like the Luma list above, plus an optional door list.
+// column), checked like the Luma list above, plus an optional door list; or a door list with a wallet column alone.
 async function buildPlan() {
   await openEvent();
   const f = $("checkinFile").files?.[0];
-  if (!f) throw new Error("Choose the Luma guest list exported after the event first (its check-in column shows who came).");
-  const rows = await readCsvFile(f);
   const door = $("doorFile").files?.[0];
+  if (!f && !door) throw new Error("Choose the Luma guest list exported after the event first (its check-in column shows who came), or a door list with a wallet column.");
+  const rows = f ? await readCsvFile(f) : null;
   const extra = door ? await readCsvFile(door) : undefined;
   attendance = null; renderPlan();
-  log(`Checking ${rows.length} registration(s) from ${f.name} on the blockchain…`);
-  const check = await core.checkGuests({ prov: rp, cfg: evCfg, abi: artifact.abi, rows, scanFrom: ev.deployBlock, log: quiet });
+  let check = { verified: [], claims: [] };
+  if (rows) {
+    log(`Checking ${rows.length} registration(s) from ${f.name} on the blockchain…`);
+    try { check = await core.checkGuests({ prov: rp, cfg: evCfg, abi: artifact.abi, rows, scanFrom: ev.deployBlock, log: quiet }); }
+    catch (e) {
+      if (/tx-link column/.test(e.message))
+        throw new Error(`${f.name} has no deposit tx link column, so its check-ins can't be matched to the stakers' wallets. Use the export of a registration page that asked for the deposit link (a question named like "Deposit tx link (etherscan.io)"), or build the list from a door list alone: a CSV with a wallet column listing the stakers who came (with no Luma export chosen).`);
+      throw e;
+    }
+  }
   const res = await core.buildPayout({ prov: rp, cfg: evCfg, abi: artifact.abi, checkins: rows, verified: check.verified, claims: check.claims, extra, extraName: door?.name, title: ev.eventName, log: pageLog });
-  if (res.unknown.length) {
-    const typed = promptBox(`${res.unknownNote}.\n\nThey would count as no-shows and lose their deposit. Check each of them by hand first: if someone came, put their wallet on a door list (a CSV with a wallet column) and build the list again.\n\nType NOSHOW to count them as no-shows anyway.`);
-    if (typed !== "NOSHOW") { log("Attendance list not built: check the stakers the Luma list doesn't name first.", "warn"); return; }
+  // stakers nobody can match to a check-in (a door list may still name them by wallet)
+  const came = new Set(res.attendees.map((x) => x.wallet));
+  const unknown = res.unknown.filter((w) => !came.has(w));
+  if (unknown.length) {
+    const why = rows ? "have no Luma registration that verified their wallet, and no door list names their wallet" : "are not on the door list";
+    const typed = promptBox(`${unknown.length} registered stakers ${why}: ${unknown.join(", ")}.\n\nThey would count as no-shows and lose their deposit. Check each of them by hand first: if someone came, put their wallet on a door list (a CSV with a wallet column) and build the list again.\n\nType NOSHOW to count them as no-shows anyway.`);
+    if (typed !== "NOSHOW") { log("Attendance list not built: check the stakers the lists don't name first.", "warn"); return; }
   }
   if (!res.attendees.length) throw new Error("Nobody on the staker list checked in. Don't post this list: check the export (its check-in column) first.");
-  attendance = { contract: ev.contract, plan: res.plan, source: "luma", res, file: f.name };
+  attendance = { contract: ev.contract, plan: res.plan, source: rows ? "luma" : "door", res, file: [f?.name, door?.name].filter(Boolean).join(" + ") };
   renderPlan();
   log(`Attendance list built: ${res.attendees.length} of ${res.stakers.length} stakers checked in, ${core.fmtEth(res.share)} each. Check it below, then press "Post attendance list".`, "ok");
 }
@@ -2090,6 +2173,7 @@ for (const [id, fn] of Object.entries({ connect, deploy, refresh, register, refu
   registerSel, refundSel, registerFile, refundFile, loadDeposits, checkLuma, buildPlan, previewEvent, createEvent })) $(id).onclick = wrap(fn);
 $("planFile").onchange = wrap(loadPlanFile);
 window.ipfsPathOfLink = ipfsPathOfLink; // for the browser tests (this is a module: nothing else is global)
+window.__pageReady = true; // the code loaded and every button has its action (see pageCodeFailed)
 init().catch((e) => log(explain(e), "err"));
 </script>
 </body>

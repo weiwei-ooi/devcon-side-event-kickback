@@ -14,8 +14,14 @@
 // attendance list from the check-in export (locked until the event starts, POST typed; a payout-plan.json
 // for another contract or out of date refused) → a guest left off challenges and the organiser disputes it
 // (its case description saved on IPFS first) → payouts, one share set aside for the Kleros case → the page
-// fits a phone's width. Never "Claude", never "console" on the page, its dialogs or its log; every
-// transaction carries the chainId and at most 2^24 gas; nothing is fetched from outside this computer.
+// fits a phone's width. Also: the event's timezone (none preselected that isn't this computer's on the
+// event's date; a timezone name that contradicts the offset refused; the start shown in UTC), the
+// Luma setup the checks need, a refunded guest who paid again registered from the table, a late payer's
+// Luma tick that does not survive a return, a check-in export without a deposit link column, a door
+// list alone, a contract with other code refused, a juror policy that is not an IPFS path not linked,
+// and a page whose code did not load says so. Never "Claude", never "console" on the page, its dialogs
+// or its log; every transaction carries the chainId and at most 2^24 gas; nothing is fetched from
+// outside this computer.
 // Needs Playwright with Chromium (see test/site.e2e.mjs).
 //   node test/admin.e2e.mjs
 import fs from "node:fs";
@@ -88,6 +94,8 @@ check("the page's settings are baked in: network, Kleros, generic policy and tem
 check("import map points at the copies next to the page; body in hosted mode; title",
   builtHtml.includes('"ethers": "./ethers.min.js"') && builtHtml.includes('"kickback/core": "./core.mjs"') && !builtHtml.includes("/node_modules/") &&
   builtHtml.includes('<body class="hosted">') && builtHtml.includes("<title>Kickback · Admin panel</title>"));
+check("the kickback contract's runtime code is baked in (its fingerprint, immutable values left out)",
+  /^0x[0-9a-f]{64}$/.test(H0?.runtime?.sha256 ?? "") && H0.runtime.immutables.length > 0 && H0.runtime.immutables.every(([s, l]) => Number.isInteger(s) && l === 32), JSON.stringify(H0?.runtime));
 check("the copies are the repo's: core, ethers ESM build, compiled contract",
   fs.readFileSync(path.join(adminDir, "core.mjs"), "utf8") === fs.readFileSync(path.join(proj, "scripts/core.mjs"), "utf8") &&
   fs.readFileSync(path.join(adminDir, "ethers.min.js"), "utf8") === fs.readFileSync(path.join(proj, "node_modules/ethers/dist/ethers.min.js"), "utf8") &&
@@ -107,6 +115,12 @@ const badCfg = path.join(tmp, "bad.json");
 fs.writeFileSync(badCfg, JSON.stringify({ chain: "ethereum", deposit: "0.01", receiver: config.receiver, kleros: { disputeResolver: proxy.target } }));
 b = build(BUILD, "--out", path.join(tmp, "bad"), "--config", badCfg);
 check("on mainnet, a Dispute Resolver that is not Kleros's is refused", b.status !== 0 && /not Kleros's own 0x4b89e798b10478a839ea0abcf86c4b94a3c782a4/i.test(b.stderr) && !fs.existsSync(path.join(tmp, "bad")), b.stderr);
+// never on the website of a baked guest page (like the live Truth Pays page): links there look like that event's own
+const bakedSite = path.join(tmp, "baked-site");
+fs.mkdirSync(bakedSite);
+fs.writeFileSync(path.join(bakedSite, "index.html"), `<script>/*CONFIG*/ const CONFIG = ${JSON.stringify({ contract: proxy.target, chainId: 1337 })}; /*END CONFIG*/</script>`);
+b = build(BUILD, "--out", path.join(bakedSite, "admin"), "--config", cfgFile);
+check("refused inside the website of a baked guest page", b.status !== 0 && /The admin panel must live on another website/.test(b.stderr) && !fs.existsSync(path.join(bakedSite, "admin")), b.stderr);
 // a checkout without the compiled contract (build/)
 const bare = path.join(tmp, "bare");
 for (const d of ["scripts", "console", "docs"]) fs.cpSync(path.join(proj, d), path.join(bare, d), { recursive: true });
@@ -270,11 +284,22 @@ await page.fill("#neLink", FORM.eventLink);
 await page.fill("#neDays", "6");
 check("settling in less than 7 days is refused", await click("previewEvent", /Settle within: a whole number of days, at least 7/), await logText());
 await page.fill("#neDays", "14");
+// the timezone: chosen on purpose, and a timezone name must not contradict it (jurors read both)
+await page.selectOption("#neTz", "");
+check("no timezone chosen: refused", await click("previewEvent", /Timezone of the event: choose the event's UTC offset on its date/), await logText());
+await page.selectOption("#neTz", "+00:00");
+await page.fill("#neZone", "CEST");
+check("a timezone name that is not the chosen offset is refused", await click("previewEvent", /Timezone name: "CEST" is not UTC\+00:00, the timezone of the event on that date/), await logText());
+await page.fill("#neZone", "UTC");
 check("preview",await click("previewEvent", /Preview ready/), await logText());
 const preview = await txt("nePreview");
 check("preview: what jurors would read, with the event, an example wallet and the juror policy",
   preview.includes(FORM.eventTitle) && preview.includes(FORM.eventWhere) && preview.includes(FORM.hosts) && preview.includes("0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed") &&
   /Attended/.test(preview) && /Did not attend/.test(preview) && preview.includes(POLICY), preview);
+const startsAt = `${startLocal.replace("T", " ")} (UTC+00:00) = ${startLocal.replace("T", " ")} UTC = `;
+check("preview: the start in the event's timezone, in UTC and on this computer", preview.includes(`The event starts (deposits close, the attendance list can be posted): ${startsAt}`), preview);
+check("the venue is what was planned when the contract was created; the announced venue counts",
+  preview.includes(`given when the deposit contract was created as "${FORM.eventWhere}"`) && /the venue announced to registered guests/.test(preview), preview);
 // the juror policy saved somewhere else than its computed address: refused, nothing sent
 wrapPolicy = true;
 n0 = await nonce();
@@ -283,6 +308,7 @@ const confirmMsg = lastDialog();
 check("one confirmation with everything that can't be changed",
   /Create the deposit contract for this event on Local test chain\?/.test(confirmMsg) && confirmMsg.includes(`Event: ${FORM.eventTitle}`) && confirmMsg.includes(`Short name (in the contract): ${FORM.eventName}`) &&
   /Deposit: 0\.01 ETH per guest/.test(confirmMsg) && /Settle by: .+ \(14 days later/.test(confirmMsg) && /Kleros Court, General Court, 3 jurors/.test(confirmMsg) &&
+  confirmMsg.includes(`Starts (deposits close, the attendance list can be posted): ${startsAt}`) &&
   confirmMsg.includes(`Juror policy: ${POLICY}`) && confirmMsg.includes(`Owner: ${me} (this wallet)`) && /None of this can be changed/.test(confirmMsg), confirmMsg);
 wrapPolicy = false;
 check("create event", await click("createEvent", /Event contract created at 0x[0-9a-fA-F]{40} \(block \d+\)/), await logText());
@@ -313,6 +339,12 @@ const links = await page.$$eval("#neDone input", (els) => els.map((e) => e.value
 check("admin link and guest link with the contract and its block, ready to copy",
   /Admin link/.test(await txt("neDone")) && /Guest page link/.test(await txt("neDone")) &&
   JSON.stringify(links) === JSON.stringify([`${ADMIN}?contract=${kAddr}&from=${kBlock}`, `http://localhost:${WEB}/event/?contract=${kAddr}&from=${kBlock}`]), links.join(" | "));
+const doneText = await txt("neDone");
+check("then how to set up the registration page so this page's Luma checks can read it",
+  /Now set up the registration page \(Luma\) like this, before guests register/.test(doneText) && /Every registration needs your approval/.test(doneText) &&
+  doneText.includes('has "deposit", "commit" or "stake" in its name') && /The ETH address question is turned on/.test(doneText) &&
+  doneText.includes('named like "Deposit tx link (etherscan.io)"') && /checked_in_at/.test(doneText), doneText);
+check("the new contract's code is the one baked into the page", core.codeFingerprint(await prov.getCode(kAddr), H0.runtime.immutables) === H0.runtime.sha256);
 check("the event is open: status, title, link in the address bar",
   /Event\s*Admin E2E Night/.test(await txt("status")) && (await txt("status")).includes(`${me} (you)`) && (await page.title()) === "Kickback · Admin panel · Admin E2E Night" &&
   page.url() === `${ADMIN}?contract=${kAddr}&from=${kBlock}` && /Event: Admin E2E Night/.test(await txt("eventTitle")), await txt("status"));
@@ -398,6 +430,33 @@ await page.setInputFiles("#refundsFile", jsonFile("refunds.json", gusList(await 
 let gusBal = await bal(A.gus);
 check("refunds.json from the scripts", await click("refundFile", /Refunded 1 declined guests/) && (await bal(A.gus)) - gusBal === E("0.01") && Number(await kick.status(A.gus)) === 3, await logText());
 
+// Cai, refunded earlier, pays again and is approved: the contract accepts a refunded wallet, so the table registers them
+const rowTx = (h) => page.evaluate((h) => {
+  const tr = document.querySelector(`#depTable tr[data-tx="${h}"]`);
+  if (!tr) return null;
+  const r = tr.querySelector("input.register"), f = tr.querySelector("input.refund");
+  return { text: tr.innerText, reg: !r.disabled, regOn: r.checked, ref: !f.disabled, refOn: f.checked };
+}, h);
+// the wallets in the deposits table's "To give back" list
+const giveBack = () => page.evaluate(() => {
+  const h = [...document.querySelectorAll("#depTable h3")].find((x) => /To give back/.test(x.textContent));
+  return h?.nextElementSibling ? [...h.nextElementSibling.querySelectorAll("a")].map((a) => a.title.toLowerCase()) : [];
+});
+tx.cai2 = await pay("cai", "0.01");
+await clearLog();
+check("load deposits (Cai paid again)", await click("loadDeposits", /8 deposit\(s\) read/), await logText());
+const cai2 = await rowTx(tx.cai2);
+check("a refunded guest who paid again: Register can be ticked, Refund can't", cai2 && /refunded, then paid again/.test(cai2.text) && cai2.reg && !cai2.ref, JSON.stringify(cai2));
+await page.setInputFiles("#lumaFile", csvFile("luma-cai.csv", [HEAD, `Cai,cai@x.io,${TICKET},approved,,${A.cai},https://etherscan.io/tx/${tx.cai2}`].join("\r\n") + "\r\n"));
+check("approved on Luma: ticked to register", await click("checkLuma", /Luma list checked: 1 ticked to register, 0 ticked to refund/) && (await rowTx(tx.cai2))?.regOn, await logText());
+await clearLog();
+check("register selected (Cai, paid again)", await click("registerSel", /Registered 1 stakers/) && Number(await kick.status(A.cai)) === 1, await logText());
+// and removed again ("Remove and refund"), so the rest of this test has the same stakers
+await page.evaluate(() => document.querySelectorAll("details").forEach((d) => (d.open = true)));
+await page.fill("#rmAddr", A.cai);
+caiBal = await bal(A.cai);
+check("remove and refund one registered guest", await click("removeOne", new RegExp(`Refunded ${A.cai}`)) && Number(await kick.status(A.cai)) === 3 && (await bal(A.cai)) - caiBal === E("0.01"), await logText());
+
 // ---------------------------------------------------------------- another wallet, links
 current = W.stranger;
 await open(`?contract=${kAddr}&from=${kBlock}`);
@@ -437,6 +496,33 @@ const kw = await txt("kwarn");
 check("another Dispute Resolver is flagged in big letters", await page.isVisible("#kwarn") && /WARNING: this contract does not use Kleros/.test(kw) && kw.includes(otherProxy.target) && /Do not send ETH to it/.test(kw), kw);
 check("and in the status", /not Kleros's own Dispute Resolver/.test(await txt("status")), await txt("status"));
 
+// a copy of the kickback contract with other code (one comment more in its source): it answers every read alike, but
+// its code is not the one the page knows (answers can be faked, the code can't)
+const solc = req("solc");
+const copyInput = JSON.parse(fs.readFileSync(path.join(proj, "build", "TruthPaysKickback.standard-input.json"), "utf8"));
+copyInput.sources["TruthPaysKickback.sol"].content += "\n// a copy\n";
+copyInput.settings.outputSelection = { "*": { TruthPaysKickback: ["evm.bytecode.object"] } };
+const copyBytecode = "0x" + JSON.parse(solc.compile(JSON.stringify(copyInput))).contracts["TruthPaysKickback.sol"].TruthPaysKickback.evm.bytecode.object;
+const argsAt = (eventName) => core.deployArgs(core.newEventConfig({ ...FORM, eventName, eventWhen: "soon", deposit: "0.01", eventStart: new Date(t1 * 1000).toISOString() }, network, me), me, genericTemplate);
+const copy = await (await new ethers.ContractFactory(abi, copyBytecode, owner).deploy(...argsAt("Copied Night"))).waitForDeployment();
+const copyBlock = (await copy.deploymentTransaction().wait()).blockNumber;
+check("the copy answers like a kickback contract", (await copy.eventName()) === "Copied Night" && copyBytecode !== load("TruthPaysKickback").bytecode);
+await clearLog();
+await open(`?contract=${copy.target}&from=${copyBlock}`);
+check("a contract with other code is refused, with what to do", await waitLog(new RegExp(`The contract at ${copy.target} answers like a kickback deposit contract, but its code is not the one this page knows, so this page can't run it\\. Don't send ETH to it`)) &&
+  (await txt("status")) === "" && await page.isDisabled("#loadDeposits"), await logText());
+// a juror policy that is not an IPFS path: shown as text, never as a link (gateway + "@host/…" is another website)
+const oddArgs = argsAt("Odd Policy");
+oddArgs[5] = [...oddArgs[5]];
+oddArgs[5][4] = "@evil.example/attendance-policy";
+const odd = await (await new ethers.ContractFactory(abi, load("TruthPaysKickback").bytecode, owner).deploy(...oddArgs)).waitForDeployment();
+const oddBlock = (await odd.deploymentTransaction().wait()).blockNumber;
+await open(`?contract=${odd.target}&from=${oddBlock}`);
+const oddStatus = await txt("status");
+check("a juror policy that is not an IPFS path is not linked, and is flagged",
+  /Event\s*Odd Policy/.test(oddStatus) && oddStatus.includes("@evil.example/attendance-policy (not an IPFS path: jurors may not be able to open it)") &&
+  (await page.locator('a[href*="evil.example"]').count()) === 0, oddStatus);
+
 // ---------------------------------------------------------------- after the event: the attendance list, payouts
 await open(`?contract=${kAddr}&from=${kBlock}`);
 await connect();
@@ -446,6 +532,23 @@ const planOf = (d) => jsonFile("payout-plan.json", { contract: kAddr, chainId: 1
 await page.setInputFiles("#planFile", planOf({ contract: liquid.target }));
 check("a payout-plan.json for another contract is refused", await waitLog(/payout-plan\.json was made for another contract or network/), await logText());
 await idle();
+// an export without a deposit tx link column: said in plain words, with what to do instead
+await page.setInputFiles("#checkinFile", csvFile("no-link.csv", `name,email,ticket_name,approval_status,checked_in_at,eth_address\r\nAna,ana@x.io,${TICKET},approved,2026-11-04T18:30:00.000Z,${A.ana}\r\n`));
+await clearLog();
+check("a check-in export without a deposit tx link column is explained",
+  await click("buildPlan", /no-link\.csv has no deposit tx link column, so its check-ins can't be matched to the stakers' wallets\. Use the export of a registration page that asked for the deposit link/) &&
+  /or build the list from a door list alone/.test(await logText()) && !/config\.columns/.test(await logText()), await logText());
+// a door list alone (wallets): only the stakers it doesn't name are asked about
+await page.setInputFiles("#checkinFile", []);
+await page.setInputFiles("#doorFile", csvFile("door.csv", `name,wallet\r\nAna,${A.ana}\r\nEve,${A.eve}\r\n`));
+const nDialogs = dialogs.length;
+check("a door list alone builds the attendance list", await click("buildPlan", /Attendance list built: 2 of 3 stakers checked in, 0\.015 ETH each/), await logText());
+const noShowAsk = dialogs.slice(nDialogs).join("\n");
+check("it asks about the staker the door list doesn't name, and only them",
+  /1 registered stakers are not on the door list/.test(noShowAsk) && noShowAsk.includes(A.ben) && !noShowAsk.includes(A.ana) && !noShowAsk.includes(A.eve) && /Type NOSHOW/.test(noShowAsk), noShowAsk);
+check("the summary names the door list", (await txt("planResult")).includes("door.csv"), await txt("planResult"));
+await page.setInputFiles("#doorFile", []);
+await clearLog();
 const after = lumaCsv({ Ana: "2026-11-04T18:30:00.000Z", Eve: "2026-11-04T18:45:00.000Z", Hal: "2026-11-04T19:00:00.000Z" });
 await page.setInputFiles("#checkinFile", csvFile("luma-after.csv", after));
 check("build the attendance list", await click("buildPlan", /Attendance list built: 2 of 3 stakers checked in, 0\.015 ETH each/), await logText());
@@ -458,6 +561,32 @@ n0 = await nonce();
 await skew(t0 - (await prov.getBlock("latest")).timestamp + 60); // the event has started
 await page.click("#refresh"); await idle();
 check("unlocked once the event started", !(await page.isDisabled("#postList")), await page.innerText("#postList"));
+// Lou pays late and is declined on Luma (ticked to refund); the deposit is then given back with "Return a stray
+// transfer" from elsewhere. The ticked list is out of date, and after "Load deposits" the Luma tick is gone: the
+// contract no longer holds that deposit, so a refund would be paid with someone else's.
+const lou = new ethers.Wallet("0x" + (99).toString(16).padStart(64, "0"), prov);
+await (await W.gus.sendTransaction({ to: lou.address, value: E("0.1") })).wait();
+tx.lou = (await (await lou.sendTransaction({ to: kAddr, value: E("0.01") })).wait()).hash;
+await clearLog();
+check("load deposits (a late payment)", await click("loadDeposits", /9 deposit\(s\) read/), await logText());
+const louCsv = ["name,email,ticket_name,approval_status,checked_in_at,eth_address,Deposit tx link (etherscan.io)",
+  `Lou,lou@x.io,Kickback spot (0.01 ETH),declined,,${lou.address},https://etherscan.io/tx/${tx.lou}`].join("\r\n") + "\r\n";
+await page.setInputFiles("#lumaFile", csvFile("lou.csv", louCsv));
+check("declined late payer ticked to refund", await click("checkLuma", /Luma list checked: 0 ticked to register, 1 ticked to refund/) && (await rowTx(tx.lou))?.refOn, await logText());
+check("a ticket name without \"deposit\", \"commit\" or \"stake\" is warned about",
+  /No ticket name in lou\.csv contains "deposit", "commit" or "stake", so a guest who chose the paid ticket but never pasted a deposit link is not listed anywhere/.test(await logText()), await logText());
+check("ticked to refund, so not also listed to give back", !(await giveBack()).includes(lou.address.toLowerCase()), (await giveBack()).join(","));
+await (await kick.refund(lou.address, E("0.01"))).wait(); // "Return a stray transfer", from elsewhere
+const louBal = await bal(lou.address);
+n0 = await nonce();
+check("the ticked list made before that return is refused",
+  await click("refundSel", /The ticked list is out of date: the contract registered, refunded or returned money since it was made\. Press "Load deposits" again \(and "Check the Luma list" again if you used it\)/) && (await nonce()) === n0, await logText());
+await clearLog();
+check("load deposits again", await click("loadDeposits", /9 deposit\(s\) read/), await logText());
+const louRow = await rowTx(tx.lou);
+check("the Luma tick did not survive: the deposit is no longer held, Refund can't be ticked", louRow && !louRow.ref && !louRow.refOn && /received, not registered/.test(louRow.text), JSON.stringify(louRow));
+check("nothing to refund: no transaction, Lou neither refunded nor paid twice",
+  await click("refundSel", /Tick Refund for the guests first/) && (await nonce()) === n0 && Number(await kick.status(lou.address)) === 0 && (await bal(lou.address)) === louBal, await logText());
 await page.setInputFiles("#planFile", planOf({ stakers: 2 }));
 check("a payout-plan.json file can be loaded", await waitLog(/Loaded payout-plan\.json: 2 attendee\(s\)/), await logText());
 await idle();
@@ -491,7 +620,8 @@ check("Ana and Eve paid the same share, Ben's share set aside for the Kleros cas
 await noClaude("paid out");
 
 // on a phone the page fits the screen's width (wide tables scroll inside their own box)
-check("load deposits after the payout", await click("loadDeposits", /7 deposit\(s\) read/), await logText());
+await clearLog();
+check("load deposits after the payout", await click("loadDeposits", /9 deposit\(s\) read/), await logText());
 check("paid out shows in the table", /paid out/.test((await rowOf(A.ana)).text) && !(await rowOf(A.ana)).ref && !(await rowOf(A.ana)).reg, (await rowOf(A.ana))?.text);
 await page.setViewportSize({ width: 375, height: 800 });
 await page.waitForTimeout(300);
@@ -500,6 +630,59 @@ const wide = await page.evaluate(() => [...document.querySelectorAll("main *")]
   .filter((e) => e.offsetParent !== null && !e.closest(".scroll") && e.getBoundingClientRect().right > document.documentElement.clientWidth + 1)
   .slice(0, 5).map((e) => `${e.tagName}#${e.id}.${e.className}: ${e.textContent.slice(0, 50)}`).join(" | "));
 check("fits a phone's width: no sideways scrolling of the page", overflow <= 0, `${overflow}px too wide: ${wide}`);
+
+// the event's timezone on a computer elsewhere: its offset on the event's date (summer time included) is preselected,
+// until the organiser picks one by hand
+const localOnly = (p) => p.route("**/*", (route) => {
+  const u = new URL(route.request().url());
+  if ((u.hostname === "localhost" && u.port === String(WEB)) || (u.hostname === "127.0.0.1" && u.port === String(RPC))) return route.continue();
+  outside.push(u.href);
+  return route.abort();
+});
+const zoneOf = (p) => p.evaluate(() => { const s = document.getElementById("neTz"); return { value: s.value, label: s.selectedOptions[0]?.textContent ?? "" }; });
+const berlin = await browser.newContext({ timezoneId: "Europe/Berlin" });
+const bp = await berlin.newPage();
+bp.on("pageerror", (e) => errs.push(e.message));
+await localOnly(bp);
+await bp.goto(ADMIN);
+await bp.waitForFunction(() => document.getElementById("neTz").options.length > 1);
+await bp.fill("#neStart", "2027-07-15T19:00");
+let z = await zoneOf(bp);
+check("Berlin in July: UTC+02:00 preselected, named as this computer's on that date", z.value === "+02:00" && z.label === "UTC+02:00 (this computer, on that date)", JSON.stringify(z));
+await bp.fill("#neStart", "2027-12-10T19:00");
+z = await zoneOf(bp);
+check("Berlin in December: UTC+01:00", z.value === "+01:00" && z.label === "UTC+01:00 (this computer, on that date)", JSON.stringify(z));
+await bp.selectOption("#neTz", "+05:30");
+await bp.fill("#neStart", "2027-07-15T19:00");
+z = await zoneOf(bp);
+check("an offset picked by hand is kept when the date changes", z.value === "+05:30", JSON.stringify(z));
+await berlin.close();
+const stJohns = await browser.newContext({ timezoneId: "America/St_Johns" });
+const sp = await stJohns.newPage();
+await localOnly(sp);
+await sp.goto(ADMIN);
+await sp.waitForFunction(() => document.getElementById("neTz").options.length > 1);
+await sp.fill("#neStart", "2027-07-15T19:00");
+z = await zoneOf(sp);
+check("Newfoundland in July: UTC-02:30 is in the list and preselected", z.value === "-02:30", JSON.stringify(z));
+await stJohns.close();
+
+// the page's code did not load (here: core.mjs missing on the host): the page says so, instead of buttons that do nothing
+const dead = await browser.newPage();
+await dead.route("**/*", (route) => {
+  const u = new URL(route.request().url());
+  if (u.hostname === "localhost" && u.port === String(WEB)) return u.pathname.endsWith("/core.mjs") ? route.fulfill({ status: 404, body: "not found" }) : route.continue();
+  if (u.hostname === "127.0.0.1" && u.port === String(RPC)) return route.continue();
+  outside.push(u.href);
+  return route.abort();
+});
+await dead.goto(ADMIN);
+await dead.waitForFunction(() => window.__pageFailed === true, null, { timeout: 15000 }).catch(() => {});
+const deadBanner = await dead.locator("#banner").innerText(), deadLog = await dead.locator("#log").innerText();
+check("code that did not load: the banner and the log say so, and what to do",
+  /This page's code did not load, so its buttons do nothing\. Reload the page/.test(deadBanner) && /This page's code did not load/.test(deadLog) && !/claude|console/i.test(deadBanner + deadLog),
+  deadBanner + " | " + deadLog);
+await dead.close();
 
 // ---------------------------------------------------------------- everywhere
 check("no dialog or log line mentions Claude or the console", !dialogs.some((d) => /claude|console/i.test(d)) && !/claude|console/i.test(await logText()),

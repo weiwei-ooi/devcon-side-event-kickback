@@ -13,11 +13,13 @@
 //   kickback.json   the compiled contract (ABI and bytecode), to read events and create new ones
 // --guest-page is where the guest deposit page lives, relative to the panel (default ../event/):
 // the panel links guests to <guest page>?contract=…&from=…
+// Never publish the panel (or the generic guest page) on the website of a baked guest page such as
+// the live Truth Pays page: the build refuses an --out inside a folder that holds one.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ethers } from "ethers";
-import { args, loadConfig, klerosConfig, KLEROS, GENERIC_POLICY, GENERIC_METAEVIDENCE_TEMPLATE, ipfsPathOf, caseTemplate, EVENT_FIELDS, isContractCode } from "./lib.mjs";
+import { args, loadConfig, klerosConfig, KLEROS, GENERIC_POLICY, GENERIC_METAEVIDENCE_TEMPLATE, ipfsPathOf, caseTemplate, EVENT_FIELDS, isContractCode, kickbackRuntime, bakedGuestPageAbove } from "./lib.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fail = (msg) => {
@@ -28,6 +30,8 @@ const a = args();
 if (!a.out || a.out === true) fail("Usage: node scripts/build-admin.mjs --out <dir> [--config config.json] [--guest-page ../event/]");
 const out = path.resolve(a.out);
 const guestPage = typeof a["guest-page"] === "string" ? a["guest-page"] : "../event/";
+const baked = bakedGuestPageAbove(out);
+if (baked) fail(`${out} is inside the website of the deposit page ${baked}. The admin panel must live on another website: guests trust that one for its own event only.`);
 
 // the compiled contract: new events are created from its bytecode
 const artifactFile = path.join(ROOT, "build", "TruthPaysKickback.json");
@@ -35,6 +39,9 @@ if (!fs.existsSync(artifactFile)) fail("build/TruthPaysKickback.json is missing:
 const artifact = JSON.parse(fs.readFileSync(artifactFile, "utf8"));
 if (!Array.isArray(artifact.abi) || !/^0x[0-9a-fA-F]+$/.test(artifact.bytecode ?? "") || !isContractCode(artifact.bytecode))
   fail("build/TruthPaysKickback.json has no ABI or bytecode: run `npm run compile` again.");
+// its runtime code: an event is opened only if its contract has this code (answers can be faked)
+let runtime;
+try { runtime = await kickbackRuntime(); } catch (e) { fail(e.message); }
 
 let cfg, k;
 try {
@@ -94,6 +101,7 @@ const HOSTED = {
   template: { file: GENERIC_METAEVIDENCE_TEMPLATE, text: templateText },
   defaultEvent,
   artifact: "kickback.json",
+  runtime,
   guestPage,
 };
 

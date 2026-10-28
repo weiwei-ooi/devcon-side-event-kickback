@@ -243,7 +243,8 @@ export const EVENT_FIELDS = [
   { key: "eventTitle", label: "Event title", max: 200, example: "Onchain Justice Night: Talks and Dinner" },
   { key: "eventName", label: "Short name", max: 80, example: "Onchain Justice Night, Berlin 2027" },
   { key: "eventWhen", label: "Date and time", max: 120, example: "Friday 12 March 2027, 19:00-23:00 CET" },
-  { key: "eventWhere", label: "Where", max: 200, example: "Café Example, Main Street 1, Berlin" },
+  // the venue as planned when the contract is created (it can't be changed later): a city is enough
+  { key: "eventWhere", label: "Venue or city", max: 200, example: "Café Example, Main Street 1, Berlin" },
   { key: "hosts", label: "Hosts", max: 200, example: "Kleros and friends" },
   { key: "eventLink", label: "Registration link", max: 300, example: "https://luma.com/your-event", link: true },
 ];
@@ -254,18 +255,26 @@ const DEPLOY_PLACEHOLDERS = {
 };
 
 /**
- * Checks the form's event details (EVENT_FIELDS) and returns them trimmed. Throws a plain message
- * for the first field that is empty, too long, on several lines, holds "{{" or "}}", or (the link)
- * is not an https:// address; `error.fields` maps every wrong field's key to its message.
+ * Characters that can disguise a text without showing: control characters (C0 and C1, line breaks
+ * included), zero-width characters, the line and paragraph separators, text-direction marks and
+ * overrides, and the byte-order mark. The generic guest page removes the same ones from an event's name.
+ */
+export const DISGUISE_RE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/;
+
+/**
+ * Checks the form's event details (EVENT_FIELDS) and returns them trimmed, in Unicode NFC form (as
+ * the preview shows them). Throws a plain message for the first field that is empty, too long, on
+ * several lines or holding an invisible or text-direction character (DISGUISE_RE), holds "{{" or
+ * "}}", or (the link) is not an https:// address; `error.fields` maps every wrong field's key to its message.
  */
 export function eventDetails(input = {}) {
   const out = {}, fields = {};
   for (const f of EVENT_FIELDS) {
-    const v = String(input[f.key] ?? "").trim();
+    const v = String(input[f.key] ?? "").normalize("NFC").trim();
     let why = "";
     if (!v) why = `${f.label}: please fill this in.`;
     else if (v.length > f.max) why = `${f.label} is too long (${v.length} characters, at most ${f.max}).`;
-    else if (/[\u0000-\u001f\u007f]/.test(v)) why = `${f.label}: please keep it on one line.`;
+    else if (DISGUISE_RE.test(v)) why = `${f.label}: please keep it on one line, without invisible or text-direction characters.`;
     else if (/\{\{|\}\}/.test(v)) why = `${f.label} can't contain "{{" or "}}".`;
     else if (f.link && !/^https:\/\/[^\s/]+\.[^\s]+$/i.test(v)) why = `${f.label} must be a web address starting with https://`;
     if (why) fields[f.key] = why;
@@ -393,23 +402,59 @@ const offsetOf = (iso) => {
   return !m ? null : m[1] === "Z" ? 0 : (m[2] === "-" ? -1 : 1) * (Number(m[3]) * 60 + Number(m[4]));
 };
 
+// "+05:30" for 330 minutes
+export const offsetText = (minutes) =>
+  `${minutes < 0 ? "-" : "+"}${String(Math.floor(Math.abs(minutes) / 60)).padStart(2, "0")}:${String(Math.abs(minutes) % 60).padStart(2, "0")}`;
+// Common timezone abbreviations and the UTC offsets (minutes) each can stand for. A typed timezone name
+// that uses one of them (or "UTC+2", "GMT-03:30") must agree with the event's offset.
+const ZONE_OFFSETS = {
+  UTC: [0], GMT: [0], UT: [0], WET: [0], WEST: [60], BST: [60, 360], IST: [330, 60, 120], CET: [60], CEST: [120], MET: [60], MEST: [120],
+  WAT: [60], CAT: [120], SAST: [120], EET: [120], EEST: [180], EAT: [180], MSK: [180], TRT: [180], AST: [-240, 180], ADT: [-180], GST: [240],
+  PKT: [300], NPT: [345], BDT: [360], ICT: [420], WIB: [420], HKT: [480], SGT: [480], AWST: [480], PHT: [480], PHST: [480], JST: [540], KST: [540],
+  ACST: [570], ACDT: [630], AEST: [600], AEDT: [660], NZST: [720], NZDT: [780], NST: [-210], NDT: [-150], BRT: [-180], ART: [-180],
+  EST: [-300], EDT: [-240], CST: [-360, 480, -300], CDT: [-300], MST: [-420], MDT: [-360], PST: [-480, 480], PDT: [-420],
+  AKST: [-540], AKDT: [-480], HST: [-600],
+};
+const UTC_NAME_RE = /\b(?:UTC|GMT)\s*([+\-\u2212])\s*(\d{1,2})(?::?(\d\d))?(?!\d)/g;
+/**
+ * Checks a typed timezone name (for {{eventWhen}}) against the event's UTC offset in minutes: no
+ * invisible or text-direction characters, at most 40 characters, and every abbreviation in it that
+ * this file knows ("CEST", "UTC+2") must be that offset. Returns the name trimmed; throws a plain message.
+ */
+export function checkZoneName(zone, offset) {
+  const z = String(zone ?? "").normalize("NFC").trim();
+  if (DISGUISE_RE.test(z)) throw new Error("Timezone name: please keep it on one line, without invisible or text-direction characters.");
+  if (z.length > 40) throw new Error(`Timezone name is too long (${z.length} characters, at most 40).`);
+  if (/\{\{|\}\}/.test(z)) throw new Error('Timezone name can\'t contain "{{" or "}}".');
+  const wrong = (name) => new Error(`Timezone name: "${name}" is not UTC${offsetText(offset)}, the timezone of the event on that date. Pick the right timezone, or correct or clear the name.`);
+  for (const m of z.matchAll(UTC_NAME_RE)) {
+    const o = (m[1] === "+" ? 1 : -1) * (Number(m[2]) * 60 + Number(m[3] ?? 0));
+    if (o !== offset) throw wrong(m[0]);
+  }
+  for (const m of z.replace(UTC_NAME_RE, " ").matchAll(/\b[A-Z]{2,5}\b/g))
+    if (ZONE_OFFSETS[m[0]] && !ZONE_OFFSETS[m[0]].includes(offset)) throw wrong(m[0]);
+  return z;
+}
+
 /**
  * "Wednesday 4 November 2026, 18:00-22:00 IST": an event's date and time as people read it, in the
  * event's own timezone (the offset written in `startIso`), for {{eventWhen}}. `zone` is the
- * timezone's name to print ("IST"); without it the offset is printed ("UTC+05:30").
+ * timezone's name to print ("IST"), checked against that offset (checkZoneName); without it the
+ * offset is printed ("UTC+05:30").
  */
 export function describeWhen(startIso, endIso, zone = "") {
   const off = offsetOf(startIso);
   const t0 = Date.parse(startIso), t1 = Date.parse(endIso);
   if (off === null || Number.isNaN(t0) || Number.isNaN(t1)) throw new Error("Start and end must be dates with a timezone, e.g. 2026-11-04T18:00:00+05:30");
   if (t1 <= t0) throw new Error("The event must end after it starts.");
+  zone = checkZoneName(zone, off);
   const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
   const local = (t) => new Date(t + off * 60_000); // read with getUTC*: the wall clock at the event
   const day = (d) => `${DAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
   const time = (d) => `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
   const a = local(t0), b = local(t1);
-  const tz = zone.trim() || `UTC${off < 0 ? "-" : "+"}${String(Math.floor(Math.abs(off) / 60)).padStart(2, "0")}:${String(Math.abs(off) % 60).padStart(2, "0")}`;
+  const tz = zone || `UTC${offsetText(off)}`;
   return day(a) === day(b) ? `${day(a)}, ${time(a)}-${time(b)} ${tz}` : `${day(a)}, ${time(a)} to ${day(b)}, ${time(b)} ${tz}`;
 }
 
@@ -470,16 +515,35 @@ export const isKnownResolver = (chainId, address) =>
   !!KLEROS[Number(chainId)] && String(address ?? "").toLowerCase() === KLEROS[Number(chainId)].disputeResolver.toLowerCase();
 
 /**
+ * The fingerprint of a contract's runtime code: the SHA-256 of the code with its immutable values
+ * zeroed (`immutables`: [start, length] byte ranges, from solc's immutableReferences), so every
+ * deployment of one compiled contract has the same fingerprint whatever its constructor arguments.
+ * null when a range lies outside the code.
+ */
+export function codeFingerprint(code, immutables = []) {
+  const b = new Uint8Array(ethers.getBytes(code));
+  for (const [start, length] of immutables) {
+    if (!(Number.isInteger(start) && Number.isInteger(length) && start >= 0 && start + length <= b.length)) return null;
+    b.fill(0, start, start + length);
+  }
+  return ethers.sha256(b);
+}
+
+/**
  * Everything about an event that its deposit contract knows, read on-chain: { contract, eventName,
  * depositAmount (wei), eventStart, claimDeadline (unix seconds), owner, disputeResolver, arbitrator,
  * policyURI, metaEvidenceTemplate ({ pieces, slots }), phase (PHASES index) }. Throws an error with
  * `code` "NO_KICKBACK_CONTRACT" when there is no contract at the address on this network, and
  * "NOT_KICKBACK" when the contract there does not answer like a kickback deposit contract.
+ * `runtime` ({ sha256, immutables }, from the compiled contract: lib.mjs kickbackRuntime): the
+ * contract's code must also be that compiled contract's (codeFingerprint), or it throws with `code`
+ * "UNKNOWN_CODE": answers can be faked, the code can't.
  */
-export async function readEvent(prov, address, abi) {
+export async function readEvent(prov, address, abi, { runtime } = {}) {
   if (!ethers.isAddress(address ?? "")) throw Object.assign(new Error(`"${address ?? ""}" is not a contract address (0x… with 40 characters after it).`), { code: "NOT_KICKBACK" });
   const contract = ethers.getAddress(String(address).toLowerCase());
-  if (!isContractCode(await prov.getCode(contract)))
+  const code = await prov.getCode(contract);
+  if (!isContractCode(code))
     throw Object.assign(new Error(`There is no contract at ${contract} on this network.`), { code: "NO_KICKBACK_CONTRACT" });
   const c = new ethers.Contract(contract, abi, prov);
   let v;
@@ -488,6 +552,8 @@ export async function readEvent(prov, address, abi) {
   } catch (e) {
     throw Object.assign(new Error(`The contract at ${contract} is not a kickback deposit contract (${e.shortMessage || e.message}).`), { code: "NOT_KICKBACK", cause: e });
   }
+  if (runtime && codeFingerprint(code, runtime.immutables) !== runtime.sha256)
+    throw Object.assign(new Error(`The contract at ${contract} answers like a kickback deposit contract, but its code is not the kickback deposit contract's.`), { code: "UNKNOWN_CODE" });
   const [eventName, depositAmount, eventStart, claimDeadline, owner, disputeResolver, arbitrator, policyURI, [pieces, slots], phase] = v;
   return {
     contract, eventName, depositAmount, eventStart: Number(eventStart), claimDeadline: Number(claimDeadline), owner, disputeResolver, arbitrator,
@@ -1411,7 +1477,8 @@ export async function checkGuests({ prov, cfg, abi, rows, scanFrom, contract, lo
  *   { tx, from, amount (wei), block, sentAt, explorer, status ("unregistered", "registered", "paid",
  *     "refunded", "returned", "refunded, paid again" or "unknown"), held (wei of it the contract still
  *     holds, net of returns), code ("VERIFIED" or why not: AMOUNT_TOO_LOW, OUTSIDE_WINDOW,
- *     UNUSUAL_SENDER…), note, canRegister, canRefund }
+ *     UNUSUAL_SENDER…), note, heldForSpot (the contract still holds a whole deposit of this payment:
+ *     it is staked, or nothing was returned from it that would leave less than the deposit), canRegister, canRefund }
  * canRegister: registerStakers accepts the wallet for this deposit (only before the attendance list is
  * posted). canRefund: rejectAndRefund sends this deposit back (an unregistered payer whose deposit is
  * held, in any phase, or a registered staker while the attendance list is not posted). Money beyond one deposit (overpaid, short, late) is in `returns`, to
@@ -1441,6 +1508,8 @@ export async function depositsOverview({ prov, cfg, abi, scanFrom, contract, log
     out.push({
       tx: d.tx, from: d.from, amount: d.amount, block: d.block, sentAt: r.sent_at ?? "", explorer: `${cfg.explorer}/tx/${d.tx}`,
       status, held: pairing ? pairing.remaining : 0n, code: r.code ?? "", note: r.note ?? "",
+      // the contract still holds a whole deposit of this payment for a spot: staked, or not returned (in full or in part)
+      heldForSpot: !!pairing && (pairing.staked || pairing.remaining >= cfg.depositUnits),
       canRegister: reviewable.has(key) && check.listOpen, // registerStakers only works before the attendance list
       canRefund: (reviewable.has(key) && status === "unregistered") || (r.code === "VERIFIED" && status === "registered" && check.listOpen),
     });
@@ -1454,8 +1523,9 @@ export const PAYOUT_COLUMNS = ["name", "email", "wallet", "attended", "payout"];
  * Everything build-payout.mjs makes, as data (no files): matches Luma check-ins against the stakers
  * registered in the contract (the source of truth) and computes the share per attendee.
  *   prov, cfg, abi  as for checkGuests; the contract is cfg.contract
- *   checkins        the Luma export after the event, as CSV rows (checked_in_at and email columns)
- *   verified        verified.csv rows, or checkGuests(...).verified (wallet, name, email, approval)
+ *   checkins        the Luma export after the event, as CSV rows (checked_in_at and email columns), or
+ *                   null to go by the door list (`extra`) alone
+ *   verified       verified.csv rows, or checkGuests(...).verified (wallet, name, email, approval)
  *   claims          claims.csv rows, or checkGuests(...).claims: every registration that verified a
  *                   wallet's deposit, duplicates included, so a copied tx link can't turn a guest who
  *                   came into a no-show
@@ -1473,14 +1543,17 @@ export const PAYOUT_COLUMNS = ["name", "email", "wallet", "attended", "payout"];
 export async function buildPayout({ prov, cfg, abi, checkins, verified = [], claims = [], extra, extraName = "the door list", title = "Truth Pays", log = QUIET }) {
   if (!cfg.contract) throw new Error('Set "contract" in the config: the stakers and the pool are read from the deployed contract.');
   // Who checked in?
-  const col = detectColumns(Object.keys(checkins[0] ?? {}), cfg.columns);
-  if (!col.checkedIn) throw new Error("No checked_in_at column found in the Luma export");
-  if (!col.email) throw new Error("No email column found in the Luma export");
+  if (!checkins && !extra) throw new Error("Give the Luma export after the event, a door list, or both.");
   const checkedEmails = new Set();
   const checkedWallets = new Set(); // only from the organiser's own door list
-  for (const r of checkins) {
-    if (!(r[col.checkedIn] ?? "").trim()) continue;
-    if (r[col.email]) checkedEmails.add(r[col.email].toLowerCase().trim());
+  if (checkins) {
+    const col = detectColumns(Object.keys(checkins[0] ?? {}), cfg.columns);
+    if (!col.checkedIn) throw new Error("No checked_in_at column found in the Luma export");
+    if (!col.email) throw new Error("No email column found in the Luma export");
+    for (const r of checkins) {
+      if (!(r[col.checkedIn] ?? "").trim()) continue;
+      if (r[col.email]) checkedEmails.add(r[col.email].toLowerCase().trim());
+    }
   }
   let extraRows = [];
   if (extra) {
