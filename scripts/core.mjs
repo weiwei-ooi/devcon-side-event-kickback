@@ -1415,11 +1415,12 @@ export async function checkGuests({ prov, cfg, abi, rows, scanFrom, contract, lo
  * canRegister: registerStakers accepts the wallet for this deposit (only before the attendance list is
  * posted). canRefund: rejectAndRefund sends this deposit back (an unregistered payer whose deposit is
  * held, in any phase, or a registered staker while the attendance list is not posted). Money beyond one deposit (overpaid, short, late) is in `returns`, to
- * give back with refund(). Also returns the whole checkGuests result as `check`.
+ * give back with refund(). Also returns the whole checkGuests result as `check` (null when no deposit came in yet).
  */
 export async function depositsOverview({ prov, cfg, abi, scanFrom, contract, log = QUIET }) {
   const c = contract ?? (await checkContract(prov, cfg, abi)).contract;
   const incoming = await incomingDeposits(prov, cfg, scanFrom ?? 0);
+  if (!incoming.length) return { deposits: [], returns: [], check: null }; // nothing to check yet
   // one registration per deposit tx, with no ETH address: the wallet is the sender, as for a guest who left it blank
   const rows = [...new Set(incoming.map((d) => d.tx))].map((tx) => ({ name: "", email: "", ticket_name: "deposit", approval_status: "pending_approval", eth_address: "", tx }));
   // scanFrom undefined: checkGuests warns that it scans from block 0 (only fine on a local test chain)

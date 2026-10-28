@@ -9,8 +9,26 @@
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
   main { max-width:760px; margin:0 auto; padding:32px 16px 64px; }
-  h1 { font-size:26px; margin:0 0 4px; } h1 span { color:var(--blue); }
+  h1 { font-size:26px; margin:0 0 4px; } h1 .accent { color:var(--blue); }
   .sub { color:var(--muted); margin-bottom:16px; }
+  /* one page, two modes: the local owner console (npm run console) and the hosted admin panel (build-admin.mjs) */
+  body:not(.hosted) .hosted-only { display:none !important; }
+  body.hosted .local-only { display:none !important; }
+  .big-warn { background:#5a0b2a; border:2px solid var(--err); border-radius:10px; padding:10px 14px; margin:10px 0; font-weight:600; white-space:pre-wrap; }
+  .form { display:grid; grid-template-columns:1fr 1fr; gap:10px 12px; margin:6px 0 10px; }
+  .form label, label.file { display:flex; flex-direction:column; gap:4px; color:var(--muted); font-size:13px; }
+  .form input, .form select { font-family:inherit; font-size:14px; }
+  label.file { flex:1 1 220px; }
+  .scroll { overflow-x:auto; margin-top:10px; }
+  table.list { border-collapse:collapse; width:100%; font-size:13px; }
+  table.list th { text-align:left; color:var(--muted); font-weight:600; border-bottom:1px solid var(--line); padding:4px 6px; }
+  table.list td { border-bottom:1px solid var(--line); padding:4px 6px; vertical-align:top; }
+  table.list input[type=checkbox] { width:auto; }
+  .preview { white-space:pre-wrap; background:#12002b; border-radius:10px; padding:12px; margin-top:10px; font-size:13.5px; }
+  .preview h3 { font-size:14px; margin:8px 0 2px; color:var(--muted); }
+  .result { margin-top:10px; }
+  .result h3 { font-size:14px; margin:12px 0 4px; }
+  .result a.dl { margin-right:12px; }
   .banner { border-radius:12px; padding:12px 16px; margin:0 0 14px; font-weight:600; }
   .banner.live { background:#5a0b2a; border:1px solid var(--err); }
   .banner.rehearsal { background:#4a3300; border:1px solid var(--warn); }
@@ -33,22 +51,49 @@
   input { background:#12002b; border:1px solid var(--line); color:var(--text); border-radius:8px; padding:8px 10px; width:100%; font-family:ui-monospace,Menlo,monospace; }
   .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
   .row input { flex:1 1 220px; width:auto; }
-  @media (max-width:520px) { .kv { grid-template-columns:1fr; } .kv div:nth-child(odd) { margin-top:6px; } }
+  /* long links and addresses wrap instead of widening the page on a phone */
+  #log, .preview, .big-warn, .result, .kv > * { overflow-wrap:anywhere; min-width:0; }
+  @media (max-width:520px) { .kv { grid-template-columns:1fr; } .kv div:nth-child(odd) { margin-top:6px; } .form { grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
 <main>
-  <h1>Truth Pays · <span>Owner Console</span></h1>
+  <h1><span class="local-only">Truth Pays · <span class="accent">Owner Console</span></span><span class="hosted-only">Kickback · <span class="accent">Admin panel</span></span></h1>
+  <div class="sub hosted-only" id="eventTitle"></div>
   <div class="sub">Every action opens your wallet for you to confirm. Keys never leave your wallet.</div>
   <div id="banner" class="banner" hidden></div>
 
   <div class="card">
     <h2>1. Connect wallet</h2>
-    <p>Use the dedicated event wallet (the owner), not your personal one. The console switches the wallet to <b>Ethereum mainnet</b>. This event never uses Arbitrum, Base, Optimism or any other network.</p>
+    <p class="local-only">Use the dedicated event wallet (the owner), not your personal one. The console switches the wallet to <b>Ethereum mainnet</b>. This event never uses Arbitrum, Base, Optimism or any other network.</p>
+    <p class="hosted-only">Connect the wallet you organise with. If you create an event here, it becomes the event's owner: keep it for this event (not your personal wallet). The page switches the wallet to <b>Ethereum mainnet</b>; these deposit contracts never use Arbitrum, Base, Optimism or any other network. You can look at an event without connecting.</p>
     <div class="row"><button id="connect">Connect wallet</button><span id="who" class="mono"></span></div>
   </div>
 
-  <div class="card">
+  <div class="card hosted-only">
+    <h2>2. Create a new event <small style="color:var(--muted)">(once per event)</small></h2>
+    <p>Creates a deposit contract for your event on Ethereum mainnet. Your connected wallet becomes its owner. Guests who show up get their deposit back plus a share of the no-shows' deposits; a guest left off the attendance list can challenge it on Kleros Court. Nothing here can be changed once the contract is created. It costs a network fee in ETH, which your wallet shows before you confirm.</p>
+    <div class="form">
+      <label>Event title<input id="neTitle" placeholder="Onchain Justice Night: Talks and Dinner"></label>
+      <label>Short name (kept in the contract)<input id="neName" placeholder="Onchain Justice Night, Berlin 2027"></label>
+      <label>Starts<input id="neStart" type="datetime-local"></label>
+      <label>Ends at<input id="neEnd" type="time"></label>
+      <label>Timezone of the event<select id="neTz"></select></label>
+      <label>Timezone name (optional)<input id="neZone" placeholder="e.g. CET or IST"></label>
+      <label>Where<input id="neWhere" placeholder="Café Example, Main Street 1, Berlin"></label>
+      <label>Hosts<input id="neHosts" placeholder="Kleros and friends"></label>
+      <label>Registration page<input id="neLink" placeholder="https://luma.com/your-event"></label>
+      <label>Deposit per guest, in ETH<input id="neDeposit" placeholder="0.01" inputmode="decimal"></label>
+      <label>Settle within (days after the start)<input id="neDays" type="number" min="7" max="365" value="14"></label>
+    </div>
+    <p>The attendance list can be posted from the start time. If it is never posted, each guest can take their own deposit back once the settlement time is over (at least 7 days after the start; 14 is usual). <b>Preview</b> shows what Kleros jurors would read in a case about one guest.</p>
+    <div class="row"><button class="secondary" id="previewEvent" disabled>Preview</button><button id="createEvent" disabled>Create event</button></div>
+    <div id="nePreview" class="preview" hidden></div>
+    <div id="neDone" class="result" hidden></div>
+    <div id="myEvents" class="result"></div>
+  </div>
+
+  <div class="card local-only">
     <h2>2. Deploy the deposit contract <small style="color:var(--muted)">(once)</small></h2>
     <p>Creates the contract that holds the guests' ETH deposits. Your connected wallet becomes the owner. It costs a network fee in ETH; your wallet shows the amount before you confirm.</p>
     <div id="deployInfo" class="kv"></div>
@@ -56,31 +101,58 @@
   </div>
 
   <div class="card">
-    <h2>Contract status</h2>
-    <div class="row" style="margin-bottom:10px"><input id="addr" placeholder="Contract address (filled from config.json)"><button class="secondary" id="refresh" disabled>Refresh</button></div>
+    <h2><span class="local-only">Contract status</span><span class="hosted-only">Open an event</span></h2>
+    <p class="hosted-only">The event's deposit contract address, and the block it was created in (on Etherscan: the "Contract Creation" transaction). The page finds the block itself when it can. Anyone can look; only the event's owner wallet can register, refund and post the list.</p>
+    <div class="row" style="margin-bottom:10px"><input id="addr" placeholder="Contract address (filled from config.json)"><input id="fromBlock" class="hosted-only" placeholder="Deploy block" inputmode="numeric" style="flex:0 1 150px"><button class="secondary" id="refresh" disabled>Refresh</button></div>
+    <div id="kwarn" class="big-warn" hidden></div>
     <div id="status" class="kv"></div>
   </div>
 
-  <div class="card">
+  <div class="card local-only">
     <h2>3. Register approved guests</h2>
     <p>Loads <code>out/new-stakers.json</code>: guests whose deposit Claude verified on-chain <b>and</b> whom you approved on Luma.</p>
     <div class="row"><button id="register" disabled>Register stakers</button><span id="regInfo" class="mono"></span></div>
   </div>
 
-  <div class="card">
+  <div class="card local-only">
     <h2>4. Refund declined guests</h2>
     <p>Loads <code>out/refunds.json</code>: paying guests you declined on Luma. Each gets exactly their deposit back to their own wallet, in one confirmation.</p>
     <div class="row"><button id="refundDeclined" disabled>Refund declined guests</button><span id="rdInfo" class="mono"></span></div>
   </div>
 
+  <div class="card hosted-only">
+    <h2>3. Guests' deposits: register or refund</h2>
+    <p>Every deposit the contract received, read from the blockchain. Tick <b>Register</b> for guests you approved and <b>Refund</b> for paying guests you declined, then confirm in your wallet. Only deposits that check out can be ticked: the full amount, sent on time from an ordinary wallet, and still held by the contract. Registering is only possible until the attendance list is posted. Each refunded guest gets exactly the deposit back, to the wallet that sent it.</p>
+    <div class="row"><button class="secondary" id="loadDeposits" disabled>Load deposits</button><span id="depInfo"></span></div>
+    <div id="depTable" class="scroll"></div>
+    <div class="row" style="margin-top:10px"><button id="registerSel" disabled>Register selected</button><button class="secondary" id="refundSel" disabled>Refund selected</button></div>
+
+    <h2 style="margin-top:18px">Check the Luma guest list</h2>
+    <p>On Luma: Manage → Guests → Export CSV. Pick that file here. The page checks every pasted deposit link on the blockchain, then ticks the guests you approved (Register) and the paying guests you declined (Refund) in the table above, and lists who is still waiting for your decision and what needs a look. The file stays on this computer: nothing is uploaded.</p>
+    <div class="row"><input id="lumaFile" type="file" accept=".csv,text/csv" style="flex:1 1 220px"><button class="secondary" id="checkLuma" disabled>Check the Luma list</button></div>
+    <div id="lumaResult" class="result"></div>
+
+    <h2 style="margin-top:18px">Lists made by the scripts (optional)</h2>
+    <p>If deposits were checked with the command-line scripts, load their files here: <code>new-stakers.json</code> to register, <code>refunds.json</code> to refund. A file is refused if it was made for another contract or deposit, or if anything changed since it was made.</p>
+    <div class="row"><input id="stakersFile" type="file" accept=".json,application/json" style="flex:1 1 220px"><button class="secondary" id="registerFile" disabled>Register from file</button></div>
+    <div class="row" style="margin-top:6px"><input id="refundsFile" type="file" accept=".json,application/json" style="flex:1 1 220px"><button class="secondary" id="refundFile" disabled>Refund from file</button></div>
+  </div>
+
   <div class="card">
-    <h2>5. Post the attendance list after the event</h2>
-    <p>Loads <code>out/payout-plan.json</code> (stakers who checked in). Publishes the list on-chain and opens a <b>1-day challenge window</b>: a staker left off the list can challenge through Kleros. The button stays locked until the event starts, and you must type POST to confirm. Only possible once.</p>
+    <h2><span class="local-only">5.</span><span class="hosted-only">4.</span> Post the attendance list after the event</h2>
+    <p class="local-only">Loads <code>out/payout-plan.json</code> (stakers who checked in). Publishes the list on-chain and opens a <b>1-day challenge window</b>: a staker left off the list can challenge through Kleros. The button stays locked until the event starts, and you must type POST to confirm. Only possible once.</p>
+    <p class="hosted-only">After the event, export the Luma guest list again (Manage → Guests → Export CSV): its check-in column shows who was scanned at the door. Pick it here and press <b>Build the attendance list</b>; a door list (a CSV with an email or wallet column) adds guests checked in by hand. <b>Post attendance list</b> then publishes it on-chain and opens a <b>1-day challenge window</b>: a staker left off the list can challenge through Kleros. The button stays locked until the event starts, and you must type POST to confirm. Only possible once.</p>
+    <div class="hosted-only" style="margin-bottom:10px">
+      <div class="row"><label class="file">Luma export after the event<input id="checkinFile" type="file" accept=".csv,text/csv"></label><label class="file">Door list (optional)<input id="doorFile" type="file" accept=".csv,text/csv"></label></div>
+      <div class="row" style="margin-top:6px"><button class="secondary" id="buildPlan" disabled>Build the attendance list</button></div>
+      <div class="row" style="margin-top:6px"><label class="file">Or load payout-plan.json made by the scripts<input id="planFile" type="file" accept=".json,application/json"></label></div>
+      <div id="planResult" class="result"></div>
+    </div>
     <div class="row"><button id="postList" disabled>Post attendance list</button><span id="postInfo" class="mono"></span></div>
   </div>
 
   <div class="card">
-    <h2>6. Challenges, then pay out</h2>
+    <h2><span class="local-only">6.</span><span class="hosted-only">5.</span> Challenges, then pay out</h2>
     <p>Anyone left off the list has 1 day to challenge (with an ETH deposit equal to the Kleros fee). Anyone, you included, then has 1 day to match that deposit if they disagree, which sends the case to Kleros Court jurors (court.kleros.io). A challenge nobody matches counts as attended. Payouts can be released once the window is over and no challenge is waiting for a match. A Kleros case does not hold the payout: everyone on the list is paid, and one share per open case is set aside until its final ruling (to the challenger if they win, otherwise split among the attendees).</p>
     <div id="challenges" class="kv"></div>
     <h2 style="margin-top:14px">Add someone you left off by mistake</h2>
@@ -107,7 +179,7 @@
   <details class="card">
     <summary>Other actions (only if needed)</summary>
     <h2 style="margin-top:14px">Remove one guest and refund them</h2>
-    <p>For a single <b>registered staker</b> you want to drop before the attendance list is posted. Sends exactly the deposit back to that wallet. For a payer who was never registered, decline them on Luma and use <b>Refund declined guests</b> (Claude's checked list) instead.</p>
+    <p>For a single <b>registered staker</b> you want to drop before the attendance list is posted. Sends exactly the deposit back to that wallet. For a payer who was never registered, decline them on Luma and use <span class="local-only"><b>Refund declined guests</b> (Claude's checked list)</span><span class="hosted-only"><b>Refund selected</b> in the deposits table</span> instead.</p>
     <div class="row"><input id="rmAddr" placeholder="Guest wallet 0x…"><button class="secondary" id="removeOne" disabled>Remove and refund</button></div>
 
     <h2 style="margin-top:18px">Return a stray transfer or overpayment</h2>
@@ -115,7 +187,7 @@
     <div class="row"><input id="rfTo" placeholder="Send to 0x…"><input id="rfAmt" placeholder="Amount in ETH, e.g. 0.01" style="flex:0 1 180px"><button class="secondary" id="refundOne" disabled>Return</button></div>
 
     <h2 style="margin-top:18px">Return tokens sent by mistake</h2>
-    <p>Deposits are ETH only. If someone sent a token (USDC, for example) to the contract, it is not a deposit: send it back to them here. Enter the token's contract address (Claude's check names it); the console shows how much the contract holds. This never moves ETH.</p>
+    <p>Deposits are ETH only. If someone sent a token (USDC, for example) to the contract, it is not a deposit: send it back to them here. Enter the token's contract address (<span class="local-only">Claude's check names it</span><span class="hosted-only">the Luma list check names it</span>); the console shows how much the contract holds. This never moves ETH.</p>
     <div class="row"><input id="tkToken" placeholder="Token contract 0x…"><input id="tkTo" placeholder="Send to 0x…"><input id="tkAmt" placeholder="Amount, e.g. 25" style="flex:0 1 140px"><button class="secondary" id="returnTokens" disabled>Return tokens</button></div>
 
     <h2 style="margin-top:18px">Collect leftover rounding dust</h2>
@@ -123,7 +195,7 @@
     <div class="row"><button class="secondary" id="sweep" disabled>Collect leftovers</button></div>
 
     <h2 style="margin-top:18px">Cancel the event</h2>
-    <p>Refunds every <b>registered</b> staker their deposit. Cannot be undone, and no payout is possible afterwards. Payers not registered yet are not included: afterwards, decline them on Luma and use <b>Refund declined guests</b>; unclaimed transfers go back with <b>Return a stray transfer</b>.</p>
+    <p>Refunds every <b>registered</b> staker their deposit. Cannot be undone, and no payout is possible afterwards. Payers not registered yet are not included: afterwards, <span class="local-only">decline them on Luma and use <b>Refund declined guests</b></span><span class="hosted-only">refund them from the deposits table (<b>Refund selected</b>)</span>; unclaimed transfers go back with <b>Return a stray transfer</b>.</p>
     <div class="row"><button class="danger" id="cancel" disabled>Cancel event and refund registered stakers</button></div>
   </details>
 
@@ -133,19 +205,50 @@
   </div>
 </main>
 
-<script src="/node_modules/ethers/dist/ethers.umd.min.js"></script>
-<script>
+<!-- ethers and the shared core (scripts/core.mjs) as ES modules. The local console serves both;
+     scripts/build-admin.mjs points these at the copies next to the hosted admin panel. -->
+<script type="importmap">{ "imports": { "ethers": "/node_modules/ethers/dist/ethers.min.js", "kickback/core": "/scripts/core.mjs" } }</script>
+<script type="module">
+import { ethers } from "ethers";
+import * as core from "kickback/core";
+
+// One page, two modes. The local owner console (npm run console) reads its settings from the console
+// server (/settings.json, config.json, out/*.json). The hosted admin panel (scripts/build-admin.mjs,
+// GitHub Pages) has its settings written into HOSTED below, works for any organiser's wallet and event,
+// and does in the browser what the scripts do (scripts/core.mjs): deposits, the Luma list, the attendance list.
+/*HOSTED*/
+const HOSTED = null;
+/*END HOSTED*/
+const hosted = !!HOSTED;
+// a text for each mode: the local console (Claude runs the scripts for the organiser) and the hosted panel (anyone)
+const T = (local, other) => (hosted ? other : local);
+// (in the hosted panel, the texts written for the local console and the scripts, worded for this page)
+const ui = (s) => (hosted ? String(s).replace(/\bin the console\b/g, "on this page").replace(/\bThe console\b/g, "This page").replace(/\bthe console\b/g, "this page")
+  .replace(/, or set another "rpcUrl" \(or a smaller "logChunk"\) in the config\./g, ".") : s);
+const confirmBox = (m) => confirm(ui(m));
+const promptBox = (m) => prompt(ui(m));
 const $ = (id) => document.getElementById(id);
-const log = (msg, cls) => { const d = document.createElement("div"); if (cls) d.className = cls; d.textContent = msg; $("log").prepend(d); };
+const log = (msg, cls) => { const d = document.createElement("div"); if (cls) d.className = cls; d.textContent = ui(msg); $("log").prepend(d); };
 const MAINNET = 1; // Ethereum mainnet: the only real network this event uses
-const MIN_WINDOW = 7 * 24 * 3600; // must match the contract
+const MIN_WINDOW = core.MIN_SETTLEMENT_WINDOW; // must match the contract
 const PHASES = ["Open", "List posted (challenge window)", "Paid out", "Cancelled"];
 const CH_STATES = ["", "waiting for a match", "in a Kleros dispute", "settled"];
 const OWNER_BUTTONS = ["register", "refundDeclined", "postList", "addAtt", "removeOne", "refundOne", "returnTokens", "sweep", "cancel"];
 // Since EIP-7825 (Fusaka) one Ethereum transaction may use at most 2^24 gas, whatever the block limit:
 // a higher gas limit is refused by the network, so the 30% margin never goes above it.
-const TX_GAS_CAP = 16_777_216n;
+const TX_GAS_CAP = core.TX_GAS_CAP;
 const ANYONE_BUTTONS = ["matchOne", "resolveOne", "publishCase", "release", "fundAppeal", "deliverRuling", "collectAppeal", "submitEvidence", "sendDetails"]; // any wallet can do these
+// hosted panel only: owner actions on the deposits, reading buttons anyone may use once an event is open
+// (nothing is sent), and the new-event form (needs a connected wallet, which becomes the owner)
+const HOSTED_OWNER_BUTTONS = ["registerSel", "refundSel", "registerFile", "refundFile"];
+const HOSTED_READ_BUTTONS = ["loadDeposits", "checkLuma", "buildPlan"];
+const HOSTED_FORM_BUTTONS = ["previewEvent", "createEvent"];
+// hosted panel: what to do when a list is out of date (the local console asks Claude instead)
+const REDO = {
+  deposits: 'Press "Load deposits" again and check the ticked guests before you try again.',
+  plan: "Build the attendance list again.",
+  file: "Run the scripts' check again and load the new file.",
+};
 // Kleros Court v1 on Ethereum mainnet. Cases are opened through Kleros's Dispute Resolver
 // (ArbitrableProxy), the arbitrable side of every case; its arbitrator is KlerosLiquid (the court).
 //  - Dispute Resolver, with the case's local ID (challenges(staker).localDisputeID): evidence,
@@ -210,6 +313,10 @@ const KLEROS_ERRORS = [
 ];
 let cfg, cfgText, settings, chain, mode, artifact, iface, rp, wallet, signer, account, state, busy = false;
 let warnedDeposit = null; // the contract whose deposit-mismatch warning was already shown
+// hosted panel: the event that is open (core.readEvent, plus its deploy block) and the settings the
+// core's checks use for it (core.contractConfig); the deposits table, the last Luma check, the
+// attendance list to post. Each belongs to one contract and is dropped when another event is opened.
+let ev = null, evCfg = null, deposits = null, luma = null, attendance = null;
 
 const short = (a) => (a ? a.slice(0, 6) + "…" + a.slice(-4) : "");
 const eth = (x) => ethers.formatEther(x) + " ETH";
@@ -256,26 +363,26 @@ function explain(e) {
       case "NoChallenge": return `${x} has not challenged.`;
       case "WrongChallengeState": return `The challenge of ${x} is not in a state that allows this (see the challenge list).`;
       case "WrongDeposit": return `The ETH deposit must be ${eth(x)} (sent ${eth(y)}).`;
-      case "ArbitrationCostTooHigh": return `The Kleros fee went up since the challenge was opened (now ${eth(x)}, the two deposits cover ${eth(y)}), so a dispute cannot be created. Ask Claude.`;
+      case "ArbitrationCostTooHigh": return `The Kleros fee went up since the challenge was opened (now ${eth(x)}, the two deposits cover ${eth(y)}), so a dispute cannot be created.${T(" Ask Claude.", " Nothing was sent.")}`;
       case "NotRuled": return `Kleros has not ruled yet on the challenge of ${x}.`;
       case "ChallengesPending": return `${x} challenge(s) are still waiting for a match (each has 1 day). Payouts can be released after that.`;
       case "InDispute": return `${x} is already in a Kleros case, so the jurors decide. If they did attend, say so in the case (Send evidence): the jury rules attended when the organiser confirms it.`;
-      case "OnlyNumberedRulings": return "Kleros returned a ruling this contract does not know. Ask Claude.";
-      case "NotEnoughGas": return "The transaction ran short of gas while paying someone. Nothing changed. Try again; if it happens again, ask Claude.";
+      case "OnlyNumberedRulings": return "Kleros returned a ruling this contract does not know." + T(" Ask Claude.", " Nothing was changed.");
+      case "NotEnoughGas": return "The transaction ran short of gas while paying someone. Nothing changed. Try again" + T("; if it happens again, ask Claude.", ", with a higher gas limit in your wallet if it happens again.");
       case "Reentrancy": return "The contract refused a nested call.";
       case "NotSettled": return "Leftovers can only be collected after the payout or a cancellation.";
       case "ZeroAddress": return "One of the addresses is empty, zero, or the contract itself.";
-      case "ZeroDeposit": return "The deposit amount is zero. Ask Claude to fix the config.";
-      case "BadTimes": return "The settlement deadline must be at least 7 days after the event start. Ask Claude to fix the dates in the config.";
+      case "ZeroDeposit": return "The deposit amount is zero." + T(" Ask Claude to fix the config.", "");
+      case "BadTimes": return "The settlement deadline must be at least 7 days after the event start." + T(" Ask Claude to fix the dates in the config.", "");
       case "TooLate": return "Too late: either the 1-day window is over, or the settlement deadline passed (then each guest can withdraw their own deposit).";
       case "TooEarly": return "Too early: check the times in the status (list opens at the event start; payouts and settling wait for the windows to end).";
-      case "AlreadyRegistered": return `${x} is already registered. Ask Claude to rebuild the list.`;
-      case "NotAStaker": return `${x} is not a registered staker. Ask Claude to rebuild the list.`;
+      case "AlreadyRegistered": return `${x} is already registered. ${T("Ask Claude to rebuild the list.", REDO.deposits)}`;
+      case "NotAStaker": return `${x} is not a registered staker. ${T("Ask Claude to rebuild the list.", REDO.deposits)}`;
       case "CannotReject": return `${x} cannot be refunded: they were already refunded or paid out.`;
-      case "DuplicateAttendee": return `${x} appears twice in the attendee list. Ask Claude to rebuild it.`;
+      case "DuplicateAttendee": return `${x} appears twice in the attendee list. ${T("Ask Claude to rebuild it.", REDO.plan)}`;
       case "NoAttendees": return "The attendee list is empty.";
-      case "ShareMismatch": return `The payout per person changed (you confirmed ${eth(x)}, it is now ${eth(y)}). Ask Claude to rebuild the payout.`;
-      case "InsufficientBalance": return `Not enough spare ETH in the contract for this (needs ${eth(x)} in total, has ${eth(y)}). A deposit may be missing; ask Claude to re-check.`;
+      case "ShareMismatch": return `The payout per person changed (you confirmed ${eth(x)}, it is now ${eth(y)}). ${T("Ask Claude to rebuild the payout.", REDO.plan)}`;
+      case "InsufficientBalance": return `Not enough spare ETH in the contract for this (needs ${eth(x)} in total, has ${eth(y)}). A deposit may be missing; ${T("ask Claude to re-check.", "load the deposits again and check them.")}`;
       case "NothingToClaim": return "There is nothing to claim for this wallet.";
       case "NotAppealable": return `The challenge of ${x} is not in a Kleros case that can be appealed.`;
       case "TransferFailed": return `The transfer to ${x} did not go through: an address that refuses ETH (some smart-contract wallets do), or, when returning tokens, a token contract that refused (check the token address and the amount the contract holds). Nothing was sent.`;
@@ -295,6 +402,7 @@ function explain(e) {
 async function getJson(p) { const r = await fetch(p, { cache: "no-store" }); if (!r.ok) throw new Error(`${p}: ${r.status}`); return r.json(); }
 
 async function init() {
+  if (hosted) return initHosted();
   try { cfgText = await (await fetch("/config.json", { cache: "no-store" })).text(); cfg = JSON.parse(cfgText); }
   catch { log("config.json not found. Ask Claude to create it.", "err"); return; }
   // the config as the scripts read it (lib.mjs): network, deposit in wei, Kleros, deploy arguments
@@ -353,6 +461,7 @@ async function ensureNetwork() {
 
 async function connect() {
   if (!chain) throw new Error("The console's settings did not load (see the log above).");
+  if (hosted && !window.ethereum) throw new Error("No browser wallet found. Open this page in a browser with a wallet extension, or in your wallet app's own browser.");
   wallet = new ethers.BrowserProvider(window.ethereum);
   await wallet.send("eth_requestAccounts", []);
   await ensureNetwork();
@@ -366,6 +475,7 @@ async function connect() {
   window.ethereum.on?.("accountsChanged", () => location.reload());
   window.ethereum.on?.("chainChanged", () => location.reload());
   $("deploy").disabled = false; $("refresh").disabled = false;
+  if (hosted) HOSTED_FORM_BUTTONS.forEach((id) => ($(id).disabled = false));
   if ($("addr").value) await refresh();
 }
 
@@ -387,11 +497,13 @@ async function checkConfigFresh() {
 }
 
 // Before any action: fresh config, and the address box should be the configured contract.
+// (Hosted panel: no config; the event in the address box is opened, or opened again if it changed.)
 async function preflight() {
+  if (hosted) { await openEvent(); return; }
   await checkConfigFresh();
   const a = contractAddr();
   if (cfg.contract && a.toLowerCase() !== cfg.contract.toLowerCase() &&
-      !confirm(`The address box (${a}) is NOT the contract in the config (${cfg.contract}). Continue with ${short(a)} anyway?`))
+      !confirmBox(`The address box (${a}) is NOT the contract in the config (${cfg.contract}). Continue with ${short(a)} anyway?`))
     throw new Error("Stopped: contract address differs from the config.");
 }
 
@@ -400,18 +512,33 @@ async function preflight() {
 async function loadList(file) {
   let d;
   try { d = await getJson(file); } catch { throw new Error(`${file.slice(1)} not found. Ask Claude to re-check the Luma list.`); }
-  if (Array.isArray(d) || !d.contract || !Array.isArray(d.items)) throw new Error(`${file.slice(1)} is in an old format. Ask Claude to re-check the Luma list.`);
+  return checkList(d, file.slice(1));
+}
+// The same checks for any stamped list (core.mjs checkGuests `lists`): a file the scripts made, picked
+// in the hosted panel, or the guests ticked in its deposits table. `redo` is the hosted panel's advice
+// when the list is out of date (the local console asks Claude instead).
+async function checkList(d, name, redo = REDO.file) {
+  if (!d || Array.isArray(d) || !d.contract || !Array.isArray(d.items)) throw new Error(`${name} is in an old format. ${T("Ask Claude to re-check the Luma list.", redo)}`);
   if (d.contract.toLowerCase() !== contractAddr().toLowerCase() || Number(d.chainId) !== chain.chainId)
-    throw new Error(`${file.slice(1)} was made for another contract or network. Ask Claude to rebuild it.`);
+    throw new Error(`${name} was made for another contract or network. ${T("Ask Claude to rebuild it.", redo)}`);
   const c = new ethers.Contract(contractAddr(), artifact.abi, rp);
   // Claude's check compares each guest's payment with the deposit in the config: a list made with
   // another amount than the contract's could register guests who paid too little
   const dep = await c.depositAmount();
   if (d.deposit === undefined || BigInt(d.deposit) !== dep)
-    throw new Error(`${file.slice(1)} was made for ${d.deposit === undefined ? "an unknown deposit" : "a deposit of " + eth(BigInt(d.deposit))}, but this contract takes ${eth(dep)}. Ask Claude to fix the deposit in the config and re-check the Luma list.`);
+    throw new Error(`${name} was made for ${d.deposit === undefined ? "an unknown deposit" : "a deposit of " + eth(BigInt(d.deposit))}, but this contract takes ${eth(dep)}. ${T("Ask Claude to fix the deposit in the config and re-check the Luma list.", redo)}`);
   const now = await Promise.all(d.items.map((i) => c.status(i.wallet)));
   const changed = d.items.filter((i, k) => Number(now[k]) !== Number(i.status));
-  if (changed.length) throw new Error(`${file.slice(1)} is out of date (${changed.length} guest(s) changed since it was made, e.g. ${changed[0].name || short(changed[0].wallet)}). Ask Claude to re-check the Luma list.`);
+  if (changed.length) throw new Error(`${name} is out of date (${changed.length} guest(s) changed since it was made, e.g. ${changed[0].name || short(changed[0].wallet)}). ${T("Ask Claude to re-check the Luma list.", redo)}`);
+  // Hosted panel: the contract counts money in total, so a deposit returned since the list was made (with
+  // "Return a stray transfer", which changes no status) would leave a listed wallet without its own deposit.
+  // Anything sent back or registered after the list's block makes it out of date.
+  if (hosted && Number.isInteger(Number(d.block)) && Number(d.block) > 0) {
+    const topics = [["Rejected", "Refunded", "StakerRegistered", "AttendancePosted", "Cancelled"].map((n) => iface.getEvent(n).topicHash)];
+    const latest = await rp.getBlockNumber();
+    const since = Number(d.block) < latest ? await getLogsChunked({ address: contractAddr(), topics }, Number(d.block) + 1, latest) : [];
+    if (since.length) throw new Error(`${name} is out of date: the contract registered, refunded or returned money since it was made. ${redo}`);
+  }
   return d.items;
 }
 
@@ -424,8 +551,7 @@ async function sendTx(label, txReq, { onSent } = {}) {
   try { await rp.call({ ...txReq, from }); } catch (e) { throw new Error(explain(e)); }
   const gas = await rp.estimateGas({ ...txReq, from });
   const fee = await rp.getFeeData();
-  const margin = (gas * 13n) / 10n;
-  const req = { ...txReq, chainId: chain.chainId, gasLimit: margin > TX_GAS_CAP ? TX_GAS_CAP : margin };
+  const req = { ...txReq, chainId: chain.chainId, gasLimit: core.gasLimitFor(gas) }; // +30%, never above TX_GAS_CAP
   if (fee.maxFeePerGas) { req.maxFeePerGas = fee.maxFeePerGas * 2n; req.maxPriorityFeePerGas = fee.maxPriorityFeePerGas ?? 0n; }
   else if (fee.gasPrice) req.gasPrice = (fee.gasPrice * 12n) / 10n;
   log(`Confirm in your wallet: ${label}…`);
@@ -450,7 +576,7 @@ const parsed = (r, contract = contractAddr()) =>
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function getLogsChunked(filter, from, to) {
   const step = Number(settings.logChunk) || 5000;
-  if ((to - from) / step > 2000) throw new Error("The contract's deploy block is missing from the config, so the search would take too long. Ask Claude to add deployBlock.");
+  if ((to - from) / step > 2000) throw new Error(T("The contract's deploy block is missing from the config, so the search would take too long. Ask Claude to add deployBlock.", "The contract's deploy block is missing, so the search would take too long. Enter it (Etherscan: the block of its \"Contract Creation\" transaction) and press Open."));
   const out = [];
   const range = async (a, b, tries) => {
     for (let attempt = 1; ; attempt++) {
@@ -490,7 +616,7 @@ async function scanLogs(address, topic, fromBlock) {
 // ------------------------------------------------------------ actions
 // Deploys sent from this console are remembered in this browser (per mode and network), so a second
 // Deploy click, even after a reload, asks before creating a second contract.
-const DEPLOYS_KEY = () => `truthpays.deploys.${mode}.${chain.chainId}`;
+const DEPLOYS_KEY = () => (hosted ? `kickback.deploys.hosted.${chain.chainId}` : `truthpays.deploys.${mode}.${chain.chainId}`);
 let sessionDeploys = []; // in case browser storage is blocked
 function pastDeploys() {
   let stored = [];
@@ -512,7 +638,7 @@ async function deploy() {
       ...(cfg.contract ? [`config.json already names a contract: ${cfg.contract}`] : []),
       ...earlier.map((d) => `Already deployed from this console${d.at ? " on " + ist(d.at) : ""}: ` + (d.addr ? `${d.addr} (${chain.explorer}/address/${d.addr})` : `not confirmed yet, check ${chain.explorer}/tx/${d.hash}`)),
     ];
-    const typed = prompt(`${lines.join("\n")}\n\nDeploying again creates a SECOND, separate contract. Guests must only ever pay the one address on Luma. Check the link(s) above first.\n\nType SECOND to create another contract.`);
+    const typed = promptBox(`${lines.join("\n")}\n\nDeploying again creates a SECOND, separate contract. Guests must only ever pay the one address on Luma. Check the link(s) above first.\n\nType SECOND to create another contract.`);
     if (typed !== "SECOND") { log("Not deployed: no second contract was created."); return; }
   }
   // the constructor arguments come from the scripts' own checks (lib.mjs deployArgs), read fresh
@@ -528,7 +654,7 @@ async function deploy() {
   if (s.knownKleros && resolver.toLowerCase() !== s.knownKleros.disputeResolver.toLowerCase())
     throw new Error(`The config names ${resolver} as Kleros's Dispute Resolver, not the known address ${s.knownKleros.disputeResolver}. Ask Claude to fix the config.`);
   const k = s.kleros;
-  if (!confirm(`Deploy a new deposit contract on ${chain.name}?\n\nMode: ${MODE_NAMES[mode]}\nEvent name: ${name}\nDeposit: ${ethers.formatEther(depositWei)} ETH per guest\nAttendance list from: ${ist(start)} (event start)\nList by: ${ist(end)} (if no list by then, each guest can withdraw their own deposit)\nJuror policy: ${policyURI || "(none)"}\nCase description for jurors: one per case, from ${k.metaEvidenceTemplate} (names the event, the challenged wallet and this contract)\nChallenges: Kleros Court, ${k.court === 0 ? "General Court" : "court " + k.court}, ${k.jurors} jurors (Dispute Resolver ${short(resolver)})\nOwner: ${account}\n\nNone of this can be changed after the deploy.`)) return;
+  if (!confirmBox(`Deploy a new deposit contract on ${chain.name}?\n\nMode: ${MODE_NAMES[mode]}\nEvent name: ${name}\nDeposit: ${ethers.formatEther(depositWei)} ETH per guest\nAttendance list from: ${ist(start)} (event start)\nList by: ${ist(end)} (if no list by then, each guest can withdraw their own deposit)\nJuror policy: ${policyURI || "(none)"}\nCase description for jurors: one per case, from ${k.metaEvidenceTemplate} (names the event, the challenged wallet and this contract)\nChallenges: Kleros Court, ${k.court === 0 ? "General Court" : "court " + k.court}, ${k.jurors} jurors (Dispute Resolver ${short(resolver)})\nOwner: ${account}\n\nNone of this can be changed after the deploy.`)) return;
   const f = new ethers.ContractFactory(artifact.abi, artifact.bytecode);
   const dtx = await f.getDeployTransaction(BigInt(depositWei), name, account, start, end, [resolver, extraData, pieces, slots, policyURI]);
   await checkConfigFresh(); // again: the confirm box may have stayed open a long time
@@ -543,6 +669,7 @@ async function deploy() {
 }
 
 async function refresh() {
+  if (hosted) await openEvent(); // the event in the address box: read on-chain, with its deploy block
   const c = new ethers.Contract(contractAddr(), artifact.abi, rp);
   const [owner, pending, phase, count, dep, bal, owedTotal, spare, start, end, attCount, windowEnd, pendingCh, chList, fee, escrow, heldBack] = await Promise.all([
     c.owner(), c.pendingOwner(), c.phase(), c.stakerCount(), c.depositAmount(), rp.getBalance(c.target), c.owedTotal(), c.spare(), c.eventStart(), c.claimDeadline(),
@@ -573,6 +700,16 @@ async function refresh() {
     ["Explorer", link(`${chain.explorer}/address/${c.target}`, "view on Etherscan ↗")],
   ];
   if (pending !== ethers.ZeroAddress) pairs.splice(1, 0, ["Proposed new owner", pending, "mono warn"]);
+  if (hosted && ev) {
+    pairs.unshift(["Event", ev.eventName]);
+    pairs.push(
+      ["Deploy block", String(ev.deployBlock)],
+      ["Juror policy", ev.policyURI ? link(settings.kleros.ipfsGateway + ev.policyURI, ev.policyURI + " ↗") : "none", ev.policyURI ? "mono" : "warn"],
+      ["Kleros", ev.notKleros ? "⚠ not Kleros's own Dispute Resolver (see the warning above)" : `Kleros Court, through Kleros's Dispute Resolver ${short(ev.disputeResolver)}`, ev.notKleros ? "err" : ""],
+      ["Guest deposit page", link(guestLink(), "link for guests ↗")],
+      ["This page for this event", link(adminLink(), "admin link ↗")],
+    );
+  }
   kv($("status"), pairs);
   const chPairs = [
     ["Challenge window", state.phase === 0 ? "opens when you post the list" : state.phase === 1 ? `until ${when(state.windowEnd)}` : "closed"],
@@ -624,19 +761,25 @@ async function refresh() {
 async function register() {
   await preflight();
   const items = await loadList("/out/new-stakers.json");
+  return registerWallets(items, "regInfo");
+}
+// Registers checked list items ({ wallet, name }), 100 per transaction. True once sent.
+async function registerWallets(items, info) {
   const list = items.map((i) => i.wallet);
-  if (!list.length) { log("No new approved guests to register."); return; }
+  if (!list.length) { log("No new approved guests to register."); return false; }
   await refresh();
   if (settings.poolCapWei && state.dep * (state.count + BigInt(list.length)) > BigInt(settings.poolCapWei))
     throw new Error(`Registering ${list.length} more would take the pool over the ${settings.poolCap} ETH safety cap.`);
-  $("regInfo").textContent = `${list.length} wallets`;
-  if (!confirm(`Register ${list.length} approved guests whose deposits were verified, ${where()}?`)) return;
+  $(info).textContent = `${list.length} wallets`;
+  const names = hosted ? "\n\n" + items.map((i) => `• ${i.name || "(no name)"} ${short(i.wallet)}`).join("\n") : "";
+  if (!confirmBox(`Register ${list.length} approved guests whose deposits were verified, ${where()}?${names}`)) return false;
   for (let i = 0; i < list.length; i += 100) {
     const chunk = list.slice(i, i + 100);
     await sendTx(`register ${chunk.length} stakers`, call("registerStakers", [chunk]));
   }
   log(`✅ Registered ${list.length} stakers`, "ok");
   await refresh();
+  return true;
 }
 
 // A payment the contract could not deliver is kept for that wallet to claim later (to any address).
@@ -656,16 +799,21 @@ async function rejectAndRefund(wallets, label) {
 async function refundDeclined() {
   await preflight();
   const list = await loadList("/out/refunds.json");
-  if (!list.length) { log("Nobody to refund."); return; }
+  return refundItems(list, "rdInfo");
+}
+// Refunds checked list items ({ wallet, name, status }): each gets exactly the deposit back. True once sent.
+async function refundItems(list, info) {
+  if (!list.length) { log("Nobody to refund."); return false; }
   await refresh();
   const names = list.map((r) => `• ${r.name || "(no name)"} ${short(r.wallet)}${r.status === 1 ? "  (registered staker)" : ""}`).join("\n");
-  $("rdInfo").textContent = `${list.length} guests`;
-  if (!confirm(`Refund ${eth(state.dep)} to each of these ${list.length} declined guests, ${where()}?\n\n${names}`)) return;
+  $(info).textContent = `${list.length} guests`;
+  if (!confirmBox(`Refund ${eth(state.dep)} to each of these ${list.length} declined guests, ${where()}?\n\n${names}`)) return false;
   const reg = list.filter((r) => r.status === 1);
-  if (reg.length && !confirm(`${reg.length} of them are already registered stakers and will be removed from the event:\n${reg.map((r) => "• " + (r.name || short(r.wallet))).join("\n")}\n\nRemove and refund them?`)) return;
+  if (reg.length && !confirmBox(`${reg.length} of them are already registered stakers and will be removed from the event:\n${reg.map((r) => "• " + (r.name || short(r.wallet))).join("\n")}\n\nRemove and refund them?`)) return false;
   await rejectAndRefund(list.map((r) => r.wallet), "refund declined guests");
   log(`✅ Refunded ${list.length} declined guests`, "ok");
   await refresh();
+  return true;
 }
 
 // Registered stakers only. For anyone else rejectAndRefund would pay a deposit out of the spare
@@ -680,11 +828,12 @@ async function removeOne() {
   if (st !== 1) {
     const why = st === 3 ? "was already refunded" : st === 2 ? "was already paid out" : "is not a registered staker";
     throw new Error(`${w} ${why}, so “Remove and refund” cannot be used for it. Nothing was sent.\n` +
-      "• A paying guest you declined who was never registered: decline them on Luma, ask Claude to re-check the list, then use “Refund declined guests” (it only lists deposits Claude verified on-chain).\n" +
+      T("• A paying guest you declined who was never registered: decline them on Luma, ask Claude to re-check the list, then use “Refund declined guests” (it only lists deposits Claude verified on-chain).\n",
+        "• A paying guest you declined who was never registered: tick Refund for their deposit in the deposits table (it only lets you tick deposits that check out on-chain), then “Refund selected”.\n") +
       "• Money sent by mistake or an overpayment: use “Return a stray transfer”.");
   }
   if (state.phase !== 0) throw new Error("Registered stakers can only be removed before the attendance list is posted.");
-  if (!confirm(`Remove the registered staker ${w} from the event and send their ${eth(state.dep)} deposit back to that wallet, ${where()}?`)) return;
+  if (!confirmBox(`Remove the registered staker ${w} from the event and send their ${eth(state.dep)} deposit back to that wallet, ${where()}?`)) return;
   await rejectAndRefund([w], "remove and refund one guest");
   log(`✅ Refunded ${w}`, "ok");
   $("rmAddr").value = "";
@@ -714,13 +863,13 @@ async function refundOne() {
   const ask = `Send ${amt} ETH from the spare balance to ${to}, ${where()}?`;
   const prev = await returnsTo(to);
   if (prev === null) {
-    const typed = prompt(`${ask}\n\n⚠ Could not check whether money was already returned to this address (network problem). Ask Claude to check first, so the same money is not sent twice.\n\nType RETURN only if you are sure.`);
+    const typed = promptBox(`${ask}\n\n⚠ Could not check whether money was already returned to this address (network problem). ${T("Ask Claude to check first", "Check the contract's transactions on Etherscan first")}, so the same money is not sent twice.\n\nType RETURN only if you are sure.`);
     if (typed !== "RETURN") { log("Nothing returned."); return; }
   } else if (prev.length) {
     const list = prev.map((p) => `• ${eth(p.amount)} ${p.how}: ${chain.explorer}/tx/${p.hash}`).join("\n");
-    const typed = prompt(`${ask}\n\n⚠ Already sent back to this address by this contract:\n${list}\nIf this is the same money, do NOT send it again.\n\nType RETURN to send it anyway.`);
+    const typed = promptBox(`${ask}\n\n⚠ Already sent back to this address by this contract:\n${list}\nIf this is the same money, do NOT send it again.\n\nType RETURN to send it anyway.`);
     if (typed !== "RETURN") { log("Nothing returned."); return; }
-  } else if (!confirm(`${ask}\n\nNothing was returned or refunded to this address before.`)) return;
+  } else if (!confirmBox(`${ask}\n\nNothing was returned or refunded to this address before.`)) return;
   await sendTx("return a transfer", call("refund", [to, units]));
   log(`✅ Sent ${amt} ETH to ${to}`, "ok");
   $("rfTo").value = ""; $("rfAmt").value = "";
@@ -731,7 +880,7 @@ async function refundOne() {
 const ERC20 = new ethers.Interface(["function balanceOf(address) view returns (uint256)", "function decimals() view returns (uint8)", "function symbol() view returns (string)"]);
 async function returnTokens() {
   const t = $("tkToken").value.trim(), a = $("tkTo").value.trim(), amt = $("tkAmt").value.trim();
-  if (!ethers.isAddress(t)) throw new Error("Enter the token's contract address (0x…). Claude's check of the Luma list names it.");
+  if (!ethers.isAddress(t)) throw new Error("Enter the token's contract address (0x…). " + T("Claude's check of the Luma list names it.", "The Luma list check names it."));
   if (!ethers.isAddress(a)) throw new Error("Enter the address to send the tokens to (0x…)");
   const token = new ethers.Contract(ethers.getAddress(t), ERC20, rp);
   if ((await rp.getCode(token.target)) === "0x") throw new Error(`${token.target} is not a token contract on ${chain.name}. Check the address.`);
@@ -746,7 +895,7 @@ async function returnTokens() {
   if (units > held) throw new Error(`The contract holds only ${fmtUnits(held)} ${symbol}.`);
   await preflight();
   const to = ethers.getAddress(a);
-  if (!confirm(`Send ${amt} ${symbol} (token ${token.target}) from the contract to ${to}, ${where()}?\n\nThe contract holds ${fmtUnits(held)} ${symbol}. Tokens are never deposits, and this sends no ETH.`)) return;
+  if (!confirmBox(`Send ${amt} ${symbol} (token ${token.target}) from the contract to ${to}, ${where()}?\n\nThe contract holds ${fmtUnits(held)} ${symbol}. Tokens are never deposits, and this sends no ETH.`)) return;
   await sendTx("return tokens", call("returnToken", [token.target, to, units]));
   log(`✅ Sent ${amt} ${symbol} to ${to}`, "ok");
   $("tkToken").value = ""; $("tkTo").value = ""; $("tkAmt").value = "";
@@ -755,20 +904,28 @@ async function returnTokens() {
 async function postList() {
   await preflight();
   let plan;
-  try { plan = await getJson("/out/payout-plan.json"); } catch { log("out/payout-plan.json not found. Ask Claude to build the attendance list first.", "err"); return; }
+  // hosted panel: the list built on this page from the Luma export, or a payout-plan.json picked here
+  if (hosted) {
+    if (!attendance || attendance.contract.toLowerCase() !== contractAddr().toLowerCase())
+      throw new Error("Build the attendance list first (above), or load a payout-plan.json made for this contract.");
+    plan = attendance.plan;
+  } else {
+    try { plan = await getJson("/out/payout-plan.json"); } catch { log("out/payout-plan.json not found. Ask Claude to build the attendance list first.", "err"); return; }
+  }
+  const redo = T("Ask Claude to rebuild it.", attendance?.source === "file" ? REDO.file : REDO.plan);
   await refresh();
   const now = Math.floor(Date.now() / 1000);
   if (now < state.start) throw new Error(`Too early: the attendance list opens ${when(state.start)}.`);
   if (now > state.end) throw new Error("The settlement deadline has passed; guests can now withdraw their own deposits.");
   if (!plan.contract || plan.contract.toLowerCase() !== contractAddr().toLowerCase() || Number(plan.chainId) !== chain.chainId)
-    throw new Error("This attendance list was built for a different contract or network. Ask Claude to rebuild it.");
-  if (BigInt(plan.stakers) !== state.count) throw new Error(`The plan counts ${plan.stakers} stakers but the contract has ${state.count}. Ask Claude to rebuild it.`);
+    throw new Error(`This attendance list was built for a different contract or network. ${redo}`);
+  if (BigInt(plan.stakers) !== state.count) throw new Error(`The plan counts ${plan.stakers} stakers but the contract has ${state.count}. ${redo}`);
   const c = new ethers.Contract(contractAddr(), artifact.abi, rp);
   const share = await c.previewShare(plan.attendees.length);
-  if (share.toString() !== String(plan.share)) throw new Error(`The share changed (plan ${eth(BigInt(plan.share))}, now ${eth(share)}). Ask Claude to rebuild it.`);
+  if (share.toString() !== String(plan.share)) throw new Error(`The share changed (plan ${eth(BigInt(plan.share))}, now ${eth(share)}). ${redo}`);
   const msg = `Post ${plan.attendees.length} of ${state.count} stakers as attendees, ${where()}?\nEach would get ${eth(share)} (pool ${eth(state.dep * state.count)}), unless challenges add people.\nThis opens the 1-day challenge window and can only be done once.`;
   $("postInfo").textContent = `${plan.attendees.length} attendees × ${eth(share)}`;
-  const typed = prompt(`${msg}\n\nType POST to continue.`);
+  const typed = promptBox(`${msg}\n\nType POST to continue.`);
   if (typed !== "POST") { log("Attendance list not posted."); return; }
   await sendTx("post the attendance list", call("postAttendance", [plan.attendees, share]));
   log("✅ Attendance list posted. The 1-day challenge window is open.", "ok");
@@ -780,7 +937,7 @@ async function addAtt() {
   if (!list.length || !list.every((a) => ethers.isAddress(a))) throw new Error("Enter one or more wallet addresses (0x…), separated by commas");
   const wallets = list.map((a) => ethers.getAddress(a));
   await preflight();
-  if (!confirm(`Add ${wallets.length} staker(s) to the attendance list, ${where()}?\n${wallets.join("\n")}`)) return;
+  if (!confirmBox(`Add ${wallets.length} staker(s) to the attendance list, ${where()}?\n${wallets.join("\n")}`)) return;
   await sendTx("add attendees", call("addAttendees", [wallets]));
   log(`✅ Added ${wallets.length} to the list`, "ok");
   $("addAddrs").value = "";
@@ -800,7 +957,7 @@ async function matchOne() {
   const ch = state.challenges.find((x) => x.wallet === w);
   if (!ch || ch.state !== 1) throw new Error(`${short(w)} has no challenge waiting for a match.`);
   const rehearsal = mode === "rehearsal" ? "\n\nREHEARSAL: this still opens a REAL Kleros case on Ethereum mainnet (real jurors, the fee is spent, about 3 weeks)." : "";
-  const typed = prompt(`Dispute the claim of ${w} that they attended?\nYou send ${eth(ch.deposit)}. Kleros jurors decide (about 3 weeks per round). Their share of the pool is set aside until the final ruling; everyone else is paid as usual.\nIf jurors say they attended, they get your deposit; if not, you get theirs (minus the Kleros fee).${rehearsal}\n\nType DISPUTE to continue.`);
+  const typed = promptBox(`Dispute the claim of ${w} that they attended?\nYou send ${eth(ch.deposit)}. Kleros jurors decide (about 3 weeks per round). Their share of the pool is set aside until the final ruling; everyone else is paid as usual.\nIf jurors say they attended, they get your deposit; if not, you get theirs (minus the Kleros fee).${rehearsal}\n\nType DISPUTE to continue.`);
   if (typed !== "DISPUTE") { log("Dispute not sent."); return; }
   await klerosContracts(true); // the case opens at the contract's Dispute Resolver: check it is Kleros's
   // the jurors read the case description on IPFS: save it there before the case opens
@@ -808,7 +965,7 @@ async function matchOne() {
   try { await publishCaseOf(w); }
   catch (e) {
     log("✗ " + explain(e), "err");
-    if (!confirm(`The case description for ${w} could not be saved on IPFS, so the jurors could not read it yet.\n\nSend the dispute anyway? You (or anyone) can save it later with "Publish case description". Cancel to try again in a minute.`)) { log("Dispute not sent."); return; }
+    if (!confirmBox(`The case description for ${w} could not be saved on IPFS, so the jurors could not read it yet.\n\nSend the dispute anyway? You (or anyone) can save it later with "Publish case description". Cancel to try again in a minute.`)) { log("Dispute not sent."); return; }
     published = false;
   }
   const r = await sendTx("dispute a challenge", { ...call("matchChallenge", [w]), value: ch.deposit });
@@ -842,7 +999,7 @@ async function klerosContracts(check = false) {
       [resolver, settings.kleros.disputeResolver, "Dispute Resolver"], [arb, settings.kleros.arbitrator, "court (KlerosLiquid)"],
       [resolver, settings.knownKleros?.disputeResolver, "Dispute Resolver"], [arb, settings.knownKleros?.arbitrator, "court (KlerosLiquid)"],
     ]) if (!problem && want && got.toLowerCase() !== want.toLowerCase())
-      problem = `This contract uses a Kleros ${what} at ${got}, not the known address ${want}. Nothing was sent. Ask Claude to check before sending anything to Kleros.`;
+      problem = `This contract uses a Kleros ${what} at ${got}, not the known address ${want}. Nothing was sent. ${T("Ask Claude to check before sending anything to Kleros.", "Do not use this contract for Kleros cases.")}`;
     kleros = { at: contractAddr(), proxy: new ethers.Contract(resolver, KPROXY, rp), liquid: new ethers.Contract(arb, KLIQUID, rp), problem };
   }
   if (check && kleros.problem) throw new Error(kleros.problem);
@@ -987,7 +1144,7 @@ async function fundAppeal() {
   const { proxy } = await klerosContracts(true);
   const whose = s === 1 ? "the challenger's side" : "the side of whoever disputed the challenge";
   const theirs = s === 1 && ch.matcher.toLowerCase() === account.toLowerCase() ? '\n⚠ You disputed this challenge: this is the OTHER side\'s answer. Yours is "No, did not attend".' : "";
-  const typed = prompt(`You are funding: ${RULINGS[s].toUpperCase()} (${whose})${theirs}\n\nFund an appeal for "${RULINGS[s]}" in Kleros case #${a.id} (the challenge of ${w})?\nYou send ${ethers.formatEther(value)} ETH from this wallet straight to Kleros's Dispute Resolver (${short(proxy.target)}), not through the deposit contract. Still missing for this answer: ${ethers.formatEther(missing)} ETH; anything above that comes back to this wallet at once.\nKleros records it under this wallet. After the final ruling, "Collect appeal rewards" takes back what Kleros owes it: your ETH plus a reward if this answer wins, a refund if this answer is never fully funded. If both answers are funded and this one loses, it is lost.\nA new round adds about 3 weeks.\n\nType APPEAL to continue.`);
+  const typed = promptBox(`You are funding: ${RULINGS[s].toUpperCase()} (${whose})${theirs}\n\nFund an appeal for "${RULINGS[s]}" in Kleros case #${a.id} (the challenge of ${w})?\nYou send ${ethers.formatEther(value)} ETH from this wallet straight to Kleros's Dispute Resolver (${short(proxy.target)}), not through the deposit contract. Still missing for this answer: ${ethers.formatEther(missing)} ETH; anything above that comes back to this wallet at once.\nKleros records it under this wallet. After the final ruling, "Collect appeal rewards" takes back what Kleros owes it: your ETH plus a reward if this answer wins, a refund if this answer is never fully funded. If both answers are funded and this one loses, it is lost.\nA new round adds about 3 weeks.\n\nType APPEAL to continue.`);
   if (typed !== "APPEAL") { log("Appeal not funded."); return; }
   await sendTx("fund an appeal on Kleros", { to: proxy.target, data: KPROXY.encodeFunctionData("fundAppeal", [ch.localID, s]), value });
   log(`✅ Appeal funding sent to Kleros for "${RULINGS[s]}" (recorded under your wallet).`, "ok");
@@ -1036,15 +1193,15 @@ async function collectAppeal() {
   }
   const total = due.reduce((x, t) => x + t.amount, 0n);
   const lines = due.map((t) => `• ${ANSWERS[t.s]}: ${eth(t.amount)}`).join("\n");
-  if (!confirm(`Collect ${eth(total)} that Kleros owes this wallet (${short(account)}) for case #${id}?\n${lines}\n\nOne transaction, with a small network fee.`)) return;
+  if (!confirmBox(`Collect ${eth(total)} that Kleros owes this wallet (${short(account)}) for case #${id}?\n${lines}\n\nOne transaction, with a small network fee.`)) return;
   await sendTx("collect appeal money", { to: proxy.target, data: KPROXY.encodeFunctionData("withdrawFeesAndRewardsForAllRounds", [ch.localID, account, due.map((t) => t.s)]) });
   log(`✅ Appeal money collected from Kleros: ${eth(total)}.`, "ok");
   await refresh();
 }
 
 // ------------------------------------------------------------ evidence (ERC-1497, pinned on IPFS)
-// "/ipfs/<CID>" plus an optional file name, as Kleros shows it to jurors (same rule as lib.mjs IPFS_PATH_RE).
-const IPFS_PATH_RE = /^\/ipfs\/(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{58,})(\/[^\s]+)?$/;
+// "/ipfs/<CID>" plus an optional file name, as Kleros shows it to jurors (core.mjs IPFS_PATH_RE).
+const IPFS_PATH_RE = core.IPFS_PATH_RE;
 const MAX_FILE = 5 * 1024 * 1024;
 // The upload service's answer, whatever its exact shape (a "cids" list, or one cid or path), as "/ipfs/…".
 function ipfsPathFrom(j) {
@@ -1083,7 +1240,7 @@ function ipfsPathOfLink(link) {
 async function uploadToIpfs(blob, filename, operation = "evidence") {
   const fd = new FormData();
   fd.append("data", blob, filename);
-  const fail = (why) => new Error(`Could not upload "${filename}" to IPFS through Kleros's upload service (${why}). Nothing was sent to Kleros. Try again in a minute; if it keeps failing, ask Claude.`);
+  const fail = (why) => new Error(`Could not upload "${filename}" to IPFS through Kleros's upload service (${why}). Nothing was sent to Kleros. Try again in a minute${T("; if it keeps failing, ask Claude.", ".")}`);
   let r;
   try { r = await fetch(`${settings.kleros.ipfsUpload}?operation=${operation}&pinToGraph=false`, { method: "POST", body: fd }); }
   catch { throw fail("no connection"); }
@@ -1101,17 +1258,13 @@ async function uploadToIpfs(blob, filename, operation = "evidence") {
 // `ipfs add` does (and Kleros's upload service) and sends to Kleros when the challenge is matched. The
 // jurors read it from IPFS, so it must be saved there: the console does it before a dispute, and on
 // "Publish case description". Saving the same text again changes nothing.
-function cidV0(bytes) {
-  const varint = (n) => { const o = []; while (n >= 0x80) { o.push((n & 0x7f) | 0x80); n = Math.floor(n / 128); } o.push(n); return o; };
-  const size = varint(bytes.length);
-  const file = ethers.getBytes(ethers.concat([new Uint8Array([0x08, 0x02, 0x12, ...size]), bytes, new Uint8Array([0x18, ...size])]));
-  const node = ethers.concat([new Uint8Array([0x0a, ...varint(file.length)]), file]);
-  return ethers.encodeBase58(ethers.concat(["0x1220", ethers.sha256(node)]));
-}
+// (The IPFS address as `ipfs add` computes it, like the contract: core.mjs ipfsCidV0. Throws above one
+// IPFS block, 256 KiB, which no case description or policy reaches.)
+const cidV0 = (bytes) => core.ipfsCidV0(bytes);
 async function caseDescription(w) {
   const [text, uri] = await new ethers.Contract(contractAddr(), artifact.abi, rp).caseMetaEvidence(w);
   const bytes = ethers.toUtf8Bytes(text);
-  if ("/ipfs/" + cidV0(bytes) !== uri) throw new Error(`The contract's case description for ${w} does not match its IPFS address ${uri}. Ask Claude.`);
+  if ("/ipfs/" + cidV0(bytes) !== uri) throw new Error(`The contract's case description for ${w} does not match its IPFS address ${uri}.${T(" Ask Claude.", " Nothing was sent.")}`);
   return { bytes, uri };
 }
 const casesOnIpfs = new Set(); // IPFS addresses seen on IPFS (or saved there) since the page was opened
@@ -1130,7 +1283,7 @@ async function publishCaseOf(w) {
   if (await caseOnIpfs(uri)) { log(`Case description for ${short(w)} is on IPFS: ${where}`); return uri; }
   const p = await uploadToIpfs(new Blob([bytes], { type: "application/json" }), "metaevidence.json", "file");
   // (saved under another path, e.g. inside a folder: the file itself may still be at the contract's address)
-  if (p !== uri && !(await caseOnIpfs(uri))) throw new Error(`Kleros's upload service saved the case description at ${p}, not at ${uri} where the contract points. Ask Claude.`);
+  if (p !== uri && !(await caseOnIpfs(uri))) throw new Error(`Kleros's upload service saved the case description at ${p}, not at ${uri} where the contract points.${T(" Ask Claude.", " Try again later.")}`);
   casesOnIpfs.add(uri);
   log(`✅ Case description for ${short(w)} saved on IPFS: ${where}`, "ok");
   return uri;
@@ -1170,7 +1323,7 @@ async function submitEvidence() {
   if (!name || !description) throw new Error("Write a title and a description for the evidence.");
   if (url && file) throw new Error("Attach a file or paste a link, not both.");
   if (url && !/^(https:\/\/|ipfs:\/\/|\/ipfs\/)\S+$/.test(url)) throw new Error("The link should start with https://, ipfs:// or /ipfs/.");
-  if (file && file.size > MAX_FILE) throw new Error(`The file is ${(file.size / 1048576).toFixed(1)} MB. Kleros's upload service takes up to 5 MB: make it smaller (e.g. a screenshot), or ask Claude.`);
+  if (file && file.size > MAX_FILE) throw new Error(`The file is ${(file.size / 1048576).toFixed(1)} MB. Kleros's upload service takes up to 5 MB: make it smaller (e.g. a screenshot)${T(", or ask Claude", "")}.`);
   // jurors only get an attachment for a file on IPFS: any other link goes into the description, as text
   let fileURI = url ? ipfsPathOfLink(url) : null, linkText = "";
   if (url && !fileURI) {
@@ -1180,7 +1333,7 @@ async function submitEvidence() {
   const attached = file ? `\nFile: ${file.name} (stored on IPFS, shown to jurors as an attachment)`
     : fileURI ? `\nFile on IPFS: ${fileURI} (shown to jurors as an attachment)`
     : linkText ? `\nLink: ${linkText}\n\nKleros shows jurors only files stored on IPFS as attachments, so this link goes into the description as text, for jurors to copy into their browser. For a photo or a document, attach the file instead.` : "";
-  if (!confirm(`Send this evidence to Kleros case #${ch.disputeID}? It is public and cannot be removed.\n\n${name}\n${description}${attached}`)) return;
+  if (!confirmBox(`Send this evidence to Kleros case #${ch.disputeID}? It is public and cannot be removed.\n\n${name}\n${description}${attached}`)) return;
   if (file) {
     fileURI = await uploadToIpfs(file, file.name);
     log(`File stored on IPFS: ${settings.kleros.ipfsGateway}${fileURI}`);
@@ -1229,7 +1382,7 @@ async function sendChallengeDetails(w) {
 async function sendDetails() {
   await preflight();
   const w = chTarget();
-  if (!confirm(`Send the "Challenge details" for ${w} to the Kleros jurors?\n\nOptional: the case description already names the event and this wallet. The details add the Kleros case number and the transaction links on Etherscan. Send them at most once per case. They are public and permanent.`)) { log("Challenge details not sent."); return; }
+  if (!confirmBox(`Send the "Challenge details" for ${w} to the Kleros jurors?\n\nOptional: the case description already names the event and this wallet. The details add the Kleros case number and the transaction links on Etherscan. Send them at most once per case. They are public and permanent.`)) { log("Challenge details not sent."); return; }
   await sendChallengeDetails(w);
 }
 
@@ -1251,7 +1404,7 @@ async function release() {
     if (gas === null || (gas * 13n) / 10n > TX_GAS_CAP) {
       const why = gas === null ? "the network could not work out the fee for that payout (most likely too big for one Ethereum transaction)"
         : `that payout would need about ${gas.toLocaleString("en")} gas, too close to the ${TX_GAS_CAP.toLocaleString("en")} one Ethereum transaction may use`;
-      if (!confirm(`${expired.length} challenge(s) nobody matched in time count as attended. "Release payouts" settles them inside the payout, but ${why}.\n\nSettle them first, one transaction each (${expired.length} confirmation(s) in your wallet, each with a small network fee)? Each challenger gets their challenge deposit back and is added to the list, as the payout would do. Then the console asks you to release the payouts.`)) {
+      if (!confirmBox(`${expired.length} challenge(s) nobody matched in time count as attended. "Release payouts" settles them inside the payout, but ${why}.\n\nSettle them first, one transaction each (${expired.length} confirmation(s) in your wallet, each with a small network fee)? Each challenger gets their challenge deposit back and is added to the list, as the payout would do. Then the console asks you to release the payouts.`)) {
         log('Payout not sent. Settle the unmatched challenges first (or press "Release payouts" again and say yes).', "warn");
         return;
       }
@@ -1267,7 +1420,7 @@ async function release() {
   const open = BigInt(state.challenges.filter((x) => x.state === 2).length); // one share set aside each
   const share = (state.dep * state.count) / (n + open);
   const held = open ? `\n${open} challenger(s) are still in a Kleros case: ${eth(share * open)} is set aside until the final ruling (to the challenger if they win, otherwise split among the attendees).` : "";
-  const typed = prompt(`Pay ${n} attendees ${eth(share)} each, ${where()}?\nPool: ${eth(state.dep * state.count)}.${held}\nThis can only be done once.\n\nType PAY to continue.`);
+  const typed = promptBox(`Pay ${n} attendees ${eth(share)} each, ${where()}?\nPool: ${eth(state.dep * state.count)}.${held}\nThis can only be done once.\n\nType PAY to continue.`);
   if (typed !== "PAY") { log("Payout not sent."); return; }
   const r = await sendTx("release payouts", call("releasePayouts", []));
   reportFailed(r, "payout");
@@ -1285,9 +1438,9 @@ async function sweep() {
   const cases = BigInt(state.challenges.filter((x) => x.matched).length);
   const dust = state.attCount + cases * (state.attCount + 1n);
   if (state.spare > dust) {
-    const typed = prompt(`${eth(state.spare)} is spare. That is more than rounding dust (at most ${dust} wei here), so it is most likely guests' money: an overpayment, a stray transfer, or the deposit of a declined, waitlisted or late payer that was never returned.\nReturn guests' money first ("Refund declined guests" or "Return a stray transfer"; ask Claude to check the lists).\n\nType SWEEP only if you are sure all of it belongs to the organisers.`);
+    const typed = promptBox(`${eth(state.spare)} is spare. That is more than rounding dust (at most ${dust} wei here), so it is most likely guests' money: an overpayment, a stray transfer, or the deposit of a declined, waitlisted or late payer that was never returned.\nReturn guests' money first (${T('"Refund declined guests" or "Return a stray transfer"; ask Claude to check the lists', '"Refund selected" or "Return a stray transfer"; "Check the Luma list" shows what to give back')}).\n\nType SWEEP only if you are sure all of it belongs to the organisers.`);
     if (typed !== "SWEEP") { log("Collect leftovers stopped."); return; }
-  } else if (!confirm(`Send the ${eth(state.spare)} left over to your wallet ${short(account)}, ${where()}?`)) return;
+  } else if (!confirmBox(`Send the ${eth(state.spare)} left over to your wallet ${short(account)}, ${where()}?`)) return;
   await sendTx("collect leftovers", call("sweep", [account]));
   log("✅ Leftovers collected", "ok");
   await refresh();
@@ -1297,12 +1450,584 @@ async function cancel() {
   await preflight();
   await refresh();
   if (state.phase !== 0) throw new Error("The event can only be cancelled before the attendance list is posted.");
-  const typed = prompt(`Cancel the event ${where()}?\n\nThis refunds the ${state.count} REGISTERED stakers only (${eth(state.dep * state.count)} in total) and ends the event. It cannot be undone, and no payout is possible afterwards.\n\nPayers who are not registered (still pending, waitlisted or late on Luma) are NOT refunded by this. Afterwards: decline each of them on Luma, ask Claude to re-check the list (the verify script lists them), then click "Refund declined guests". Transfers nobody claimed on Luma (Claude's unmatched list) go back with "Return a stray transfer".\n\nType CANCEL to continue.`);
+  const typed = promptBox(`Cancel the event ${where()}?\n\nThis refunds the ${state.count} REGISTERED stakers only (${eth(state.dep * state.count)} in total) and ends the event. It cannot be undone, and no payout is possible afterwards.\n\nPayers who are not registered (still pending, waitlisted or late on Luma) are NOT refunded by this. ${T('Afterwards: decline each of them on Luma, ask Claude to re-check the list (the verify script lists them), then click "Refund declined guests". Transfers nobody claimed on Luma (Claude\'s unmatched list) go back with "Return a stray transfer".', 'Afterwards: refund each of them from the deposits table ("Refund selected"). Transfers nobody claimed on Luma ("Check the Luma list" shows them) go back with "Return a stray transfer".')}\n\nType CANCEL to continue.`);
   if (typed !== "CANCEL") { log("Cancel aborted."); return; }
   const r = await sendTx("cancel the event", call("cancel", []));
   reportFailed(r, "refund");
-  log("✅ Event cancelled: the registered stakers were refunded. Next: decline the remaining payers on Luma and ask Claude to re-check the list, then \"Refund declined guests\"; stray transfers go back with \"Return a stray transfer\".", "ok");
+  log(T("✅ Event cancelled: the registered stakers were refunded. Next: decline the remaining payers on Luma and ask Claude to re-check the list, then \"Refund declined guests\"; stray transfers go back with \"Return a stray transfer\".",
+    "✅ Event cancelled: the registered stakers were refunded. Next: refund the remaining payers from the deposits table (\"Refund selected\"); stray transfers go back with \"Return a stray transfer\"."), "ok");
   await refresh();
+}
+
+// ============================================================ hosted admin panel (scripts/build-admin.mjs)
+// Any organiser opens the page (GitHub Pages), connects their own wallet, creates an event or opens one.
+// Everything about an event is read from its contract. The lists are made in the browser by the same
+// code as the scripts (scripts/core.mjs): a Luma export picked here never leaves this computer.
+
+// The network part of the core's settings (core.newEventConfig, core.contractConfig).
+const network = () => ({
+  chainId: chain.chainId, chain: chain.chainId === MAINNET ? "ethereum" : "local", chainName: chain.name,
+  rpcUrl: chain.rpc, explorer: chain.explorer, logChunk: Number(settings.logChunk) || core.DEFAULT_LOG_CHUNK,
+  kleros: { ...HOSTED.kleros, policyURI: HOSTED.policy.uri },
+});
+// warnings from the core's checks, worded for this page
+const pageLog = { info() {}, warn: (m) => log(String(m).replace("(check --scan-from-block / deployBlock)", "(check the deploy block)"), "warn") };
+const quiet = { info() {}, warn() {} };
+const adminLink = (addr = ev?.contract, block = ev?.deployBlock) => `${location.origin}${location.pathname}?contract=${addr}&from=${block ?? ""}`;
+const guestLink = (addr = ev?.contract, block = ev?.deployBlock) => new URL(`${HOSTED.guestPage}?contract=${addr}&from=${block ?? ""}`, location.href).href;
+
+async function initHosted() {
+  document.body.classList.add("hosted");
+  // the static texts name "the console" (the local tool): here it is this page
+  const walk = document.createTreeWalker(document.querySelector("main"), NodeFilter.SHOW_TEXT);
+  for (let n; (n = walk.nextNode()); ) n.nodeValue = ui(n.nodeValue);
+  document.title = "Kickback · Admin panel";
+  chain = { chainId: Number(HOSTED.chainId), name: HOSTED.chainName, rpc: HOSTED.rpcUrl, explorer: HOSTED.explorer };
+  settings = {
+    chainId: chain.chainId, chainName: chain.name, rpcUrl: chain.rpc, explorer: chain.explorer, logChunk: HOSTED.logChunk,
+    kleros: { ...HOSTED.kleros, policyURI: HOSTED.policy.uri }, knownKleros: core.KLEROS[chain.chainId] ?? null,
+    deployBlock: null, depositWei: null, poolCap: null, poolCapWei: null, // per event: set when one is opened
+  };
+  cfg = {};
+  const local = chain.chainId !== MAINNET;
+  rp = new ethers.JsonRpcProvider(chain.rpc, chain.chainId, { staticNetwork: true, cacheTimeout: -1, ...(local ? { pollingInterval: 250 } : {}) });
+  mode = local ? "local" : "live";
+  const b = $("banner"); b.hidden = false; b.className = "banner " + mode;
+  b.textContent = local ? `LOCAL TEST CHAIN (${chain.name}, chain ${chain.chainId}): practice run. Nothing here uses real money.`
+    : `${chain.name}: real ETH. Check every amount and address before you confirm in your wallet.`;
+  $("addr").placeholder = "Event contract address 0x…";
+  timezones();
+  artifact = await getJson(HOSTED.artifact);
+  iface = new ethers.Interface(artifact.abi);
+  if (core.ipfsPathOf(HOSTED.policy.text) !== HOSTED.policy.uri) {
+    HOSTED.policy.broken = true;
+    log("This page's copy of the juror policy does not match its IPFS address, so it cannot create events. Reload the page.", "err");
+  }
+  $("refresh").textContent = "Open";
+  $("refresh").disabled = false;
+  // the event to open: from the link (?contract=…&from=…), otherwise the one this page was built for
+  const q = new URLSearchParams(location.search);
+  const qc = (q.get("contract") ?? "").trim(), qf = (q.get("from") ?? "").trim();
+  if (qc) { $("addr").value = qc; if (/^\d+$/.test(qf)) $("fromBlock").value = qf; }
+  else if (HOSTED.defaultEvent) { $("addr").value = HOSTED.defaultEvent.contract; $("fromBlock").value = String(HOSTED.defaultEvent.deployBlock); }
+  // another address typed in: the block in the box belongs to the previous one
+  $("addr").addEventListener("input", () => ($("fromBlock").value = ""));
+  showMyEvents();
+  if (!window.ethereum) log("No browser wallet found. You can look at an event, but to act you need a wallet: a browser extension, or your wallet app's own browser.", "warn");
+  if ($("addr").value) await wrap(refresh)();
+}
+
+// The event's timezone as an offset; the computer's own is preselected.
+const TZ_OFFSETS = ["-12:00", "-11:00", "-10:00", "-09:30", "-09:00", "-08:00", "-07:00", "-06:00", "-05:00", "-04:00", "-03:30", "-03:00", "-02:00", "-01:00", "+00:00",
+  "+01:00", "+02:00", "+03:00", "+03:30", "+04:00", "+04:30", "+05:00", "+05:30", "+05:45", "+06:00", "+06:30", "+07:00", "+08:00", "+08:45", "+09:00", "+09:30",
+  "+10:00", "+10:30", "+11:00", "+12:00", "+12:45", "+13:00", "+14:00"];
+function timezones() {
+  const m = -new Date().getTimezoneOffset();
+  const here = `${m < 0 ? "-" : "+"}${String(Math.floor(Math.abs(m) / 60)).padStart(2, "0")}:${String(Math.abs(m) % 60).padStart(2, "0")}`;
+  for (const o of TZ_OFFSETS) {
+    const opt = document.createElement("option");
+    opt.value = o; opt.textContent = `UTC${o}${o === here ? " (this computer)" : ""}`;
+    $("neTz").append(opt);
+  }
+  $("neTz").value = TZ_OFFSETS.includes(here) ? here : "+00:00";
+}
+
+// ------------------------------------------------------------ opening an event
+// Forget everything shown for the previous event (lists, ticks, the attendance list).
+function forgetEvent() {
+  ev = evCfg = deposits = luma = attendance = state = null;
+  settings.deployBlock = null;
+  for (const id of ["status", "challenges", "depTable", "lumaResult", "planResult"]) $(id).replaceChildren();
+  $("depInfo").textContent = ""; $("kwarn").hidden = true; $("eventTitle").textContent = "";
+}
+
+// Reads the event in the address box from its contract (core.readEvent) and finds its deploy block,
+// where every search of its history starts. Kept until another address or block is typed in.
+async function openEvent() {
+  const a = contractAddr();
+  const typed = $("fromBlock").value.trim();
+  if (ev && ev.contract === a && (typed === "" || typed === String(ev.deployBlock))) { $("fromBlock").value = String(ev.deployBlock); return ev; }
+  if (typed && !/^\d+$/.test(typed)) throw new Error("Deploy block: type the block number only (digits), or leave it empty.");
+  forgetEvent();
+  let e;
+  try { e = await core.readEvent(rp, a, artifact.abi); }
+  catch (err) {
+    if (err.code === "NO_KICKBACK_CONTRACT") throw new Error(`There is no contract at ${a} on ${chain.name}. Check the address (a contract on another network can't be used here).`);
+    if (err.code === "NOT_KICKBACK") throw new Error(`The contract at ${a} is not a kickback deposit contract, so this page can't run it.`);
+    throw err;
+  }
+  const from = typed ? Number(typed) : await findDeployBlock(a);
+  if (typed) await checkDeployBlock(a, from);
+  // Kleros's own Dispute Resolver (and its court) only: the guest page refuses any other one
+  const known = settings.knownKleros ?? { disputeResolver: HOSTED.kleros.disputeResolver, arbitrator: HOSTED.kleros.arbitrator };
+  const bad = e.disputeResolver.toLowerCase() !== known.disputeResolver.toLowerCase() ? `its Dispute Resolver is ${e.disputeResolver}, not Kleros's own (${ethers.getAddress(known.disputeResolver)})`
+    : known.arbitrator && e.arbitrator.toLowerCase() !== known.arbitrator.toLowerCase() ? `its court is ${e.arbitrator}, not Kleros Court (${ethers.getAddress(known.arbitrator)})` : null;
+  ev = { ...e, deployBlock: from,
+    notKleros: bad && `⚠ WARNING: this contract does not use Kleros: ${bad}. Challenges to its attendance list would not be decided by Kleros jurors, this page sends nothing to its dispute contracts, and the guest page refuses it. Do not send ETH to it unless you know exactly why.` };
+  $("fromBlock").value = String(from);
+  $("kwarn").hidden = !ev.notKleros; $("kwarn").textContent = ev.notKleros ?? "";
+  if (ev.notKleros) log(ev.notKleros, "err");
+  settings.deployBlock = from;
+  evCfg = core.contractConfig(e, network(), from);
+  $("eventTitle").textContent = `Event: ${e.eventName}`;
+  document.title = `Kickback · Admin panel · ${e.eventName}`;
+  try { history.replaceState(null, "", `${location.pathname}?contract=${a}&from=${from}`); } catch {}
+  return ev;
+}
+
+// True when the contract was created by a transaction of this block (directly, not by another contract).
+async function createdIn(a, block) {
+  try {
+    const b = await rp.getBlock(block, true);
+    for (const tx of b?.prefetchedTransactions ?? []) {
+      if (tx.to) continue;
+      const r = await rp.getTransactionReceipt(tx.hash);
+      if (r?.contractAddress && ethers.getAddress(r.contractAddress) === a) return true;
+    }
+  } catch {}
+  return false;
+}
+// The deploy block when none was given: the first block with the contract's code (a binary search over
+// past states), confirmed by its creation transaction. Public RPCs often can't read old states: then ask.
+async function findDeployBlock(a) {
+  const ask = () => new Error(`Could not find the block this contract was created in (the network connection can't look that far back). On ${chain.explorer}/address/${a}, find its "Contract Creation" transaction, type that transaction's block number in "Deploy block", and press Open again.`);
+  log("Looking for the block the contract was created in…");
+  let lo = 0, hi;
+  try {
+    hi = await rp.getBlockNumber();
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (core.isContractCode(await rp.getCode(a, mid))) hi = mid; else lo = mid + 1;
+    }
+  } catch { throw ask(); }
+  if (!(await createdIn(a, lo))) throw ask();
+  return lo;
+}
+// A deploy block typed in (or from the link). Too late a block would hide the deposits sent before it.
+async function checkDeployBlock(a, from) {
+  if (await createdIn(a, from)) return;
+  let before = null;
+  try { before = from > 0 && core.isContractCode(await rp.getCode(a, from - 1)); } catch {}
+  if (before === true) throw new Error(`The contract already existed before block ${from}, so deposits sent before that block would be missed. Use the block of its "Contract Creation" transaction (${chain.explorer}/address/${a}), or leave "Deploy block" empty.`);
+  log(`Could not confirm that ${short(a)} was created in block ${from}. If deposits seem to be missing, check the block of its "Contract Creation" transaction on ${chain.explorer}/address/${a}.`, "warn");
+}
+
+// ------------------------------------------------------------ creating an event
+// The form, checked by the core (core.newEventConfig, core.deployArgs with the generic case description
+// template): the constructor arguments and the case description jurors would read for an example wallet.
+function eventForm() {
+  if (!account) throw new Error("Connect your wallet first: it becomes the owner of the new contract.");
+  const v = (id) => $(id).value.trim();
+  const start = v("neStart").slice(0, 16), off = $("neTz").value, end = v("neEnd").slice(0, 5);
+  if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(start)) throw new Error("Starts: pick the date and time the event starts.");
+  if (!/^\d\d:\d\d$/.test(end)) throw new Error("Ends at: pick the time the event ends.");
+  const startIso = `${start}:00${off}`;
+  const t0 = Date.parse(startIso);
+  if (!(t0 > Date.now())) throw new Error("Starts: the event must start in the future.");
+  let t1 = Date.parse(`${start.slice(0, 10)}T${end}:00${off}`);
+  if (t1 <= t0) t1 += 86_400_000; // ends after midnight
+  const days = Number(v("neDays"));
+  if (!Number.isInteger(days) || days < 7 || days > 365) throw new Error("Settle within: a whole number of days, at least 7 (14 is usual) and at most 365.");
+  const form = {
+    eventTitle: v("neTitle"), eventName: v("neName"), eventWhere: v("neWhere"), hosts: v("neHosts"), eventLink: v("neLink"),
+    eventWhen: core.describeWhen(startIso, new Date(t1).toISOString(), v("neZone")),
+    deposit: v("neDeposit"), eventStart: startIso, claimDeadline: new Date(t0 + days * 86_400_000).toISOString(),
+  };
+  const cfgN = core.newEventConfig(form, network(), account);
+  const name = "The case description";
+  const args = core.deployArgs(cfgN, account, HOSTED.template.text, { name });
+  const sample = JSON.parse(core.caseTemplate(HOSTED.template.text, core.templateValues(cfgN, account), { name }).sample);
+  return { form, cfg: cfgN, args, sample, days };
+}
+
+function renderPreview(f) {
+  const el = $("nePreview");
+  el.hidden = false; el.replaceChildren();
+  const m = f.sample;
+  const add = (h, text) => { const t = document.createElement("h3"); t.textContent = h; const d = document.createElement("div"); d.textContent = text; el.append(t, d); };
+  const top = document.createElement("div"); top.className = "warn";
+  top.textContent = "What Kleros jurors would read in a case about one guest (the wallet here is an example; each case names the challenged guest's own wallet):";
+  el.append(top);
+  add("Title", m.title);
+  add("Question", m.question);
+  add("Answers", m.rulingOptions.titles.map((t, i) => `${i + 1}. ${t}: ${m.rulingOptions.descriptions?.[i] ?? ""}`).join("\n"));
+  add("Description", m.description);
+  const t = document.createElement("h3"); t.textContent = "Juror policy (the rules jurors apply)";
+  el.append(t, link(settings.kleros.ipfsGateway + HOSTED.policy.uri, HOSTED.policy.uri + " ↗"));
+}
+
+async function previewEvent() {
+  renderPreview(eventForm());
+  log("Preview ready: below the form is what Kleros jurors would read in a case.");
+}
+
+// The juror policy every new event names (docs/attendance-policy.generic.md): it must be on IPFS, at the
+// address this page computes from its text, before a contract points to it.
+async function ensurePolicyPinned() {
+  const { uri, text } = HOSTED.policy;
+  if (HOSTED.policy.broken || core.ipfsPathOf(text) !== uri) throw new Error("This page's copy of the juror policy does not match its IPFS address. Not created: nothing was sent. Reload the page.");
+  if (await caseOnIpfs(uri)) { log(`Juror policy is on IPFS: ${settings.kleros.ipfsGateway}${uri}`); return uri; }
+  log("Saving the juror policy on IPFS through Kleros's upload service…");
+  const p = await uploadToIpfs(new Blob([ethers.toUtf8Bytes(text)], { type: "text/markdown" }), "attendance-policy.md", "file");
+  if (p !== uri) throw new Error(`Kleros's upload service saved the juror policy at ${p}, not at ${uri} where the new contract would point. Not created: nothing was sent. Try again later.`);
+  casesOnIpfs.add(uri);
+  log(`✅ Juror policy saved on IPFS: ${settings.kleros.ipfsGateway}${uri}`, "ok");
+  return uri;
+}
+
+async function createEvent() {
+  const f = eventForm();
+  renderPreview(f);
+  const [depositWei, name, , start, end, [resolver, , , , policyURI]] = f.args;
+  // only Kleros's own Dispute Resolver (on Ethereum mainnet, the known address)
+  const known = settings.knownKleros?.disputeResolver ?? HOSTED.kleros.disputeResolver;
+  if (resolver.toLowerCase() !== known.toLowerCase()) throw new Error(`This page names ${resolver} as Kleros's Dispute Resolver, not the known address ${known}. Not created.`);
+  const earlier = pastDeploys();
+  if (earlier.length) {
+    const lines = earlier.map((d) => `• ${d.name ? `"${d.name}" ` : ""}${d.addr ? `${d.addr} (${chain.explorer}/address/${d.addr})` : `not confirmed yet, check ${chain.explorer}/tx/${d.hash}`}${d.at ? `, ${when(d.at)}` : ""}`);
+    const typed = promptBox(`Event contracts already created from this browser:\n${lines.join("\n")}\n\nCreating another one makes a NEW, separate contract. Each event needs only one: guests must only ever pay the one address you give them. Check the list above first.\n\nType NEW to create another contract.`);
+    if (typed !== "NEW") { log("Not created: no new contract."); return; }
+  }
+  const k = HOSTED.kleros;
+  if (!confirmBox(`Create the deposit contract for this event on ${chain.name}?\n\nEvent: ${f.form.eventTitle}\nShort name (in the contract): ${name}\nWhen: ${f.form.eventWhen}\nWhere: ${f.form.eventWhere}\nHosts: ${f.form.hosts}\nRegistration page: ${f.form.eventLink}\nDeposit: ${ethers.formatEther(depositWei)} ETH per guest\nAttendance list from: ${when(start)} (the event start)\nSettle by: ${when(end)} (${f.days} days later; if no list by then, each guest can withdraw their own deposit)\nChallenges: Kleros Court, ${Number(k.court) === 0 ? "General Court" : "court " + k.court}, ${k.jurors} jurors (Kleros's Dispute Resolver ${short(resolver)})\nJuror policy: ${policyURI}\nOwner: ${account} (this wallet)\n\nNone of this can be changed after the contract is created.`)) return;
+  await ensurePolicyPinned();
+  const dtx = await new ethers.ContractFactory(artifact.abi, artifact.bytecode).getDeployTransaction(...f.args);
+  const at = Math.floor(Date.now() / 1000);
+  // remembered as soon as it is sent: a timed-out deploy may still go through
+  const r = await sendTx("create the event contract", { data: dtx.data }, { onSent: (hash) => rememberDeploy({ hash, at, name }) });
+  const addr = ethers.getAddress(r.contractAddress);
+  rememberDeploy({ hash: r.hash, at, name, addr, block: r.blockNumber });
+  $("addr").value = addr; $("fromBlock").value = String(r.blockNumber);
+  const done = $("neDone");
+  done.hidden = false; done.replaceChildren();
+  const h = document.createElement("h3"); h.textContent = `✅ "${name}" is ready: contract ${addr}, created in block ${r.blockNumber}.`;
+  done.append(h, copyRow("Admin link: this page for your event (keep it)", adminLink(addr, r.blockNumber)),
+    copyRow("Guest page link: give it to guests (e.g. on Luma) to send their deposit", guestLink(addr, r.blockNumber)));
+  showMyEvents();
+  log(`✅ Event contract created at ${addr} (block ${r.blockNumber})\n${chain.explorer}/address/${addr}\nGive guests the guest page link; keep the admin link to come back to this event.`, "ok");
+  await refresh();
+}
+
+function copyRow(label, url) {
+  const row = document.createElement("div"); row.className = "row"; row.style.marginTop = "6px";
+  const l = document.createElement("label"); l.className = "file"; l.textContent = label;
+  const i = document.createElement("input"); i.readOnly = true; i.value = url; l.append(i);
+  const b = document.createElement("button"); b.className = "secondary"; b.textContent = "Copy";
+  b.onclick = async () => {
+    try { await navigator.clipboard.writeText(url); } catch { i.select(); }
+    b.textContent = "Copied"; setTimeout(() => (b.textContent = "Copy"), 2000);
+  };
+  row.append(l, b);
+  return row;
+}
+
+function showMyEvents() {
+  const el = $("myEvents");
+  el.replaceChildren();
+  const mine = pastDeploys().filter((d) => d.addr);
+  if (!mine.length) return;
+  const h = document.createElement("h3"); h.textContent = "Events created from this browser";
+  el.append(h);
+  for (const d of mine) {
+    const div = document.createElement("div"), a = document.createElement("a");
+    a.href = adminLink(d.addr, d.block); a.textContent = `${d.name || "Event"} · ${d.addr}`;
+    div.append(a); el.append(div);
+  }
+}
+
+// ------------------------------------------------------------ small helpers for lists
+function table(headers, rows) {
+  const t = document.createElement("table"); t.className = "list";
+  const hr = document.createElement("tr");
+  for (const h of headers) { const th = document.createElement("th"); th.textContent = h; hr.append(th); }
+  t.append(hr);
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    for (const c of r) { const td = document.createElement("td"); if (c instanceof Node) td.append(c); else td.textContent = c ?? ""; tr.append(td); }
+    t.append(tr);
+  }
+  const box = document.createElement("div"); box.className = "scroll"; box.append(t);
+  return box;
+}
+const walletLink = (w) => { const a = link(`${chain.explorer}/address/${w}`, short(w)); a.title = w; a.className = "mono"; return a; };
+const heading = (text) => { const h = document.createElement("h3"); h.textContent = text; return h; };
+const line = (text, cls) => { const d = document.createElement("div"); if (cls) d.className = cls; d.textContent = text; return d; };
+const sentAt = (iso) => (iso ? new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "");
+// a file to save, made on this computer (nothing is uploaded)
+function download(name, text, type = "text/csv") {
+  const a = document.createElement("a");
+  a.className = "dl"; a.download = name; a.textContent = `⬇ ${name}`;
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  return a;
+}
+async function readCsvFile(f) {
+  let rows;
+  try { rows = core.parseCsv(await f.text()); } catch (e) { throw new Error(`${f.name} could not be read as a CSV file (${e.message}).`); }
+  if (!rows.length) throw new Error(`${f.name} has no rows.`);
+  return rows;
+}
+async function readJsonFile(id, what) {
+  const f = $(id).files?.[0];
+  if (!f) throw new Error(`Choose the ${what} file first.`);
+  try { return { name: f.name, data: JSON.parse(await f.text()) }; } catch { throw new Error(`${f.name} is not a ${what} file (it is not JSON).`); }
+}
+
+// ------------------------------------------------------------ the deposits table
+const STATUS_TEXT = { unregistered: "received, not registered", registered: "registered", paid: "paid out", refunded: "refunded",
+  returned: "returned", "refunded, paid again": "refunded, then paid again", unknown: "could not be read" };
+const STATUS_NUM = { unregistered: 0, returned: 0, registered: 1, paid: 2, refunded: 3, "refunded, paid again": 3 };
+// What the core allows for this deposit now, or what the Luma check decided, as long as the deposit is
+// still in the same situation on-chain (a reload keeps the ticks of deposits that can still be ticked).
+const canReg = (r) => deposits.listOpen && r.status === "unregistered" && (r.canRegister || r.lumaRegister);
+const canRef = (r) => r.canRefund || (r.lumaRefund && (r.status === "unregistered" || (r.status === "registered" && deposits.listOpen)));
+
+// Every deposit since the deploy block (core.depositsOverview): which ones can be registered or refunded.
+async function loadDeposits() {
+  await openEvent();
+  log("Reading the deposits from the blockchain…");
+  const res = await core.depositsOverview({ prov: rp, cfg: evCfg, abi: artifact.abi, scanFrom: ev.deployBlock, log: pageLog });
+  const c = new ethers.Contract(ev.contract, artifact.abi, rp);
+  // the ticks, names and Luma decisions of the table as it was (same event), by deposit
+  const was = new Map(deposits?.contract === ev.contract ? deposits.rows.map((r) => [r.key, r]) : []);
+  const keep = (k) => { const p = was.get(k); return p ? { register: p.register, refund: p.refund, lumaRegister: p.lumaRegister, lumaRefund: p.lumaRefund, who: p.who } : {}; };
+  deposits = {
+    contract: ev.contract,
+    block: res.check?.snapshotBlock ?? (await rp.getBlockNumber()),
+    listOpen: res.check ? res.check.listOpen : Number(await c.phase()) === 0,
+    statusOf: res.check?.statusOf ?? new Map(),
+    returns: res.returns,
+    rows: res.deposits.map((d) => ({ ...d, key: core.depKey(d.tx, d.from), register: false, refund: false, ...keep(core.depKey(d.tx, d.from)) })),
+  };
+  lumaNames();
+  renderDeposits();
+  log(`${deposits.rows.length} deposit(s) read.`);
+}
+
+// names from the last Luma check, so the table says who each wallet is
+function lumaNames() {
+  if (!deposits || !luma || luma.contract !== deposits.contract) return;
+  const byKey = new Map(), byWallet = new Map();
+  for (const r of luma.check.results) {
+    if (!r.wallet) continue;
+    const who = r.name || r.email;
+    if (!who) continue;
+    if (r.tx) byKey.set(core.depKey(r.tx, r.wallet), who);
+    if (!byWallet.has(r.wallet.toLowerCase())) byWallet.set(r.wallet.toLowerCase(), who);
+  }
+  for (const r of deposits.rows) r.who = byKey.get(r.key) ?? byWallet.get(r.from.toLowerCase()) ?? r.who;
+}
+
+function renderDeposits() {
+  const el = $("depTable");
+  el.replaceChildren();
+  if (!deposits) return;
+  const rows = deposits.rows;
+  $("depInfo").textContent = rows.length ? `${rows.length} deposit(s), ${core.fmtEth(rows.reduce((s, r) => s + r.amount, 0n))} in total.` : "No deposits yet.";
+  if (!rows.length) return;
+  const t = document.createElement("table"); t.className = "list";
+  const hr = document.createElement("tr");
+  for (const h of ["Register", "Refund", "Guest", "Amount", "Sent", "Status", "Note"]) { const th = document.createElement("th"); th.textContent = h; hr.append(th); }
+  t.append(hr);
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    tr.dataset.wallet = r.from; tr.dataset.tx = r.tx;
+    const box = (kind, ok) => {
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.className = kind; cb.disabled = !ok; cb.checked = ok && r[kind];
+      cb.title = ok ? (kind === "register" ? "Register this guest" : "Refund this guest's deposit") : "Not possible for this deposit";
+      cb.onchange = () => {
+        r[kind] = cb.checked;
+        const other = kind === "register" ? "refund" : "register";
+        if (cb.checked && r[other]) { r[other] = false; tr.querySelector("input." + other).checked = false; }
+      };
+      return cb;
+    };
+    const who = document.createElement("span");
+    if (r.who) who.append(r.who, document.createElement("br"));
+    who.append(walletLink(r.from));
+    const amount = core.fmtEth(r.amount) + (r.held !== r.amount ? ` (still held: ${core.fmtEth(r.held)})` : "");
+    const sent = document.createElement("span");
+    sent.append(sentAt(r.sentAt) + " ", link(r.explorer, "tx ↗"));
+    const note = ui([r.code && r.code !== "VERIFIED" ? `${r.code}: ${r.note}` : r.note].filter(Boolean).join(" "));
+    for (const c of [box("register", canReg(r)), box("refund", canRef(r)), who, amount, sent, STATUS_TEXT[r.status] ?? r.status, note]) {
+      const td = document.createElement("td");
+      if (c instanceof Node) td.append(c); else td.textContent = c;
+      tr.append(td);
+    }
+    t.append(tr);
+  }
+  const box = document.createElement("div"); box.className = "scroll"; box.append(t);
+  el.append(box);
+  if (deposits.returns.length) {
+    el.append(heading("To give back with “Return a stray transfer” (Other actions)"),
+      table(["Amount", "To", "Why"], deposits.returns.map((x) => [`${x.to_return} ETH`, walletLink(x.wallet), ui(`${x.code}: ${x.note}`)])));
+  }
+}
+
+// The ticked rows as a stamped list (like the scripts' new-stakers.json / refunds.json), checked by checkList.
+async function tickedList(kind) {
+  await preflight();
+  if (!deposits || deposits.contract !== contractAddr()) throw new Error('Press "Load deposits" first.');
+  const ok = kind === "register" ? canReg : canRef;
+  const picked = deposits.rows.filter((r) => r[kind] && ok(r));
+  if (!picked.length) throw new Error(`Tick ${kind === "register" ? "Register" : "Refund"} for the guests first (in the deposits table).`);
+  const seen = new Set(), items = [];
+  for (const r of picked) {
+    if (seen.has(r.from)) continue; // one action per wallet
+    seen.add(r.from);
+    items.push({ wallet: r.from, name: r.who ?? "", status: deposits.statusOf.get(r.from.toLowerCase()) ?? STATUS_NUM[r.status] });
+  }
+  const list = { contract: deposits.contract, chainId: chain.chainId, deposit: ev.depositAmount.toString(), block: deposits.block, items };
+  return checkList(list, "The ticked list", REDO.deposits);
+}
+async function registerSel() {
+  if (await registerWallets(await tickedList("register"), "depInfo")) await loadDeposits();
+}
+async function refundSel() {
+  if (await refundItems(await tickedList("refund"), "depInfo")) await loadDeposits();
+}
+// new-stakers.json / refunds.json made by the scripts (verify-deposits.mjs)
+async function registerFile() {
+  await preflight();
+  const f = await readJsonFile("stakersFile", "new-stakers.json");
+  if (await registerWallets(await checkList(f.data, f.name, REDO.file), "depInfo") && deposits) await loadDeposits();
+}
+async function refundFile() {
+  await preflight();
+  const f = await readJsonFile("refundsFile", "refunds.json");
+  if (await refundItems(await checkList(f.data, f.name, REDO.file), "depInfo") && deposits) await loadDeposits();
+}
+
+// ------------------------------------------------------------ the Luma guest list
+// The same checks as verify-deposits.mjs (core.checkGuests), in this browser: approved payers are ticked
+// for Register and declined payers for Refund; who is waiting and what needs a look is listed.
+async function checkLuma() {
+  await openEvent();
+  const f = $("lumaFile").files?.[0];
+  if (!f) throw new Error("Choose the Luma guest list first (the CSV file from Manage → Guests → Export CSV).");
+  const rows = await readCsvFile(f);
+  await loadDeposits(); // the table as it is now, so the Luma lists and the table agree
+  log(`Checking ${rows.length} registration(s) from ${f.name} on the blockchain…`);
+  let check;
+  try { check = await core.checkGuests({ prov: rp, cfg: evCfg, abi: artifact.abi, rows, scanFrom: ev.deployBlock, log: pageLog }); }
+  catch (e) {
+    if (/tx-link column/.test(e.message)) throw new Error(`${f.name} has no deposit tx link column. Is it this event's Luma guest export? Its columns: ${Object.keys(rows[0]).join(", ")}.`);
+    throw e;
+  }
+  luma = { contract: ev.contract, file: f.name, check };
+  for (const r of deposits.rows) r.register = r.refund = r.lumaRegister = r.lumaRefund = false;
+  const byKey = new Map(deposits.rows.map((r) => [r.key, r]));
+  for (const [kind, list] of [["register", check.newStakers], ["refund", check.refunds]]) {
+    for (const g of list) {
+      const r = byKey.get(core.depKey(g.tx, g.wallet));
+      if (!r) { log(`${g.name || g.email || g.wallet}: their deposit (${g.tx}) is not in the deposits table. Press "Load deposits" and check again.`, "warn"); continue; }
+      r[kind === "register" ? "lumaRegister" : "lumaRefund"] = true;
+      r[kind] = true;
+    }
+  }
+  lumaNames();
+  renderDeposits();
+  renderLuma();
+  log(`Luma list checked: ${check.newStakers.length} ticked to register, ${check.refunds.length} ticked to refund, ${check.toReview.length} waiting for your decision, ${check.issues.length} to look at.`, "ok");
+}
+
+function renderLuma() {
+  const el = $("lumaResult");
+  el.replaceChildren();
+  if (!luma) return;
+  const c = luma.check;
+  const sum = (list) => core.fmtEth(list.reduce((s, x) => s + (x.units ?? 0n), 0n));
+  el.append(
+    line(`From ${luma.file}:`),
+    line(`✅ Deposits that check out: ${c.verified.length} (${c.held.length} still held by the contract)`),
+    line(`🆕 Approved on Luma, ticked to register: ${c.newStakers.length}`),
+    line(`↩️ Declined on Luma, ticked to refund: ${c.refunds.length}`),
+    line(`🕒 Waiting for your decision on Luma: ${c.toReview.length}`, c.toReview.length ? "warn" : ""),
+    line(`💸 To give back with “Return a stray transfer”: ${c.returns.length}${c.returns.length ? ` (${sum(c.returns)})` : ""}`, c.returns.length ? "warn" : ""),
+    line(`⚠️ Needs a look: ${c.issues.length}`, c.issues.length ? "warn" : ""),
+    line(`Deposits nobody claimed on Luma: ${c.openUnmatched.length}${c.openUnmatched.length ? ` (${sum(c.openUnmatched)})` : ""}`, c.openUnmatched.length ? "warn" : ""),
+  );
+  if (c.toReview.length)
+    el.append(heading("Waiting for your decision on Luma (approve or decline, then check again)"),
+      table(["Guest", "Email", "Wallet", "Paid"], c.toReview.map((r) => [r.name, r.email, walletLink(r.wallet), `${r.amount} ETH`])));
+  if (c.issues.length)
+    el.append(heading("Needs a look (email these guests)"),
+      table(["Code", "Guest", "Note"], c.issues.map((r) => [r.code, r.name || r.email || r.wallet, ui(r.note)])));
+  if (c.returns.length)
+    el.append(heading("To give back with “Return a stray transfer” (Other actions)"),
+      table(["Amount", "To", "Guest", "Why"], c.returns.map((x) => [`${x.to_return} ETH`, walletLink(x.wallet), x.name || x.email, ui(`${x.code}: ${x.note}`)])));
+  if (c.unmatched.length)
+    el.append(heading("Deposits nobody claimed on Luma"),
+      table(["From", "Left to return", "Status", "Note"], c.unmatched.map((u) => [walletLink(u.from), `${u.to_return} ETH`, u.status, ui(u.note)])));
+  const files = document.createElement("div");
+  files.append(line("Save the lists (made on this computer):"));
+  for (const [key, file] of [["verified", "verified.csv"], ["toReview", "to-review.csv"], ["issues", "issues.csv"], ["returns", "returns.csv"], ["unmatched", "unmatched.csv"]])
+    files.append(download(file, core.toCsv(c[key], core.CHECK_COLUMNS[key])));
+  el.append(files);
+}
+
+// ------------------------------------------------------------ the attendance list
+// The same matching as build-payout.mjs (core.buildPayout): the Luma export after the event (its check-in
+// column), checked like the Luma list above, plus an optional door list.
+async function buildPlan() {
+  await openEvent();
+  const f = $("checkinFile").files?.[0];
+  if (!f) throw new Error("Choose the Luma guest list exported after the event first (its check-in column shows who came).");
+  const rows = await readCsvFile(f);
+  const door = $("doorFile").files?.[0];
+  const extra = door ? await readCsvFile(door) : undefined;
+  attendance = null; renderPlan();
+  log(`Checking ${rows.length} registration(s) from ${f.name} on the blockchain…`);
+  const check = await core.checkGuests({ prov: rp, cfg: evCfg, abi: artifact.abi, rows, scanFrom: ev.deployBlock, log: quiet });
+  const res = await core.buildPayout({ prov: rp, cfg: evCfg, abi: artifact.abi, checkins: rows, verified: check.verified, claims: check.claims, extra, extraName: door?.name, title: ev.eventName, log: pageLog });
+  if (res.unknown.length) {
+    const typed = promptBox(`${res.unknownNote}.\n\nThey would count as no-shows and lose their deposit. Check each of them by hand first: if someone came, put their wallet on a door list (a CSV with a wallet column) and build the list again.\n\nType NOSHOW to count them as no-shows anyway.`);
+    if (typed !== "NOSHOW") { log("Attendance list not built: check the stakers the Luma list doesn't name first.", "warn"); return; }
+  }
+  if (!res.attendees.length) throw new Error("Nobody on the staker list checked in. Don't post this list: check the export (its check-in column) first.");
+  attendance = { contract: ev.contract, plan: res.plan, source: "luma", res, file: f.name };
+  renderPlan();
+  log(`Attendance list built: ${res.attendees.length} of ${res.stakers.length} stakers checked in, ${core.fmtEth(res.share)} each. Check it below, then press "Post attendance list".`, "ok");
+}
+
+// payout-plan.json made by the scripts (build-payout.mjs); checked again when it is posted
+async function loadPlanFile() {
+  if (!$("planFile").files?.[0]) return;
+  await openEvent();
+  const f = await readJsonFile("planFile", "payout-plan.json");
+  const d = f.data;
+  if (!d || !d.contract || !Array.isArray(d.attendees) || d.share === undefined || d.stakers === undefined) throw new Error(`${f.name} is not a payout-plan.json made by the scripts.`);
+  if (!ethers.isAddress(d.contract) || ethers.getAddress(d.contract) !== ev.contract || Number(d.chainId) !== chain.chainId)
+    throw new Error(`${f.name} was made for another contract or network (${d.contract}). ${REDO.file}`);
+  attendance = { contract: ev.contract, plan: d, source: "file", file: f.name };
+  renderPlan();
+  log(`Loaded ${f.name}: ${d.attendees.length} attendee(s). Check it below, then press "Post attendance list".`);
+}
+
+function renderPlan() {
+  const el = $("planResult");
+  el.replaceChildren();
+  if (!attendance) return;
+  const { plan: p, res } = attendance;
+  if (res) {
+    el.append(heading(`Attendance list from ${attendance.file}`), table(["", ""], [
+      ["Stakers", String(res.stakers.length)], ["Showed up", String(res.attendees.length)], ["No-shows", String(res.noShows.length)],
+      ["Pool", core.fmtEth(res.pool)], ["Payout per attendee (if nobody is added by a challenge)", `${core.fmtEth(res.share)} (deposit ${core.fmtEth(res.deposit)} + ${core.fmtEth(res.share > res.deposit ? res.share - res.deposit : 0n)} bonus)`],
+      ["Rounding dust", `${core.fmt(res.dust)} ETH`],
+    ]));
+    if (res.missing.length) el.append(line(`⚠ ${res.missing.length} approved guest(s) with a verified deposit are not registered and can't be paid: ${res.missing.join(", ")}`, "warn"));
+    if (res.door?.unmatched.length) el.append(line(`⚠ Door list rows that match no staker: ${res.door.unmatched.map((r) => r.email || r.wallet).join(", ")}`, "warn"));
+    el.append(heading("Checked in (on the list)"), table(["Guest", "Email", "Wallet"], res.attendees.map((x) => [x.name, x.email, walletLink(x.wallet)])));
+    if (res.noShows.length) el.append(heading("No-shows (they lose their deposit)"), table(["Guest", "Email", "Wallet"], res.noShows.map((x) => [x.name, x.email, walletLink(x.wallet)])));
+  } else {
+    el.append(heading(`Attendance list from ${attendance.file}`),
+      line(`${p.attendees.length} of ${p.stakers} stakers checked in, ${core.fmtEth(BigInt(p.share))} each (if nobody is added by a challenge).`),
+      table(["Wallet"], p.attendees.map((w) => [walletLink(w)])));
+  }
+  const files = document.createElement("div");
+  files.append(download("payout-plan.json", JSON.stringify(p, null, 2) + "\n", "application/json"));
+  if (res) files.append(download("payout-summary.md", res.summaryMarkdown, "text/markdown"), download("payout.csv", core.toCsv(res.payoutRows, core.PAYOUT_COLUMNS)));
+  el.append(files);
 }
 
 // Owner buttons follow ownership. "Post attendance list" stays locked (greyed out) until the event
@@ -1331,11 +2056,17 @@ function applyButtons() {
   else if (now <= state.windowEnd) { r.disabled = true; r.textContent = `Release payouts (locked until ${when(state.windowEnd)})`; }
   else if (state.challenges.some((x) => x.state === 1 && now <= x.matchEndsAt)) { r.disabled = true; r.textContent = "Release payouts (waiting for challenges)"; }
   else r.textContent = "Release payouts";
+  if (hosted) {
+    HOSTED_OWNER_BUTTONS.forEach((id) => ($(id).disabled = !state.isOwner));
+    // stakers can only be registered while deposits are open
+    if (state.phase !== 0) for (const id of ["registerSel", "registerFile"]) $(id).disabled = true;
+    HOSTED_READ_BUTTONS.forEach((id) => ($(id).disabled = false));
+  }
 }
 setInterval(() => { if (!busy) applyButtons(); }, 30_000); // unlocks by itself when the event starts
 
 // One action at a time: every button stays disabled until the current action has finished.
-const ALL_BUTTONS = ["connect", "deploy", "refresh", ...OWNER_BUTTONS, ...ANYONE_BUTTONS];
+const ALL_BUTTONS = ["connect", "deploy", "refresh", ...OWNER_BUTTONS, ...ANYONE_BUTTONS, ...HOSTED_OWNER_BUTTONS, ...HOSTED_READ_BUTTONS, ...HOSTED_FORM_BUTTONS];
 const wrap = (fn) => async () => {
   if (busy) return;
   busy = true;
@@ -1345,11 +2076,20 @@ const wrap = (fn) => async () => {
   finally {
     busy = false;
     ALL_BUTTONS.forEach((id) => ($(id).disabled = was[id]));
-    if (state && account) applyButtons();
+    if (state && (account || hosted)) applyButtons();
     if (account) { $("deploy").disabled = false; $("refresh").disabled = false; }
+    if (hosted) {
+      $("refresh").disabled = false;
+      HOSTED_FORM_BUTTONS.forEach((id) => ($(id).disabled = !account));
+      // no event open (or it could not be read): nothing to act on
+      if (!state) [...OWNER_BUTTONS, ...ANYONE_BUTTONS, ...HOSTED_OWNER_BUTTONS, ...HOSTED_READ_BUTTONS].forEach((id) => ($(id).disabled = true));
+    }
   }
 };
-for (const [id, fn] of Object.entries({ connect, deploy, refresh, register, refundDeclined, removeOne, refundOne, returnTokens, postList, addAtt, matchOne, resolveOne, publishCase, release, fundAppeal, deliverRuling, collectAppeal, submitEvidence, sendDetails, sweep, cancel })) $(id).onclick = wrap(fn);
+for (const [id, fn] of Object.entries({ connect, deploy, refresh, register, refundDeclined, removeOne, refundOne, returnTokens, postList, addAtt, matchOne, resolveOne, publishCase, release, fundAppeal, deliverRuling, collectAppeal, submitEvidence, sendDetails, sweep, cancel,
+  registerSel, refundSel, registerFile, refundFile, loadDeposits, checkLuma, buildPlan, previewEvent, createEvent })) $(id).onclick = wrap(fn);
+$("planFile").onchange = wrap(loadPlanFile);
+window.ipfsPathOfLink = ipfsPathOfLink; // for the browser tests (this is a module: nothing else is global)
 init().catch((e) => log(explain(e), "err"));
 </script>
 </body>

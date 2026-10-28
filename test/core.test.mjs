@@ -341,6 +341,7 @@ test("checkGuests and buildPayout give exactly the lists the scripts write (a co
   await assert.rejects(core.readEvent(prov, liquid.target, abi), (e) => e.code === "NOT_KICKBACK" && /not a kickback deposit contract/.test(e.message));
   await assert.rejects(core.readEvent(prov, "0x1234", abi), (e) => e.code === "NOT_KICKBACK");
   const cfg = core.contractConfig(ev, network, deployBlock);
+  assert.deepEqual(await core.depositsOverview({ prov, cfg, abi, scanFrom: deployBlock }), { deposits: [], returns: [], check: null }); // no deposit yet
   assert.equal(cfg.receiver, kick.target);
   assert.equal(cfg.depositUnits, E("0.01"));
   await assert.rejects(core.checkContract(prov, { ...cfg, depositUnits: E("0.02"), deposit: "0.02" }, abi), (e) => e.code === "DEPOSIT_MISMATCH" && e.depositAmount === E("0.01"));
