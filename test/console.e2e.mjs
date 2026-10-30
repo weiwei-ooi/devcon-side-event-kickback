@@ -1,7 +1,10 @@
 // Browser test of the owner console (console/index.html) against ganache with a fake injected wallet,
 // stand-ins for Kleros Court v1 (KlerosLiquid and the Dispute Resolver, test/MockKleros.sol) and a
 // stand-in for Kleros's IPFS upload service (the page's requests are intercepted, never sent):
-// deploy (constructor arguments from the scripts' own settings) → register → post attendance list →
+// deploy (constructor arguments from the scripts' own settings) → the deposits table read from the chain (a
+// short deposit can't be ticked) → register from the scripts' out/new-stakers.json, then "Register all paid
+// guests" (one click, one confirmation naming the wallets; the short deposit left alone) → "Refund selected" from
+// the table → the Luma check names the guests → post attendance list (Register buttons greyed out) →
 // a guest challenges ("use this wallet" in the list) → its case description (written by the contract)
 // is saved on IPFS → the owner disputes it → the optional "Challenge details" →
 // evidence (text, link, file) → Kleros rules; appeals are funded and collected on the Dispute
@@ -9,7 +12,9 @@
 // with warnings when one answer, "refuse to arbitrate" included, is funded alone and when the funding
 // cannot be read → deliver the final ruling → settle → release payouts. Then a second contract: a
 // rehearsal dispute that saves the case description itself, and a payout too big for one transaction
-// with an unmatched challenge in it, settled first. Also: deploy refuses a changed config and a live
+// with an unmatched challenge in it, settled first. Then a third contract named in config.json with its
+// deployBlock and deposit deadline (the Deploy card folded away): Load deposits scans from that block, a late
+// deposit can't be ticked, Register all registers the rest. Also: deploy refuses a changed config and a live
 // config without the pinned juror policy, and asks before a second deploy; single refunds only for
 // registered stakers; stray returns list earlier returns; leftover warning above rounding dust; lists
 // made for another deposit are refused; tokens sent by mistake go back with "Return tokens"; no gas
@@ -191,9 +196,12 @@ check("nothing deployed without the juror policy", (await nonce()) === n0);
 write("config.json", config);
 
 await open();
-check("config shows Kleros Court, ETH deposit, the pinned policy and the case description template",
-  /Kleros Court \(General Court\), 3 jurors/.test(await txt("deployInfo")) && /0\.01 ETH per guest/.test(await txt("deployInfo")) &&
-  (await txt("deployInfo")).includes(POLICY) && /one per Kleros case, written by the contract from docs\/metaevidence\.template\.json/.test(await txt("deployInfo")) && !/Ready to deploy/.test(await txt("deployInfo")), await txt("deployInfo"));
+// no contract in config.json yet: the Deploy card is open, with four short rows (the Kleros court, juror policy
+// and case description are in the deploy confirmation, checked below)
+check("Deploy card open while config.json names no contract: network, ETH deposit and times only",
+  await page.evaluate(() => document.getElementById("deployCard").open) && await page.isVisible("#deploy") && /^2\. Deploy the deposit contract/.test(await txt("deployTitle")) &&
+  /Network\s*.+\(chain 1337\)/.test(await txt("deployInfo")) && /Deposit\s*0\.01 ETH per guest/.test(await txt("deployInfo")) &&
+  !/Kleros|Juror policy|Case description|Ready to deploy/.test(await txt("deployInfo")), await txt("deployInfo"));
 check("event times shown on the event's clock (IST), not the laptop's (Bangkok)",
   new RegExp(`Attendance list from\\s*\\d+ \\w+ \\d{4},? ${istClock(now - 60)} IST`).test(await txt("deployInfo")) &&
   new RegExp(`List by\\s*\\d+ \\w+ \\d{4},? ${istClock(now + 9 * DAY)} IST`).test(await txt("deployInfo")), await txt("deployInfo"));
@@ -232,35 +240,103 @@ check("second deploy asks first", await click("deploy", /Not deployed: no second
 check("second deploy prompt names the first contract", /SECOND, separate contract/.test(lastDialog()) && lastDialog().includes(kAddr), lastDialog());
 check("no second contract", (await nonce()) === n0);
 
-// three guests deposit 0.01 ETH (a plain transfer), all approved
-for (const g of [g1, g2, g3]) await (await g.sendTransaction({ to: kAddr, value: E("0.01") })).wait();
+// three guests deposit 0.01 ETH (a plain transfer); a fourth sends only 0.005 ETH (too little)
+const depTx = [];
+for (const g of [g1, g2, g3]) depTx.push((await (await g.sendTransaction({ to: kAddr, value: E("0.01") })).wait()).hash);
+const shortPayer = await addr(stranger);
+await (await stranger.sendTransaction({ to: kAddr, value: E("0.005") })).wait();
 const items = [];
 for (const [g, name] of [[g1, "Ana"], [g2, "Ben"], [g3, "Cai"]]) items.push({ wallet: await addr(g), name, status: 0 });
+// the deposits card: "Register all paid guests" and the table come first; the Luma check and the scripts' lists (out/) are folded away
+check("deposits card: Register all and Load deposits shown, the Luma check and the scripts' lists folded away",
+  await page.isVisible("#registerAll") && await page.isVisible("#loadDeposits") && !(await page.isVisible("#checkLuma")) && !(await page.isVisible("#register")) && !(await page.isVisible("#refundDeclined")));
+await page.evaluate(() => document.querySelectorAll("details").forEach((d) => (d.open = true))); // the folded parts and "Other actions"
 // finding 5: a list checked against another deposit amount than the contract's is refused
 write("new-stakers.json", { contract: kAddr, chainId: 1337, items });
 n0 = await nonce();
 check("list without a deposit stamp refused", await click("register", /was made for an unknown deposit, but this contract takes 0\.01 ETH\. Ask Claude to fix the deposit/) && (await nonce()) === n0, await logText());
 write("new-stakers.json", { contract: kAddr, chainId: 1337, deposit: E("0.005").toString(), items });
 check("list made for another deposit refused", await click("register", /was made for a deposit of 0\.005 ETH, but this contract takes 0\.01 ETH/) && (await nonce()) === n0, await logText());
-write("new-stakers.json", { contract: kAddr, chainId: 1337, deposit: E("0.01").toString(), items });
-check("register", await click("register", /Registered 3 stakers/), await logText());
+// the deposits table reads the chain (the contract's Deposited events since its deploy block), with no file from the scripts
+const rows = () => page.evaluate(() => [...document.querySelectorAll("#depTable tr[data-wallet]")].map((tr) => {
+  const r = tr.querySelector("input.register"), f = tr.querySelector("input.refund");
+  return { wallet: tr.dataset.wallet.toLowerCase(), text: tr.innerText, reg: !r.disabled, regOn: r.checked, ref: !f.disabled };
+}));
+const rowOf = async (w) => (await rows()).find((r) => r.wallet === w.toLowerCase());
+check("load deposits (local console, from the chain)", await click("loadDeposits", /4 deposit\(s\) read/), await logText());
+const dr = await rows();
+check("deposits table: each full deposit sent on-chain shows, Register can be ticked; the short one can't",
+  dr.length === 4 && items.every((i) => { const x = dr.find((y) => y.wallet === i.wallet.toLowerCase()); return x?.reg && !x.regOn && /received, not registered/.test(x.text); }) &&
+  (await rowOf(shortPayer)) && !(await rowOf(shortPayer)).reg && !(await rowOf(shortPayer)).ref && /AMOUNT_TOO_LOW/.test((await rowOf(shortPayer)).text), JSON.stringify(dr));
+check("deposits table: a one-line hint says Luma doesn't register anyone, and what to press",
+  (await txt("depTip")) === "3 paid guests not registered yet. Luma doesn't register anyone here: press Register all paid guests, then confirm in your wallet.", await txt("depTip"));
+check("deposits table: no 'wallet taken from the transaction sender' noise", !/wallet taken from the transaction sender/.test(await txt("depTable")), await txt("depTable"));
+// the scripts' new-stakers.json still works (folded away): Cai only
+write("new-stakers.json", { contract: kAddr, chainId: 1337, deposit: E("0.01").toString(), items: [items[2]] });
+n0 = await nonce();
+check("register from out/new-stakers.json (Cai)", await click("register", /Registered 1 guest\./) && Number(await kick.status(items[2].wallet)) === 1 && (await nonce()) === n0 + 1, await logText());
+await idle();
+check("the table was reloaded after registering from the file: Cai registered, can't be ticked", /\bregistered\b/.test((await rowOf(items[2].wallet)).text) && !(await rowOf(items[2].wallet)).reg, (await rowOf(items[2].wallet))?.text);
+// one click: every deposit that checks out is registered (Ana and Ben), after one confirmation naming their wallets
+let dBefore = dialogs.length;
+n0 = await nonce();
+check("Register all paid guests", await click("registerAll", /Registered 2 guests\./), await logText());
+const allAsk = dialogs.slice(dBefore).join("\n---\n");
+check("Register all: one confirmation with how many, each wallet, and the wallet step; not Cai (registered), not the short payer",
+  dialogs.length === dBefore + 1 && /^Register 2 guests, on /.test(allAsk) && allAsk.includes(items[0].wallet) && allAsk.includes(items[1].wallet) &&
+  !allAsk.includes(items[2].wallet) && !allAsk.includes(shortPayer) && /Then confirm in your wallet\.$/.test(allAsk), allAsk);
+check("Register all: Ana and Ben registered on-chain in one transaction; the short payer not",
+  Number(await kick.status(items[0].wallet)) === 1 && Number(await kick.status(items[1].wallet)) === 1 && Number(await kick.status(shortPayer)) === 0 &&
+  (await kick.stakerCount()) === 3n && (await nonce()) === n0 + 1);
+await idle();
+check("Register all: the table shows them registered, and no hint is left", (await rows()).filter((x) => /\bregistered\b/.test(x.text) && !/not registered/.test(x.text)).length === 3 && !(await page.isVisible("#depTip")), JSON.stringify(await rows()));
+dBefore = dialogs.length;
+n0 = await nonce();
+check("Register all again: nobody left, nothing asked or sent", await click("registerAll", /No paid guests waiting to be registered\./) && (await nonce()) === n0 && dialogs.length === dBefore, await logText());
+// Refund selected (local console): a new guest pays 0.01 ETH; she ticks Refund for them in the table
+const dee = ethers.Wallet.createRandom().connect(prov);
+await (await stranger.sendTransaction({ to: dee.address, value: E("0.1") })).wait();
+await (await dee.sendTransaction({ to: kAddr, value: E("0.01") })).wait();
+check("load deposits: the new deposit can be ticked for Register or Refund", await click("loadDeposits", /5 deposit\(s\) read/) && (await rowOf(dee.address))?.reg && (await rowOf(dee.address))?.ref, JSON.stringify(await rowOf(dee.address)));
+const tick = (w, kind) => page.evaluate(([w, kind]) => [...document.querySelectorAll("#depTable tr[data-wallet]")].find((tr) => tr.dataset.wallet.toLowerCase() === w.toLowerCase()).querySelector("input." + kind).click(), [w, kind]);
+await tick(dee.address, "refund");
+const deeBal = await bal(dee.address);
+dBefore = dialogs.length;
+n0 = await nonce();
+check("Refund selected (local console)", await click("refundSel", /Refunded 1 guest\./), await logText());
+const refAsk = dialogs.slice(dBefore).join("\n---\n");
+check("Refund selected: one confirmation with the wallet, the amount and 'exactly their deposit back'",
+  dialogs.length === dBefore + 1 && /^Refund 1 guest 0\.01 ETH each, on /.test(refAsk) && refAsk.includes(dee.address) && /Each gets exactly their deposit back\.$/.test(refAsk), refAsk);
+check("Refund selected: refunded on-chain (status Rejected), exactly 0.01 ETH back, in one transaction",
+  Number(await kick.status(dee.address)) === 3 && (await bal(dee.address)) - deeBal === E("0.01") && (await nonce()) === n0 + 1 && (await kick.stakerCount()) === 3n, String((await bal(dee.address)) - deeBal));
+await idle();
+check("Refund selected: the table was reloaded, the deposit shows refunded and can't be ticked",
+  /refunded/.test((await rowOf(dee.address))?.text) && !(await rowOf(dee.address)).reg && !(await rowOf(dee.address)).ref && !(await page.isVisible("#depTip")), (await rowOf(dee.address))?.text);
+// the Luma check works in the local console too (the config's settings): it names the guests in the table
+const lumaHead = "name,email,ticket_name,approval_status,checked_in_at,eth_address,Deposit tx link (Committed Spot only)";
+const lumaRows = items.map((i, k) => `${i.name},${i.name.toLowerCase()}@x.io,Committed Spot (0.01 ETH),approved,,${i.wallet},https://etherscan.io/tx/${depTx[k]}`);
+await page.setInputFiles("#lumaFile", { name: "luma.csv", mimeType: "text/csv", buffer: Buffer.from([lumaHead, ...lumaRows].join("\r\n") + "\r\n") });
+check("check the Luma list in the local console", await click("checkLuma", /Luma list checked: 0 ticked to register, 0 ticked to refund, 0 waiting for your decision, 0 to look at/), await logText());
+await idle();
+check("the table names the guests from the Luma list", (await Promise.all(items.map(async (i) => (await rowOf(i.wallet))?.text.includes(i.name)))).every(Boolean), await txt("depTable"));
+await (await kick.refund(shortPayer, E("0.005"))).wait(); // the short payment goes back ("Return a stray transfer", from elsewhere)
+await page.click("#refresh"); await idle();
 check("status shows the ETH pool", await waitStatus(/Staked pool\s*0\.03 ETH/, /ETH in contract\s*0\.03 ETH/), await txt("status"));
 
 // RC L8: "Remove and refund" refuses anyone who is not a registered staker
-await page.evaluate(() => (document.querySelector("details").open = true)); // "Other actions"
 await page.fill("#rmAddr", ethers.Wallet.createRandom().address);
 n0 = await nonce();
-check("remove and refund refused for a non-staker", await click("removeOne", /is not a registered staker, so .Remove and refund. cannot be used/), await logText());
-check("refusal points to Refund declined guests / Return a stray transfer", /Refund declined guests/.test(await logText()) && /Return a stray transfer/.test(await logText()), await logText());
+check("remove and refund refused for a non-staker", await click("removeOne", /is not a registered guest, so .Remove and refund. cannot be used/), await logText());
+check("refusal points to Refund selected / Return a stray transfer", /tick Refund in step 3, then .Refund selected./.test(await logText()) && /Return a stray transfer/.test(await logText()), await logText());
 check("nothing sent for the non-staker", (await nonce()) === n0);
 await page.fill("#rmAddr", "");
 
 // F39: the cancel prompt says it refunds registered stakers only, and what to do for the others
 answers.push(false);
 check("cancel can be declined", await click("cancel", /Cancel aborted/), await logText());
-check("cancel prompt: registered stakers only, then Refund declined guests and Return a stray transfer",
-  /REGISTERED stakers only/.test(lastDialog()) && /0\.03 ETH in total/.test(lastDialog()) && /NOT refunded by this/.test(lastDialog()) && /decline each of them on Luma/.test(lastDialog()) &&
-  /Refund declined guests/.test(lastDialog()) && /Return a stray transfer/.test(lastDialog()), lastDialog());
+check("cancel prompt: registered guests only, cannot be undone, then Refund selected and Return a stray transfer",
+  /REGISTERED guests only/.test(lastDialog()) && /0\.03 ETH in total/.test(lastDialog()) && /Cannot be undone; no payout afterwards/.test(lastDialog()) && /NOT refunded by this/.test(lastDialog()) &&
+  /tick Refund for them in step 3 and press "Refund selected"/.test(lastDialog()) && /Return a stray transfer/.test(lastDialog()) && /Type CANCEL/.test(lastDialog()), lastDialog());
 
 // F13: Ana sends 0.005 ETH by mistake; it is returned; she sends 0.005 more: the second return lists the first
 const ana = await addr(g1);
@@ -305,18 +381,21 @@ check("gas limit capped at 2^24 (EIP-7825) when the estimate plus 30% is above i
 
 // after the event: Ana and Ben checked in; Cai was missed at the door
 write("payout-plan.json", { contract: kAddr, chainId: 1337, stakers: 3, attendees: [await addr(g1), await addr(g2)], share: E("0.015").toString() });
-await page.click("#refresh"); await page.waitForTimeout(800);
+await page.click("#refresh"); await idle();
 check("post button unlocked", !(await page.isDisabled("#postList")), await txt("postList"));
 check("post attendance list", await click("postList", /Attendance list posted/), await logText());
 check("post prompt in ETH", /Each would get 0\.015 ETH \(pool 0\.03 ETH\)/.test(lastDialog()), lastDialog());
 await page.waitForTimeout(1000);
 check("phase shows challenge window", await waitStatus(/challenge window/), await txt("status"));
+await idle();
+check("list posted: Register all, Register selected and Register from new-stakers.json are greyed out",
+  await page.isDisabled("#registerAll") && await page.isDisabled("#registerSel") && await page.isDisabled("#register"));
 check("release locked during window", (await page.isDisabled("#release")) && /locked until/.test(await txt("release")), await txt("release"));
 
 // Cai challenges from their own wallet; the owner disputes it from the console and sends the challenge details
 const cai = await addr(g3);
 const challengeTx = (await (await kick.connect(g3).challenge({ value: await kick.challengeDeposit() })).wait()).hash;
-await page.click("#refresh"); await page.waitForTimeout(800);
+await page.click("#refresh"); await idle();
 check("challenge listed with the Kleros fee as deposit", /waiting for a match/.test(await txt("challenges")) && /Challenge deposit\s*0\.0162 ETH \(the Kleros fee\)/.test(await txt("challenges")), await txt("challenges"));
 // finding 16: the list shows the full wallet, and "use this wallet" puts it in "Challenger wallet"
 check("challenge list shows the full wallet", (await txt("challenges")).includes(cai), await txt("challenges"));
@@ -342,7 +421,7 @@ check("publish case description", await click("publishCase", /Case description f
 check("published through Kleros's service (operation=file): exactly the contract's text, at the contract's IPFS address",
   uploads.length === 1 && /operation=file/.test(uploads[0].url) && uploads[0].file === "metaevidence.json" && uploads[0].content === caseText && uploads[0].path === caseUri, JSON.stringify(uploads[0] ?? {}).slice(0, 300));
 uploads.length = 0;
-await page.click("#refresh"); await page.waitForTimeout(800);
+await page.click("#refresh"); await idle();
 check("challenge list shows it on IPFS", /case description ↗ \(on IPFS ✓\)/.test(await txt("challenges")), await txt("challenges"));
 n0 = await nonce();
 const dialogsBefore = dialogs.length;
@@ -377,7 +456,7 @@ await page.waitForTimeout(500);
 check("Kleros case link shown", /Kleros case #1000/.test(await txt("challenges")), await txt("challenges"));
 check("case link goes to court.kleros.io", (await page.locator("#challenges a", { hasText: "Kleros case #1000" }).getAttribute("href")) === "https://court.kleros.io/cases/1000");
 await skew(DAY + 60);
-await page.click("#refresh"); await page.waitForTimeout(800);
+await page.click("#refresh"); await idle();
 check("release not held by the Kleros case", !(await page.isDisabled("#release")) && (await txt("release")) === "Release payouts", await txt("release"));
 // payout now: Ana and Ben get 0.03 / 3 = 0.01 each; Cai's 0.01 is set aside until the final ruling
 const before = await Promise.all([g1, g2, g3].map((g) => bal(g)));
@@ -456,7 +535,7 @@ check("send challenge details again asks first", await click("sendDetails", /Cha
 // round 1: jurors say Cai did not attend. Cai's side appeals, the owner defends; both funded → round 2.
 // The owner funds both sides here, straight on Kleros's Dispute Resolver.
 await (await liquid.startAppealPeriod(1000, 2, 3 * DAY, KGAS)).wait();
-await page.click("#refresh"); await page.waitForTimeout(800);
+await page.click("#refresh"); await idle();
 check("appeal window shown", /Round 1: jurors voted No, did not attend\. Appeal window until/.test(await txt("challenges")), await txt("challenges"));
 check("settle refused before the final ruling", await click("resolveOne", /has not ruled yet/), await logText());
 const kickEth = await bal(kAddr);
@@ -528,13 +607,13 @@ check("'refuse to arbitrate' warning: it wins unless another answer is fully fun
   /⚠ "Refuse to arbitrate" is being funded \(it counts as "did not attend", and the challenge money is then split in half\)\. If neither "Yes, attended" \(until [^)]+\) nor "No, did not attend" \(until [^)]+\) is fully funded, "Refuse to arbitrate" wins the case\./.test(await txt("challenges")) &&
   (await page.locator("#challenges .warn", { hasText: '"Refuse to arbitrate" wins the case' }).count()) === 1, await txt("challenges"));
 await skew(DAY + 60);
-await page.click("#refresh"); await page.waitForTimeout(800);
+await page.click("#refresh"); await idle();
 check("appeal window over shown", /appeal window is over/.test(await txt("challenges")), await txt("challenges"));
 n0 = await nonce();
 check("deliver the final ruling", await click("deliverRuling", /Final ruling delivered/), await logText());
 const delivered = sent.slice(-2);
 check("passPeriod then executeRuling, sent to Kleros Court", (await nonce()) === n0 + 2 && delivered.every((t) => t.to?.toLowerCase() === liquid.target.toLowerCase()), delivered.map((t) => t.to).join(","));
-await page.click("#refresh"); await page.waitForTimeout(800);
+await page.click("#refresh"); await idle();
 check("final ruling shown", /Final ruling: Yes, attended\. Press Settle/.test(await txt("challenges")), await txt("challenges"));
 // final: Cai attended → settle (Cai gets the set-aside 0.01 and what is left of the challenge deposits) → collect appeal rewards
 check("settle after ruling", await click("resolveOne", /Challenge of \S+ settled/), await logText());
@@ -660,6 +739,41 @@ const caiCh = await k2.challenges(cai);
 check("0 ruling: Cai stays off the list with half the challenge money; the set-aside share goes to Ana and Ben",
   !(await k2.attended(cai)) && after0[2] - before0[2] === (2n * caiCh.deposit - caiCh.arbitrationPaid) / 2n &&
   after0[0] - before0[0] === E("0.005") && after0[1] - before0[1] === E("0.005") && (await k2.heldBack()) === 0n, after0.map((x, i) => x - before0[i]).join(","));
+
+// A third contract named in config.json with its deployBlock and deposit deadline, like her live one (not
+// deployed from this console, and the console's remembered deploys are cleared): Load deposits scans from the
+// config's deployBlock (a deposit before it is not listed) and a deposit after the deadline can't be ticked.
+const k3 = await dep("TruthPaysKickback", ...deployArgs(loadConfig(cfgPath), me));
+const k3Addr = k3.target;
+const early = await (await g1.sendTransaction({ to: k3Addr, value: E("0.01") })).wait();
+await prov.send("evm_mine", []);
+await (await g2.sendTransaction({ to: k3Addr, value: E("0.01") })).wait();
+const onTime = (await prov.getBlock("latest")).timestamp;
+await skew(120);
+await (await g3.sendTransaction({ to: k3Addr, value: E("0.01") })).wait();
+write("config.json", { ...config, contract: k3Addr, receiver: k3Addr, deployBlock: early.blockNumber + 1, depositDeadline: istIso(onTime + 30) });
+await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith("truthpays.deploys.")).forEach((k) => localStorage.removeItem(k)));
+await open();
+check("config.json names the contract: address filled in, the Deploy card folded away", (await page.inputValue("#addr")) === k3Addr &&
+  !(await page.evaluate(() => document.getElementById("deployCard").open)) && !(await page.isVisible("#deploy")) &&
+  (await txt("deployTitle")) === "Deploy a new contract (not needed: already deployed)", await txt("deployTitle"));
+await page.click("#connect"); await idle();
+await clearLog();
+check("config contract: load deposits from the config's deployBlock", await click("loadDeposits", /2 deposit\(s\) read/), await logText());
+const r3 = await rows();
+check("config contract: the deposit before deployBlock is not listed; the on-time one can be ticked for Register",
+  r3.length === 2 && !(await rowOf(ana)) && (await rowOf(ben))?.reg && /received, not registered/.test((await rowOf(ben)).text), JSON.stringify(r3));
+check("config contract: the deposit after depositDeadline shows OUTSIDE_WINDOW and can't be ticked",
+  /OUTSIDE_WINDOW/.test((await rowOf(cai))?.text) && !(await rowOf(cai)).reg && !(await rowOf(cai)).ref, (await rowOf(cai))?.text);
+dBefore = dialogs.length;
+n0 = await nonce();
+check("config contract: Register all paid guests", await click("registerAll", /Registered 1 guest\./), await logText());
+const ask3 = dialogs.slice(dBefore).join("\n---\n");
+check("config contract: Register all names Ben only (not the late or the unlisted deposit)",
+  dialogs.length === dBefore + 1 && ask3.includes(ben) && !ask3.includes(cai) && !ask3.includes(ana), ask3);
+check("config contract: Ben registered on-chain in one transaction; the late payer and the unlisted deposit not",
+  Number(await k3.status(ben)) === 1 && Number(await k3.status(cai)) === 0 && Number(await k3.status(ana)) === 0 && (await k3.stakerCount()) === 1n && (await nonce()) === n0 + 1);
+write("config.json", config);
 // The shared core (scripts/core.mjs) runs in the browser as an ES module, "ethers" mapped to the ethers
 // ESM build with an import map, both served by the console: same results as the scripts in Node.
 const corePage = await browser.newPage();

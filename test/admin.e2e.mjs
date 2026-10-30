@@ -10,7 +10,8 @@
 // → the Luma guest list (approved ticked to register, declined to refund, the rest listed; the file
 // never leaves the browser) → the scripts' lists from files (another contract and out of date refused)
 // → another wallet: owner buttons disabled → links with ?contract=&from=, without from (the deploy
-// block is searched), with a wrong from → a contract with another Dispute Resolver is flagged → the
+// block is searched), with a wrong from → a contract with another Dispute Resolver is flagged → "Register all
+// paid guests" on a fresh event (every valid deposit, never a short one or one ticked for Refund) → the
 // attendance list from the check-in export (locked until the event starts, POST typed; a payout-plan.json
 // for another contract or out of date refused) → a guest left off challenges and the organiser disputes it
 // (its case description saved on IPFS first) → payouts, one share set aside for the Kleros case → the page
@@ -256,14 +257,16 @@ const tick = (w, kind) => page.evaluate(([w, kind]) => {
   return cb.checked;
 }, [w, kind]);
 const csvFile = (name, text) => ({ name, mimeType: "text/csv", buffer: Buffer.from(text) });
+// the optional parts of the deposits card (the Luma check, the scripts' lists) are folded away on each page load
+const unfold = () => page.evaluate(() => ["lumaMore", "depFiles"].forEach((id) => (document.getElementById(id).open = true)));
 const jsonFile = (name, d) => ({ name, mimeType: "application/json", buffer: Buffer.from(JSON.stringify(d)) });
 
 // ---------------------------------------------------------------- the page, no event yet
 await open();
 check("hosted page: title and heading", (await page.title()) === "Kickback · Admin panel" && /Kickback · Admin panel/.test(await page.locator("h1").innerText()), await page.title());
-check("hosted parts shown, local parts hidden", await page.isVisible("#createEvent") && await page.isVisible("#loadDeposits") && !(await page.isVisible("#deploy")) && !(await page.isVisible("#register")) && !(await page.isVisible("#refundDeclined")));
+check("hosted parts shown, local parts hidden", await page.isVisible("#createEvent") && await page.isVisible("#loadDeposits") && await page.isVisible("#registerAll") && !(await page.isVisible("#deploy")) && !(await page.isVisible("#register")) && !(await page.isVisible("#refundDeclined")));
 check("no event in the link and none by default: nothing opened", (await page.inputValue("#addr")) === "" && (await txt("status")) === "" && (await page.innerText("#refresh")) === "Open");
-check("deposit actions wait for an event", await page.isDisabled("#loadDeposits") && await page.isDisabled("#registerSel") && await page.isDisabled("#postList") && await page.isDisabled("#createEvent"));
+check("deposit actions wait for an event", await page.isDisabled("#loadDeposits") && await page.isDisabled("#registerAll") && await page.isDisabled("#registerSel") && await page.isDisabled("#postList") && await page.isDisabled("#createEvent"));
 check("the banner says it is a local test chain", /LOCAL TEST CHAIN/.test(await txt("banner")), await txt("banner"));
 await noClaude("no event");
 await page.fill("#addr", ethers.Wallet.createRandom().address);
@@ -367,10 +370,10 @@ check("admin link and guest link with the contract and its block, ready to copy"
   /Admin link/.test(await txt("neDone")) && /Guest page link/.test(await txt("neDone")) &&
   JSON.stringify(links) === JSON.stringify([`${ADMIN}?contract=${kAddr}&from=${kBlock}`, `http://localhost:${WEB}/event/?contract=${kAddr}&from=${kBlock}`]), links.join(" | "));
 const doneText = await txt("neDone");
-check("then how to set up the registration page so this page's Luma checks can read it",
-  /Now set up the registration page \(Luma\) like this, before guests register/.test(doneText) && /Every registration needs your approval/.test(doneText) &&
-  doneText.includes('has "deposit", "commit" or "stake" in its name') && /The ETH address question is turned on/.test(doneText) &&
-  doneText.includes('named like "Deposit tx link (etherscan.io)"') && /checked_in_at/.test(doneText), doneText);
+check("then how to set up the registration page so this page's Luma checks can read it (no approval needed for the paid ticket)",
+  /Now set up the registration page \(Luma\) like this, before guests register/.test(doneText) && /No approval needed: a valid deposit is a spot/.test(doneText) &&
+  doneText.includes('A paid ticket with "deposit", "commit" or "stake" in its name') && /A free ticket without those words\. You can keep approval on for it\./.test(doneText) &&
+  /The ETH address question/.test(doneText) && doneText.includes('named like "Deposit tx link (etherscan.io)"') && /checked_in_at/.test(doneText) && !/Every registration needs your approval/.test(doneText), doneText);
 check("the new contract's code is the one baked into the page", core.codeFingerprint(await prov.getCode(kAddr), H0.runtime.immutables) === H0.runtime.sha256);
 check("the event is open: status, title, link in the address bar",
   /Event\s*Admin E2E Night/.test(await txt("status")) && (await txt("status")).includes(`${me} (you)`) && (await page.title()) === "Kickback · Admin panel · Admin E2E Night" &&
@@ -394,18 +397,22 @@ let r = await rows();
 const ok3 = ["ana", "ben", "cai"].every((g) => { const x = r.find((y) => y.wallet === A[g].toLowerCase()); return x?.reg && x.ref && !x.regOn && !x.refOn && /received, not registered/.test(x.text); });
 const danRow = r.find((y) => y.wallet === A.dan.toLowerCase());
 check("deposits table: full deposits can be registered or refunded, a short one neither", r.length === 4 && ok3 && danRow && !danRow.reg && !danRow.ref && /AMOUNT_TOO_LOW/.test(danRow.text), JSON.stringify(r));
+check("deposits table: a one-line hint says Luma doesn't register anyone, and what to press",
+  (await txt("depTip")) === "3 paid guests not registered yet. Luma doesn't register anyone here: press Register all paid guests, then confirm in your wallet.", await txt("depTip"));
 check("nothing ticked: nothing to register", await click("registerSel", /Tick Register for the guests first/), await logText());
 await tick(A.ana, "register"); await tick(A.ben, "register");
 await tick(A.cai, "refund");
 check("register and refund are exclusive per row", (await rowOf(A.cai)).refOn && !(await rowOf(A.cai)).regOn);
 n0 = await nonce();
-check("register selected", await click("registerSel", /Registered 2 stakers/), await logText());
-check("register confirmation names the guests", /Register 2 approved guests/.test(dialogs.find((d) => /Register 2 approved/.test(d)) ?? "") && (dialogs.find((d) => /Register 2 approved/.test(d)) ?? "").includes(A.ana.slice(0, 6)));
+check("register selected", await click("registerSel", /Registered 2 guests\./), await logText());
+const reg2 = dialogs.find((d) => /^Register 2 guests/.test(d)) ?? "";
+check("register confirmation names the guests' wallets and says to confirm in the wallet", reg2.includes(A.ana) && reg2.includes(A.ben) && !reg2.includes(A.cai) && /Then confirm in your wallet\.$/.test(reg2), reg2);
 check("Ana and Ben registered on-chain, in one transaction", Number(await kick.status(A.ana)) === 1 && Number(await kick.status(A.ben)) === 1 && (await nonce()) === n0 + 1);
 const anaAfter = await rowOf(A.ana), caiAfter = await rowOf(A.cai);
 check("the table was reloaded: registered, and the other ticks kept", /\bregistered\b/.test(anaAfter.text) && !/not registered/.test(anaAfter.text) && !anaAfter.reg && !anaAfter.regOn && caiAfter.refOn, JSON.stringify([anaAfter, caiAfter]));
 let caiBal = await bal(A.cai);
-check("refund selected", await click("refundSel", /Refunded 1 declined guests/), await logText());
+check("refund selected", await click("refundSel", /Refunded 1 guest\./), await logText());
+check("refund confirmation: the amount each, the wallet, exactly the deposit back", /^Refund 1 guest 0\.01 ETH each/.test(lastDialog()) && lastDialog().includes(A.cai) && /Each gets exactly their deposit back\./.test(lastDialog()), lastDialog());
 check("Cai got exactly the deposit back", (await bal(A.cai)) - caiBal === E("0.01") && Number(await kick.status(A.cai)) === 3);
 // a ticked list goes out of date when money is returned after the table was loaded
 await tick(A.ben, "refund");
@@ -427,6 +434,8 @@ const lumaCsv = (checked = {}) => [HEAD,
     .map(([n, g, s]) => `${n},${g}@x.io,${TICKET},${s},${checked[n] ?? ""},${A[g]},https://etherscan.io/tx/${tx[g]}`),
   `Hal,hal@x.io,Request to Join (Free),approved,${checked.Hal ?? ""},,`,
 ].join("\r\n") + "\r\n";
+check("the Luma check and the scripts' lists are folded away at first", !(await page.isVisible("#checkLuma")) && !(await page.isVisible("#registerFile")) && await page.isVisible("#registerAll"));
+await unfold();
 await page.setInputFiles("#lumaFile", csvFile("luma-guests.csv", lumaCsv()));
 check("check the Luma list", await click("checkLuma", /Luma list checked: 1 ticked to register, 1 ticked to refund, 1 waiting for your decision/), await logText());
 const eveRow = await rowOf(A.eve), fayRow = await rowOf(A.fay), gusRow = await rowOf(A.gus), anaRow = await rowOf(A.ana);
@@ -440,10 +449,10 @@ check("Luma result: who is waiting, what needs a look, files to save",
 check("a token sent instead of ETH is named, with what to do on this page", /NO_DEPOSIT_TRANSFER/.test(luma) && luma.includes(usdc.target) && /Return tokens sent by mistake' on this page/.test(luma), luma);
 check("the Luma file never left the browser", !bodies.some((x) => /gus@x\.io|eve@x\.io|luma-guests/.test(x)));
 await noClaude("Luma list checked");
-check("register selected (Eve)", await click("registerSel", /Registered 1 stakers/), await logText());
-check("the confirmation names Eve", /• Eve 0x/.test(dialogs.find((d) => /Register 1 approved/.test(d)) ?? ""));
+check("register selected (Eve)", await click("registerSel", /Registered 1 guest\./), await logText());
+check("the confirmation names Eve", /• Eve 0x/.test(dialogs.find((d) => /^Register 1 guest,/.test(d) && d.includes(A.eve)) ?? ""));
 let fayBal = await bal(A.fay);
-check("refund selected (Fay)", await click("refundSel", /Refunded 1 declined guests/), await logText());
+check("refund selected (Fay)", await click("refundSel", /Refunded 1 guest\./), await logText());
 check("Eve registered, Fay refunded", Number(await kick.status(A.eve)) === 1 && Number(await kick.status(A.fay)) === 3 && (await bal(A.fay)) - fayBal === E("0.01"));
 
 // ---------------------------------------------------------------- lists made by the scripts
@@ -455,7 +464,7 @@ await page.setInputFiles("#refundsFile", jsonFile("refunds.json", gusList(kBlock
 check("an out-of-date list is refused", await click("refundFile", /refunds\.json is out of date: the contract registered, refunded or returned money since it was made/) && (await nonce()) === n0, await logText());
 await page.setInputFiles("#refundsFile", jsonFile("refunds.json", gusList(await prov.getBlockNumber())));
 let gusBal = await bal(A.gus);
-check("refunds.json from the scripts", await click("refundFile", /Refunded 1 declined guests/) && (await bal(A.gus)) - gusBal === E("0.01") && Number(await kick.status(A.gus)) === 3, await logText());
+check("refunds.json from the scripts", await click("refundFile", /Refunded 1 guest\./) && (await bal(A.gus)) - gusBal === E("0.01") && Number(await kick.status(A.gus)) === 3, await logText());
 
 // Cai, refunded earlier, pays again and is approved: the contract accepts a refunded wallet, so the table registers them
 const rowTx = (h) => page.evaluate((h) => {
@@ -477,7 +486,7 @@ check("a refunded guest who paid again: Register can be ticked, Refund can't", c
 await page.setInputFiles("#lumaFile", csvFile("luma-cai.csv", [HEAD, `Cai,cai@x.io,${TICKET},approved,,${A.cai},https://etherscan.io/tx/${tx.cai2}`].join("\r\n") + "\r\n"));
 check("approved on Luma: ticked to register", await click("checkLuma", /Luma list checked: 1 ticked to register, 0 ticked to refund/) && (await rowTx(tx.cai2))?.regOn, await logText());
 await clearLog();
-check("register selected (Cai, paid again)", await click("registerSel", /Registered 1 stakers/) && Number(await kick.status(A.cai)) === 1, await logText());
+check("register selected (Cai, paid again)", await click("registerSel", /Registered 1 guest\./) && Number(await kick.status(A.cai)) === 1, await logText());
 // and removed again ("Remove and refund"), so the rest of this test has the same stakers
 await page.evaluate(() => document.querySelectorAll("details").forEach((d) => (d.open = true)));
 await page.fill("#rmAddr", A.cai);
@@ -490,7 +499,7 @@ await open(`?contract=${kAddr}&from=${kBlock}`);
 check("the admin link opens the event, without a wallet", /Event\s*Admin E2E Night/.test(await txt("status")) && (await page.inputValue("#fromBlock")) === String(kBlock) && !(await page.isDisabled("#loadDeposits")), await txt("status"));
 await connect();
 check("another wallet is told it is not the owner", await waitLog(/The connected wallet is not the owner of this contract/), await logText());
-const ownerOnly = ["registerSel", "refundSel", "registerFile", "refundFile", "postList", "removeOne", "refundOne", "returnTokens", "sweep", "cancel"];
+const ownerOnly = ["registerAll", "registerSel", "refundSel", "registerFile", "refundFile", "postList", "removeOne", "refundOne", "returnTokens", "sweep", "cancel"];
 const disabled = await Promise.all(ownerOnly.map((id) => page.isDisabled("#" + id)));
 check("owner buttons disabled for another wallet", disabled.every(Boolean), ownerOnly.filter((_, i) => !disabled[i]).join(","));
 check("anyone can still read the deposits and create their own event", !(await page.isDisabled("#loadDeposits")) && !(await page.isDisabled("#checkLuma")) && !(await page.isDisabled("#createEvent")));
@@ -550,6 +559,44 @@ check("a juror policy that is not an IPFS path is not linked, and is flagged",
   /Event\s*Odd Policy/.test(oddStatus) && oddStatus.includes("@evil.example/attendance-policy (not an IPFS path: jurors may not be able to open it)") &&
   (await page.locator('a[href*="evil.example"]').count()) === 0, oddStatus);
 
+// ---------------------------------------------------------------- one click: Register all paid guests (a fresh event)
+// Ana, Ben, Cai, Eve and Fay pay 0.01 ETH, Dan 0.005 (too little); Fay is declined on Luma (the Luma check ticks her
+// for Refund) and Eve is ticked for Refund by hand. One click registers Ana, Ben and Cai, after one confirmation that
+// names their wallets; Dan's short deposit, Fay's and Eve's are left alone.
+const ra = await (await new ethers.ContractFactory(abi, load("TruthPaysKickback").bytecode, owner).deploy(...argsAt("Register All Night"))).waitForDeployment();
+const raBlock = (await ra.deploymentTransaction().wait()).blockNumber;
+const raPay = async (who, eth) => (await (await W[who].sendTransaction({ to: ra.target, value: E(eth) })).wait()).hash;
+for (const g of ["ana", "ben", "cai", "eve"]) await raPay(g, "0.01");
+const raFay = await raPay("fay", "0.01");
+await raPay("dan", "0.005");
+await open(`?contract=${ra.target}&from=${raBlock}`);
+await connect();
+await clearLog();
+check("fresh event: its deposits load", await click("loadDeposits", /6 deposit\(s\) read/) && (await txt("depTip")).startsWith("5 paid guests not registered yet."), await logText());
+await unfold();
+await page.setInputFiles("#lumaFile", csvFile("luma-fay.csv", [HEAD, `Fay,fay@x.io,${TICKET},declined,,${A.fay},https://etherscan.io/tx/${raFay}`].join("\r\n") + "\r\n"));
+check("Fay declined on Luma: ticked for Refund", await click("checkLuma", /Luma list checked: 0 ticked to register, 1 ticked to refund/) && (await rowOf(A.fay))?.refOn, await logText());
+check("Eve ticked for Refund by hand", await tick(A.eve, "refund"));
+const raStatus = async () => Object.fromEntries(await Promise.all(["ana", "ben", "cai", "dan", "eve", "fay"].map(async (g) => [g, Number(await ra.status(A[g]))])));
+let raDialogs = dialogs.length;
+n0 = await nonce();
+check("Register all paid guests", await click("registerAll", /Registered 3 guests\./), await logText());
+const raAsk = dialogs.slice(raDialogs).join("\n---\n");
+check("Register all: one confirmation with how many, each wallet, and the wallet step; not the short deposit, not the ones ticked for Refund",
+  dialogs.length === raDialogs + 1 && /^Register 3 guests, on Local test chain, contract 0x/.test(raAsk) && ["ana", "ben", "cai"].every((g) => raAsk.includes(A[g])) &&
+  !raAsk.includes(A.dan) && !raAsk.includes(A.eve) && !raAsk.includes(A.fay) && /Then confirm in your wallet\.$/.test(raAsk), raAsk);
+let st = await raStatus();
+check("Register all: Ana, Ben and Cai registered on-chain in one transaction; Dan (short), Fay (declined on Luma) and Eve (ticked for Refund) not",
+  st.ana === 1 && st.ben === 1 && st.cai === 1 && st.dan === 0 && st.eve === 0 && st.fay === 0 && (await nonce()) === n0 + 1 && (await ra.stakerCount()) === 3n, JSON.stringify(st));
+const raAna = await rowOf(A.ana), raDan = await rowOf(A.dan), raEve = await rowOf(A.eve), raFayRow = await rowOf(A.fay);
+check("Register all: the table was reloaded (registered), Dan still can't be ticked, Fay's and Eve's Refund ticks kept",
+  /\bregistered\b/.test(raAna.text) && !/not registered/.test(raAna.text) && !raAna.reg && !raDan.reg && !raDan.regOn && raEve.refOn && !raEve.regOn && raFayRow.refOn && !raFayRow.regOn,
+  JSON.stringify([raAna, raDan, raEve, raFayRow]));
+raDialogs = dialogs.length;
+n0 = await nonce();
+check("Register all again: nobody left to register (Fay and Eve are ticked for Refund), nothing asked or sent",
+  await click("registerAll", /No paid guests waiting to be registered\./) && (await nonce()) === n0 && dialogs.length === raDialogs, await logText());
+
 // ---------------------------------------------------------------- after the event: the attendance list, payouts
 await open(`?contract=${kAddr}&from=${kBlock}`);
 await connect();
@@ -598,10 +645,11 @@ await clearLog();
 check("load deposits (a late payment)", await click("loadDeposits", /9 deposit\(s\) read/), await logText());
 const louCsv = ["name,email,ticket_name,approval_status,checked_in_at,eth_address,Deposit tx link (etherscan.io)",
   `Lou,lou@x.io,Kickback spot (0.01 ETH),declined,,${lou.address},https://etherscan.io/tx/${tx.lou}`].join("\r\n") + "\r\n";
+await unfold();
 await page.setInputFiles("#lumaFile", csvFile("lou.csv", louCsv));
 check("declined late payer ticked to refund", await click("checkLuma", /Luma list checked: 0 ticked to register, 1 ticked to refund/) && (await rowTx(tx.lou))?.refOn, await logText());
 check("a ticket name without \"deposit\", \"commit\" or \"stake\" is warned about",
-  /No ticket name in lou\.csv contains "deposit", "commit" or "stake", so a guest who chose the paid ticket but never pasted a deposit link is not listed anywhere/.test(await logText()), await logText());
+  /No ticket name in lou\.csv contains "deposit", "commit" or "stake": a paid guest who never pasted a tx link would be missed\. Rename the paid ticket on Luma/.test(await logText()), await logText());
 check("ticked to refund, so not also listed to give back", !(await giveBack()).includes(lou.address.toLowerCase()), (await giveBack()).join(","));
 await (await kick.refund(lou.address, E("0.01"))).wait(); // "Return a stray transfer", from elsewhere
 const louBal = await bal(lou.address);
@@ -624,6 +672,9 @@ answers.push("no");
 check("posting needs POST typed", await click("postList", /Attendance list not posted/) && (await nonce()) === n0 && /Type POST to continue/.test(lastDialog()), await logText());
 check("post attendance list", await click("postList", /Attendance list posted\. The 1-day challenge window is open/), await logText());
 check("on-chain: Ana and Eve on the list", Number(await kick.phase()) === 1 && (await kick.attendeeCount()) === 2n && (await kick.attended(A.ana)) && (await kick.attended(A.eve)) && !(await kick.attended(A.ben)));
+await idle();
+check("list posted: Register all, Register selected and Register from file are greyed out",
+  await page.isDisabled("#registerAll") && await page.isDisabled("#registerSel") && await page.isDisabled("#registerFile"));
 // Ben, left off, challenges; the organiser disputes it from this page: Kleros Court gets the case, its own
 // description saved on IPFS first (the Kleros settings baked into the page)
 await (await kick.connect(W.ben).challenge({ value: await kick.challengeDeposit() })).wait();

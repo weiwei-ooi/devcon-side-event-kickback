@@ -30,8 +30,9 @@ Guests who want a guaranteed spot send a **refundable deposit in ETH on Ethereum
 | Deployed | 28 Oct 2026 09:07:59 UTC, block 26290226, tx [`0xddab9133…e184ec`](https://etherscan.io/tx/0xddab913311c6f8f856c6359697c15f8bd33bb5fdd7869e964b16c29efae184ec), from the owner wallet `0x259a1084C2043a7B3b5b288596E05C41b8EFa5d6` |
 | Code | `contracts/TruthPaysKickback.sol` as of commit 21b8f58 (v7), solc 0.8.28, optimizer 200, EVM paris |
 | Settings | 0.01 ETH deposit; attendance list from 4 Nov 2026 18:00 IST; settle by 18 Nov 2026 18:00 IST; Kleros Court v1, General Court, 3 jurors, through the Dispute Resolver `0x4b89…82a4`; juror policy `/ipfs/QmPzb9q9TyHS2jPmoCd1U9eDfZ9Nijh5NSFhhvJGVU7knE` |
-| Guest deposit page | https://weiwei-ooi.github.io/devcon-side-event-kickback/ |
-| Luma | step 1 of "How to get in" names the contract and links the deposit page (event still Private) |
+| Guest deposit page | https://weiwei-ooi.github.io/devcon-side-event-kickback/deposit/ (the same page is also at the site root, for older links) |
+| Organiser panel | https://weiwei-ooi.github.io/devcon-side-event-kickback/organiser/ (this event preloaded; connect the owner wallet to register, refund, post the list, handle challenges and pay out) |
+| Luma | Committed Spot needs no approval since 30 Oct ("stake and you're in"); the ticket, the deposit-link question and "How to get in" link the deposit page (event still Private) |
 
 `deployments/truth-pays-mainnet/` keeps the record (`deployment.json`) and the two files used for the Etherscan verification (`standard-input.json`, `constructor-arguments.txt`), so anyone can check the deployed code again.
 
@@ -252,24 +253,20 @@ This setup isn't trustless, but anyone can check it:
 
 ## Guest instructions (for the Luma page)
 
-> **Committed Spot: 0.01 ETH refundable deposit**
+> **Committed Spot: 0.01 ETH refundable deposit. Stake and you're in.**
 >
-> ⚠️ **Ethereum mainnet only.** ETH sent on any other network may be lost.
+> ⚠️ **Ethereum mainnet only, ETH only.**
 >
-> 1. **Send** exactly 0.01 ETH to **0xd5c6A73c05FA431c748781DaBAA99Fe2590d677D** from your own wallet, not an exchange, or use our [deposit page](https://weiwei-ooi.github.io/devcon-side-event-kickback/). Refunds go back to that wallet. We accept <u>**ETH only**</u> (not USDC or other tokens).
-> 2. **Register** with the *Committed Spot (0.01 ETH)* ticket, use the same wallet and paste your transaction link. It starts with https://etherscan.io/tx/
-> 3. **Check in** at the event to get your 0.01 ETH back, plus an equal share of the no-shows' deposits. No-shows lose their deposit.
+> 1. **Pay** 0.01 ETH on our [deposit page](https://weiwei-ooi.github.io/devcon-side-event-kickback/deposit/): connect your wallet and press Send.
+> 2. **Register** here with the *Committed Spot (0.01 ETH)* ticket and paste your transaction link. You're in, no approval needed.
+> 3. **Check in** at the event to get your 0.01 ETH back, plus a share of the no-shows' deposits. No-shows lose their deposit.
 >
 > - **Deposits close** Wed 4 Nov at 18:00 IST.
-> - **We review every registration.** If you are not approved, your 0.01 ETH goes back to the same wallet.
-> - **Event cancelled?** Every deposit is refunded in full.
+> - **Event cancelled, or no spot for you?** Your 0.01 ETH goes back to the wallet you sent it from.
+> - **Missed at check-in?** Challenge the attendance list on Kleros from the deposit page within 1 day.
 >
-> ⚖️ **Missed at check-in? Challenge it on Kleros.**
->
-> - After the event, we post the attendance list on-chain.
-> - If you were there but are not on it, challenge it from the deposit page within 1 day. The challenge deposit is the Kleros fee, about 0.0162 ETH.
-> - If nobody disputes it within a day, you count as attended and get that deposit back. If someone does, Kleros jurors decide.
+> Deposit contract: [0xd5c6A73c05FA431c748781DaBAA99Fe2590d677D](https://etherscan.io/address/0xd5c6A73c05FA431c748781DaBAA99Fe2590d677D#code) (verified on Etherscan).
 
-This is the copy on Luma since 27 Oct (she asked for short, clean steps); since 28 Oct step 1 names the live contract and links the deposit page. The deposit page explains the rest live: appeals (fund your side if the other side appeals), payouts for everyone else going ahead during a case, and `emergencyWithdraw` if no list is posted by `claimDeadline`.
+This is the copy on Luma since 30 Oct (her rules that day: as short as possible, "if they stake they're in"). The Committed Spot ticket no longer needs approval (the free "Request to Join" ticket still does); its ticket description and the "Deposit tx link (Committed Spot only)…" question both link the deposit page, since Luma cannot redirect to another site when a ticket is picked. Luma approval never registers anyone on-chain: the organiser still registers each paid guest with **Register all paid guests** in the organiser panel. The deposit page explains the rest live: appeals (fund your side if the other side appeals), payouts for everyone else going ahead during a case, and `emergencyWithdraw` if no list is posted by `claimDeadline`.
 
 (For another event: replace 0.01 ETH with its `deposit` amount, and the address and page link with its own deployed contract and guest page.) Most wallets estimate the gas for a transfer to a contract, so a plain send works; a wallet or exchange that uses a fixed 21,000 gas limit fails (`TX_FAILED`, only the network fee is lost). The guest deposit page avoids this by calling `deposit()`.

@@ -173,7 +173,8 @@ const ipfs = { uploads: [], store: new Map() };
 const CORS = { "access-control-allow-origin": "*" };
 // opts: noArchive (the public RPC keeps no old state: eth_getCode for any block but "latest" fails, like a pruned node),
 // timezoneId (the browser's time zone), caseRead ("fail": reading a case description fails; a number: it answers that
-// many ms late). page.calls lists every public RPC request ({ method, params }).
+// many ms late), closed (the Details fold with the contract checks is left closed, as a guest sees it; otherwise the test
+// opens it on every load, to read what is in it). page.calls lists every public RPC request ({ method, params }).
 async function open(url, wallet, opts = {}) {
   const ctx = await browser.newContext(opts.timezoneId ? { timezoneId: opts.timezoneId } : {});
   const page = await ctx.newPage();
@@ -221,6 +222,7 @@ async function open(url, wallet, opts = {}) {
     const listeners = {};
     window.ethereum = { request: ({ method, params }) => window.__rpc(method, params), on(ev, f) { (listeners[ev] = listeners[ev] || []).push(f); }, removeListener() {} };
   });
+  if (!opts.closed) await page.addInitScript(() => addEventListener("DOMContentLoaded", () => { const d = document.getElementById("details"); if (d) d.open = true; }));
   if (opts.clockAt) await page.clock.setFixedTime(new Date(opts.clockAt * 1000));
   await page.goto(`http://localhost:${WEB}${url}`);
   // the page has read the event (or refused it), and for a usable one the contract checks are shown
@@ -242,7 +244,17 @@ const visible = (p) => p.evaluate(() => `${document.title}\n${document.querySele
 const toStatus = async (p) => { await p.evaluate(() => { location.hash = "status"; }); await p.waitForTimeout(100); };
 const toDeposit = async (p) => { await p.evaluate(() => { location.hash = ""; }); await p.waitForTimeout(100); };
 const waitText = async (pg, id, re) => { for (let i = 0; i < 80 && !re.test(await txt(pg, id)); i++) await pg.waitForTimeout(250); return txt(pg, id); };
-const settle = async (pg) => { for (let i = 0; i < 80; i++) { await pg.waitForTimeout(200); if (!/^Checking/.test(await txt(pg, "check-msg"))) break; } await pg.waitForTimeout(200); };
+// waits until the page is done with the wallet: it is connected and step 2 has its line (not "Checking…")
+const settle = async (pg) => {
+  for (let i = 0; i < 150; i++) {
+    await pg.waitForTimeout(200);
+    if (!(await pg.locator("#who").getAttribute("data-account"))) continue;
+    const m = await pg.locator("#check-msg").textContent();
+    if (m && !/^Checking/.test(m)) break;
+  }
+  await pg.waitForTimeout(200);
+};
+const words = (t) => t.split(/\s+/).filter(Boolean).length;
 const connect = async (pg) => { await pg.click("#connect"); await settle(pg); };
 const lookupAs = async (pg, who) => {
   await toStatus(pg); await pg.fill("#lookup-addr", who); await pg.click("#lookup");
@@ -269,34 +281,56 @@ p = await open("/event/?contract=0x1234", g1);
 check("half an address: says the link isn't complete", await refused(p) && /The deposit contract address in this link isn't complete/.test(await txt(p, "link-note")) && !(await vis(p, "connect")), await txt(p, "link-note"));
 await p.close();
 
+// 2a'. the organiser's link as a guest first sees it: the notice, three short steps, one warning line, the checks folded
+// away under Details; on a phone, nothing wider than the screen and every button at least 44px tall
+p = await open(link(ev.c, ev.block), g1, { closed: true });
+const flowWords = words(await p.locator(".network").innerText()) + words(await p.locator("ol.steps").innerText()), pageWords = words(await p.evaluate(() => document.body.innerText));
+check("before connecting: three steps and one warning line, under 80 words (the whole page with its notice under 200)", (await p.locator("ol.steps > li:visible").count()) === 3 && (await p.locator(".network:visible").count()) === 1
+  && flowWords < 80 && pageWords < 200, `${flowWords} words in the steps and warning, ${pageWords} on the page`);
+check("the steps: connect, send the contract's amount, copy the link and go back to where you registered", (await p.locator("ol.steps > li:visible h2").allInnerTexts()).join(" | ") === "Connect your wallet | Send 0.02 ETH | Copy the link and go back to where you registered",
+  (await p.locator("ol.steps > li:visible h2").allInnerTexts()).join(" | "));
+check("the checks pass, folded under a closed Details; step 2 has nothing to say before connecting, step 3 only its title", !(await p.locator("#details").evaluate((d) => d.open)) && (await p.locator("#checks .mark.ok").count()) === 4
+  && !(await vis(p, "checks")) && !(await vis(p, "check-msg")) && !(await vis(p, "luma-after")) && (await txt(p, "send")) === "Send 0.02 ETH" && (await dis(p, "send")), await p.locator("#checks").textContent());
+await p.setViewportSize({ width: 360, height: 800 });
+const small = await p.evaluate(() => [...document.querySelectorAll("button, a.btn, summary")].filter((e) => e.getClientRects().length && e.getBoundingClientRect().height < 44).map((e) => e.id || e.textContent.trim()));
+check("phone width (360px): no horizontal scroll, every button at least 44px tall", (await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth)) && small.length === 0, JSON.stringify(small));
+await p.close();
+
 // 2b. the organiser's link: everything about the event comes from the contract, in the guest's own time zone
 p = await open(link(ev.c, ev.block), g1, { timezoneId: "Asia/Tokyo" });
 const notice = await txt(p, "link-note");
-check("the organiser's link: the notice names the event, the contract and the organiser",
-  notice === `Only use a link the organiser gave you. This page is for ${evName}, deposit contract ${ev.c.target}, organiser ${orga.toLowerCase()}. It is a page for any kickback deposit contract: the event's name is whatever its creator gave it.` && (await p.locator("#link-note").getAttribute("class")) === "note warn", notice);
+check("the organiser's link: the notice names the event (as its creator named it), the contract and the organiser",
+  notice === `Only use a link the organiser gave you. Event: ${evName} (the name its creator gave it). Deposit contract ${ev.c.target}, organiser ${orga.toLowerCase()}.` && (await p.locator("#link-note").getAttribute("class")) === "note warn"
+  && (await vis(p, "link-note")), notice);
 // the event starts at this hour in Tokyo (Chromium and Node may lay out the rest of the date a little differently)
 const tokyo = new Date((now + 86400) * 1000).toLocaleString("en-GB", { timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit", hour12: false });
 check("event header from the contract: name, start in the guest's time zone (GMT+9), deposit; page title", (await txt(p, "ev-name")) === evName && await p.title() === `${evName} · Deposit`
   && new RegExp(`^Starts .*\\b${tokyo} GMT\\+9\\s*Deposit 0\\.02 ETH$`).test(await txt(p, "ev-meta")), `${await txt(p, "ev-meta")} (${tokyo})`);
 check("contract checks pass with the contract's own deposit (0.02 ETH) and Kleros", (await p.locator("#checks .mark.ok").count()) === 4 && /The deposit is exactly 0\.02 ETH/.test(await txt(p, "checks")) && /disputes go to Kleros Court/.test(await txt(p, "checks"))
   && /Deposits are open until .+ GMT\+9/.test(await txt(p, "checks")) && (await txt(p, "contract-addr")) === ev.c.target && (await p.locator("#contract-link").getAttribute("href")) === `https://etherscan.io/address/${ev.c.target}`, await txt(p, "checks"));
-check("the deposit amount everywhere is the contract's", /Send exactly 0\.02 ETH/.test(await p.locator("#s-send h2").innerText()) && /get your 0\.02 ETH back/.test(await p.locator("footer").innerText()));
+check("the deposit amount everywhere is the contract's: step 2, the Send button, the footer", (await p.locator("#s-send h2").innerText()) === "Send 0.02 ETH" && (await txt(p, "send")) === "Send 0.02 ETH"
+  && /get your 0\.02 ETH back/.test(await p.locator("footer").innerText()));
 check("the link's block is checked with two reads of the contract's code, not searched", oldCode(p) === 2, String(oldCode(p)));
 let shown = await visible(p);
-check("nothing on the page names the Truth Pays event, Luma or India time", !EVENT_SPECIFIC.test(shown) && /Check that the deposit address shown here is the one the organiser gave you/.test(shown) && /Back to the registration page/.test(shown), (shown.match(EVENT_SPECIFIC) || [])[0]);
+check("nothing on the page names the Truth Pays event, Luma or India time", !EVENT_SPECIFIC.test(shown) && /Check that it is the deposit contract the organiser gave you/.test(shown) && /Copy the link and go back to where you registered/.test(shown), (shown.match(EVENT_SPECIFIC) || [])[0]);
 // the Truth Pays page (same website) keeps the deposit it is waiting for under "gt-last-tx": this page must not touch it
 const otherRecord = JSON.stringify({ hash: "0x" + "ab".repeat(32), account: g1a, contract: baked.c.target, nonce: 0, at: Date.now() });
 await p.evaluate((r) => localStorage.setItem("gt-last-tx", r), otherRecord);
 await connect(p);
-check("connected: the deposit can be sent", /All set/.test(await txt(p, "check-msg")) && !(await dis(p, "send")), await txt(p, "check-msg"));
+check("connected: the deposit can be sent, step 2 says only 'Ready.'", (await txt(p, "check-msg")) === "Ready." && !(await dis(p, "send")), await txt(p, "check-msg"));
 await toDeposit(p); await p.click("#send");
 const sent = await waitText(p, "send-msg", /Done|failed|cancelled|Nothing was sent|Couldn't/);
 const depTx = p.sent[0] || {};
 check("deposit sent: deposit() with the contract's own amount, to the contract from the link, pinned to the network",
-  /^Done\. 0\.02 ETH received by the deposit contract\. Now paste the link on the event's registration page\.$/.test(sent) && p.sent.length === 1 && depTx.to.toLowerCase() === ev.c.target.toLowerCase()
+  /^Done\. 0\.02 ETH received\. Now copy the link below\.$/.test(sent) && p.sent.length === 1 && depTx.to.toLowerCase() === ev.c.target.toLowerCase()
   && depTx.data === "0xd0e30db0" && BigInt(depTx.value) === D && depTx.chainId === "0x539", `${sent} ${JSON.stringify(p.sent)}`);
 check("the contract logged the deposit", (await ev.c.queryFilter(ev.c.filters.Deposited(g1a))).map((e) => e.args.amount).join() === String(D));
-check("step 5: the transaction link to copy, and no Luma button", /^https:\/\/etherscan\.io\/tx\/0x[0-9a-f]{64}$/.test(await txt(p, "tx-link")) && (await vis(p, "luma-box")) && (await p.locator("#luma-link").count()) === 0);
+check("step 3: the transaction link to copy, and no Luma button", /^https:\/\/etherscan\.io\/tx\/0x[0-9a-f]{64}$/.test(await txt(p, "tx-link")) && (await vis(p, "luma-box")) && (await p.locator("#luma-link").count()) === 0);
+const step3 = await p.locator("#s-luma").innerText();
+check("step 3 shows only the transaction link (not the wallet) and two short lines, without Luma", (await p.locator("#luma-box dt").allTextContents()).join("|") === "Transaction link"
+  && (await p.locator("#tx-wallet, #copy-wallet").count()) === 0 && !step3.toLowerCase().includes(g1a.toLowerCase()) && !/ETH address|pending approval|Luma/i.test(step3)
+  && /Where you registered, paste the link where it asks for your deposit and submit\./.test(step3) && /If the hosts can't give you a spot, your 0\.02 ETH goes back to the wallet you sent it from\./.test(step3)
+  && words(step3) < 60, step3);
 const g1Link = await txt(p, "tx-link");
 const stored = await p.evaluate((k) => [localStorage.getItem("gt-last-tx"), localStorage.getItem(k)], `gt-event-tx:${ev.c.target.toLowerCase()}`);
 check("the deposit is remembered under this contract's own key; the Truth Pays page's record is untouched",
@@ -306,11 +340,11 @@ await p.close();
 // back again: the earlier deposit is found, read from the block the contract was created in, in logChunk-sized ranges
 p = await open(link(ev.c, ev.block), g1);
 await connect(p);
-check("revisit: the earlier deposit found, Send blocked, its link offered", /We already see a deposit from this wallet: .+ Don't send it twice\. Paste that link on the event's registration page \(shown in step 5\)\./.test(await txt(p, "check-msg"))
+check("revisit: the earlier deposit found, Send blocked, its link offered", /We already see a deposit from this wallet: .+\. Don't send it twice: its link is in step 3\./.test(await txt(p, "check-msg"))
   && (await dis(p, "send")) && (await txt(p, "tx-link")) === g1Link, await txt(p, "check-msg"));
 check("deposits read from the contract's creation block on, in short ranges", Math.min(...logStarts(p)) === ev.block && p.calls.filter((c) => c.method === "eth_getLogs").every((c) => parseInt(c.params[0].toBlock, 16) - parseInt(c.params[0].fromBlock, 16) < 7), JSON.stringify(logStarts(p)));
 let out = await lookupAs(p, g1a);
-check("lookup: deposit received, waiting for the hosts (no Luma)", /^Deposit received\. Waiting for the hosts to review your registration\. Deposit: /.test(out), out);
+check("lookup: deposit received, the guest is in (no Luma, no 'waiting for the hosts')", /^Deposit received\. You're in: the hosts add it to the contract before the event\. Deposit: /.test(out) && !/Luma|Waiting for the hosts/.test(out), out);
 check("status page: the jurors' policy from the contract, linked on Kleros's gateway", (await p.locator("#policy-link a").getAttribute("href")) === `https://cdn.kleros.link${POLICY}`);
 shown = await visible(p);
 check("status page: nothing names the Truth Pays event, Luma or India time", !EVENT_SPECIFIC.test(shown) && /Missed at check-in\? Challenge it on Kleros/.test(shown), (shown.match(EVENT_SPECIFIC) || [])[0]);
@@ -448,7 +482,7 @@ await p.close();
 p = await open(link(tricky.c, tricky.block), g2);
 const trickyName = '<img src=x onerror="window.__xss=1">Night evil & "co"';
 check("an event name with markup: shown as plain text (no image, no script), text-direction character removed", (await txt(p, "ev-name")) === trickyName && await p.title() === `${trickyName} · Deposit`
-  && (await p.locator("#ev-name img, #link-note img").count()) === 0 && (await p.evaluate(() => window.__xss)) === undefined && (await txt(p, "link-note")).includes(`This page is for ${trickyName}, deposit contract`), await txt(p, "ev-name"));
+  && (await p.locator("#ev-name img, #link-note img").count()) === 0 && (await p.evaluate(() => window.__xss)) === undefined && (await txt(p, "link-note")).includes(`Event: ${trickyName} (the name its creator gave it). Deposit contract`), await txt(p, "ev-name"));
 await p.close();
 let refusedName = "";
 try { core.newEventConfig({ ...FORM, eventName: tricky.rawName }, network(proxy), orga); } catch (e) { refusedName = e.message; }
@@ -508,7 +542,7 @@ p = await open(link(ev.c, ev.block), g2, { clockAt: await chainNow(), timezoneId
 check("listed: checks say the list is published", /attendance list is published/.test(await txt(p, "checks")), await txt(p, "checks"));
 await connect(p);
 out = await lookupAs(p, g2a);
-check("off the list: challenge offered, deadline in the guest's time zone (not IST)", /Not on the attendance list\. If you were at the event, you can challenge until .+ GMT-5 with a deposit/.test(out) && !/\bIST\b/.test(out) && /^Challenge \(0\.0162 ETH\)$/.test(await txt(p, "ch-action")), `${out} | ${await txt(p, "ch-action")}`);
+check("off the list: challenge offered, deadline in the guest's time zone (not IST)", /Not on the attendance list\. Were you there\? Challenge until .+ GMT-5, with a deposit/.test(out) && !/\bIST\b/.test(out) && /^Challenge \(0\.0162 ETH\)$/.test(await txt(p, "ch-action")), `${out} | ${await txt(p, "ch-action")}`);
 await p.click("#ch-action");
 out = await waitText(p, "lookup-out", /saved on IPFS|Couldn't save|didn't go through|would fail/);
 const [caseText, caseUri] = await ev.c.caseMetaEvidence(g2a);
@@ -562,13 +596,13 @@ const earlyStatus = [out, caseReads(p) === 1 && !/ CET|UTC\+01:00/.test(await tx
 const list = await waitText(p, "open-ch-list", /UTC\+01:00/);
 out = await waitText(p, "lookup-out", /UTC\+01:00/);
 check("before the case description: the open challenges and the wallet's status on the guest's own clock",
-  new RegExp(`${g2a} waiting for a match until .+ GMT\\+7$`, "i").test(earlyList) && /challenge window \(until .+ GMT\+7\) once no challenge/.test(earlyStatus[0]) && earlyStatus[1],
+  new RegExp(`${g2a} waiting for a match until .+ GMT\\+7$`, "i").test(earlyList) && /Payouts go out after the challenge window \(until .+ GMT\+7\)\./.test(earlyStatus[0]) && earlyStatus[1],
   `${earlyList} | ${earlyStatus[0]}`);
 check("then the open challenges on the event's clock: the match deadline named by the offset, the guest's time and day alongside",
   shownRe(`waiting for a match until ${clockAt(matchEnd, 60)} UTC+01:00 (${clockAt(matchEnd, 420)} your time)`).test(list) && clockAt(matchEnd, 420).slice(0, 3) !== clockAt(matchEnd, 60).slice(0, 3)
   && !/ CET|GMT\+7/.test(list), list);
 check("and the wallet's status too, the challenge window's end inside its brackets without nesting them",
-  shownRe(`Payouts are released after the challenge window (until ${clockAt(windowEnd, 60)} UTC+01:00, that is ${clockAt(windowEnd, 420)} your time) once no challenge is waiting for a match.`).test(out)
+  shownRe(`Payouts go out after the challenge window (until ${clockAt(windowEnd, 60)} UTC+01:00, that is ${clockAt(windowEnd, 420)} your time).`).test(out)
   && !nested(out) && !/GMT\+7/.test(out) && shownRe("the claim deadline (Fri 26 Mar, 19:00 UTC+01:00, that is Sat 27 Mar, 01:00 your time)").test(await txt(p, "deadline")), out);
 check("the event's clock read once, nothing read again to show the times on it", caseReads(p) === 1, String(caseReads(p)));
 check("no page errors (event's clock, after the event)", p.errs.length === 0, p.errs.join("; "));

@@ -77,7 +77,7 @@ const allSent = []; // every transaction any page asked the wallet to send
 const order = []; // uploads and transactions of every page, in the order they happened
 // Kleros's IPFS upload service, mocked: every upload is recorded, and answers like the real one ({ cids: [...] })
 // unless ipfs.mode says "fail" (HTTP 500), "odd" (no IPFS address in the answer), "other" (a case description
-// saved at another address than the one the contract computed) or "hang" (no answer for 5 s, then HTTP 500; ipfs.hung
+// saved at another address than the one the contract computed) or "hang" (no answer for 15 s, then HTTP 500; ipfs.hung
 // counts them). A case description ("metaevidence.json") gets the real CIDv0 of its bytes, as a bare "/ipfs/<cid>"
 // like the real service; other files a made-up CID and their name.
 // Kleros's IPFS gateway (cdn.kleros.link), mocked: it serves what was uploaded, by path, and 404 for anything else.
@@ -97,20 +97,35 @@ const CORS = { "access-control-allow-origin": "*" };
 // wallet is only added when the test calls window.__inject(), like a wallet app's browser that adds it late),
 // confirmDelay (ms the wallet takes before sending a transaction, like a guest reading the prompt), clockInstall (the
 // browser's timers are Playwright's fake clock, running at normal speed until the test calls page.clock.fastForward).
-// page.bigEstimate = true: every gas estimate the page asks the public RPC for answers 13.6 million gas.
+// page.bigEstimate = true: every gas estimate the page asks the public RPC for answers 13.6 million gas. refuseSwitch (the
+// wallet refuses the first n requests to switch networks, as a guest saying no does), unknownChain (the wallet doesn't know
+// the page's network: the first switch request fails with "Unrecognized chain ID" until the page adds it with
+// wallet_addEthereumChain), hangSwitch (the wallet never answers the first n requests to switch networks, as a wallet
+// that drops a prompt coming right after the connect prompt does); page.switches lists the networks the page asked to
+// switch to, page.added the networks it added.
+// closed: the Details fold (contract checks, balance) is left closed, as a guest sees it; otherwise the test opens it on
+// every load, to read what is in it.
 const asSolc07 = (data, e) => { let s = ""; try { s = JSON.stringify(e); } catch {} return /^0x3ef40ba7/.test(String(data)) || /4e487b71/.test(s + String(e && e.message)); };
 async function open(site, wallet, startChain = 1337, opts = {}) {
   const page = await browser.newPage();
   const errs = []; page.on("pageerror", (e) => errs.push(e.message));
   let chain = startChain, signer = wallet, me = opts.smart ? await addr(opts.smart) : wallet ? await addr(wallet) : null;
-  let rejects = opts.rejectConnect || 0, limited = opts.rateLimit || 0;
-  Object.assign(page, { sent: [], held: [], invalidOps: 0, logRanges: [], limited: 0 });
+  let rejects = opts.rejectConnect || 0, limited = opts.rateLimit || 0, switchRefusals = opts.refuseSwitch || 0, switchHangs = opts.hangSwitch || 0, unknownChain = !!opts.unknownChain;
+  Object.assign(page, { sent: [], held: [], invalidOps: 0, logRanges: [], limited: 0, switches: [], added: [] });
   const refused = (f) => opts.failLogs || (opts.logRange && parseInt(f.toBlock, 16) - parseInt(f.fromBlock, 16) > opts.logRange);
   await page.exposeFunction("__rpc", async (method, params) => {
     if (method === "eth_requestAccounts" && rejects > 0) { rejects--; throw new Error("User rejected the request."); }
     if (method === "eth_requestAccounts" || method === "eth_accounts") return [me];
     if (method === "eth_chainId") return "0x" + chain.toString(16);
-    if (method === "wallet_switchEthereumChain") { chain = parseInt(params[0].chainId, 16); return null; }
+    if (method === "wallet_switchEthereumChain") {
+      page.switches.push(params[0].chainId);
+      if (switchHangs > 0) { switchHangs--; return new Promise(() => {}); }
+      if (switchRefusals > 0) { switchRefusals--; throw new Error("User rejected the request."); }
+      if (unknownChain) throw new Error(`Unrecognized chain ID "${params[0].chainId}". Try adding the chain using wallet_addEthereumChain first.`);
+      chain = parseInt(params[0].chainId, 16); return null;
+    }
+    // like MetaMask: adding a network also switches to it
+    if (method === "wallet_addEthereumChain") { page.added.push(params[0]); unknownChain = false; chain = parseInt(params[0].chainId, 16); return null; }
     if (method === "eth_sendTransaction") {
       const t = params[0]; page.sent.push(t); allSent.push(t); order.push({ tx: t.data.slice(0, 10), to: t.to.toLowerCase() });
       // like MetaMask: a request pinned to another network than the wallet's is refused
@@ -154,7 +169,8 @@ async function open(site, wallet, startChain = 1337, opts = {}) {
     const rq = route.request(), url = new URL(rq.url());
     const headers = { "content-type": "application/json", ...CORS };
     if (ipfs.mode === "fail") return route.fulfill({ status: 500, headers, body: JSON.stringify({ message: "Pinning failed" }) });
-    if (ipfs.mode === "hang") { ipfs.hung++; await new Promise((r) => setTimeout(r, 5000)); return route.fulfill({ status: 500, headers, body: "{}" }).catch(() => {}); }
+    // 15 s of real time: plenty for the test to move the page's clock past its 30 s limit first, even on a busy machine
+    if (ipfs.mode === "hang") { ipfs.hung++; await new Promise((r) => setTimeout(r, 15000)); return route.fulfill({ status: 500, headers, body: "{}" }).catch(() => {}); }
     const raw = rq.postDataBuffer() || Buffer.alloc(0), body = raw.toString("latin1");
     const file = (body.match(/filename="([^"]*)"/) || [])[1] || "";
     // the file's own bytes: the first part of the multipart body, between its headers and the next boundary
@@ -180,6 +196,7 @@ async function open(site, wallet, startChain = 1337, opts = {}) {
     if (late) window.__inject = () => { window.ethereum = provider; dispatchEvent(new Event("ethereum#initialized")); };
     else window.ethereum = provider;
   }, !!opts.lateWallet);
+  if (!opts.closed) await page.addInitScript(() => addEventListener("DOMContentLoaded", () => { const d = document.getElementById("details"); if (d) d.open = true; }));
   if (opts.clockAt) await page.clock.setFixedTime(new Date(opts.clockAt * 1000));
   if (opts.clockInstall) await page.clock.install();
   page.switchAccount = async (w) => { signer = w; me = await addr(w); await page.evaluate((a) => window.__emit("accountsChanged", [a]), me); };
@@ -194,8 +211,21 @@ const dis = (p, id) => p.locator("#" + id).isDisabled();
 const toStatus = async (p) => { await p.evaluate(() => { location.hash = "status"; }); await p.waitForTimeout(100); };
 const toDeposit = async (p) => { await p.evaluate(() => { location.hash = ""; }); await p.waitForTimeout(100); };
 const waitText = async (pg, id, re) => { for (let i = 0; i < 60 && !re.test(await txt(pg, id)); i++) await pg.waitForTimeout(250); return txt(pg, id); };
-// waits until step 3 is done checking the wallet (balance and earlier deposits)
-const settle = async (pg) => { for (let i = 0; i < 80; i++) { await pg.waitForTimeout(200); if (!/^Checking/.test(await txt(pg, "check-msg"))) break; } await pg.waitForTimeout(200); };
+// waits until the page is done with the wallet: it is connected, and step 2 has its line (not "Checking…"), or step 1
+// asks to switch networks (not while the wallet is still asked)
+const settle = async (pg) => {
+  for (let i = 0; i < 150; i++) {
+    await pg.waitForTimeout(200);
+    if (!(await pg.locator("#who").getAttribute("data-account"))) continue;
+    const m = await pg.locator("#check-msg").textContent();
+    if (m && !/^Checking/.test(m)) break;
+    if ((await pg.locator("#net-box").isVisible()) && !/^Confirm the switch/.test(await pg.locator("#net-wrong").textContent())) break;
+  }
+  await pg.waitForTimeout(200);
+};
+// the connected wallet, as the page has it (step 1 shows it shortened)
+const who = async (pg) => String((await pg.locator("#who").getAttribute("data-account")) || "").toLowerCase();
+const words = (t) => t.split(/\s+/).filter(Boolean).length;
 const connect = async (pg) => { await pg.click("#connect"); await settle(pg); };
 const lookupAs = async (pg, who) => {
   await toStatus(pg); await pg.fill("#lookup-addr", who); await pg.click("#lookup");
@@ -212,9 +242,10 @@ const deposits = async (c, who) => (await c.queryFilter(c.filters.Deposited(who)
 let p = await open("preview", null);
 check("preview: 'opens soon' shown", await vis(p, "preview"));
 check("preview: connect disabled", await dis(p, "connect"));
-check("preview: the deposit amount comes from the config", /Send exactly 0\.01 ETH/.test(await p.locator("#s-send h2").innerText()) && /get your 0\.01 ETH back/.test(await p.locator("footer").innerText()));
-check("preview: warns Ethereum mainnet only, not Arbitrum, Base or Optimism", /Ethereum mainnet only\..*not on Arbitrum, Base, Optimism or any other network.*would be lost/s.test(await p.locator(".network").innerText()));
-check("preview: ETH only, a token (USDC) sent there is not a deposit", /ETH only: USDC or any other token sent to this address is not a deposit and books no spot/.test(await p.locator(".network").innerText()), await p.locator(".network").innerText());
+check("preview: the deposit amount comes from the config", (await p.locator("#s-send h2").innerText()) === "Send 0.01 ETH" && (await txt(p, "send")) === "Send 0.01 ETH" && /get your 0\.01 ETH back/.test(await p.locator("footer").innerText()));
+check("preview: one warning line: Ethereum mainnet only (ETH on Arbitrum, Base or another network is lost)", (await p.locator(".network").count()) === 1 && /^!?\s*Ethereum mainnet only\..*ETH sent on another network \(Arbitrum, Base…\) is lost/s.test(await p.locator(".network").innerText())
+  && words(await p.locator(".network").innerText()) <= 30, await p.locator(".network").innerText());
+check("preview: ETH only, a token (USDC) sent there doesn't count", /ETH only\..*Tokens like USDC don't count/s.test(await p.locator(".network").innerText()), await p.locator(".network").innerText());
 await p.close();
 let refusedBuild = false;
 try { build(kick.target, "nodeploy", { deployBlock: "" }); } catch (e) { refusedBuild = /deployBlock/.test(String(e.stderr)); }
@@ -227,32 +258,59 @@ check("built page: ETH deposit in wei, Kleros v1 addresses and IPFS service bake
   && baked.includes('"ipfsUpload": "https://kleros-api.netlify.app/.netlify/functions/upload-to-ipfs"') && baked.includes('"logChunk": 7') && !/"usdc"|"decimals"|klerosDisputeKit|klerosEvidenceModule/.test(baked));
 
 // 2. wrong deposit contract, and a contract wired to another Dispute Resolver
-p = await open("bad", g1);
-check("bad contract: amount check fails", /deposit amount is 0\.015 ETH, not 0\.01 ETH/.test(await txt(p, "checks")), await txt(p, "checks"));
+p = await open("bad", g1, 1337, { closed: true });
+check("bad contract: amount check fails, said in step 2 without opening Details", /deposit amount is 0\.015 ETH, not 0\.01 ETH/.test(await p.locator("#checks").textContent())
+  && /^The deposit amount is 0\.015 ETH, not 0\.01 ETH\. Don't send anything\.$/.test(await txt(p, "check-msg")) && (await p.locator("#check-msg").getAttribute("class")) === "note bad", await txt(p, "check-msg"));
 await connect(p);
-check("bad contract: send disabled", await dis(p, "send"));
+check("bad contract: send disabled, still said once connected", (await dis(p, "send")) && /not 0\.01 ETH\. Don't send anything/.test(await txt(p, "check-msg")), await txt(p, "check-msg"));
 await p.close();
 p = await open("otherkleros", g1);
-check("contract with another dispute service: check fails", /different dispute service/.test(await txt(p, "checks")), await txt(p, "checks"));
+check("contract with another dispute service: check fails", /different dispute service/.test(await txt(p, "checks")) && /different dispute service\. Don't send anything/.test(await txt(p, "check-msg")), await txt(p, "checks"));
 await connect(p);
 check("contract with another dispute service: send disabled", await dis(p, "send"));
 await p.close();
 
-// 3. happy path from the wrong network (Arbitrum One)
-p = await open("live", g1, 42161);
+// 3. the deposit flow as a guest first sees it: three short steps, one warning line, the checks folded away
+p = await open("live", g1, 1337, { closed: true });
+const flowWords = words(await p.locator(".network").innerText()) + words(await p.locator("ol.steps").innerText()), pageWords = words(await p.evaluate(() => document.body.innerText));
+check("before connecting: three steps and one warning line, under 80 words (the whole page under 180)", (await p.locator("ol.steps > li:visible").count()) === 3 && (await p.locator(".network:visible").count()) === 1
+  && flowWords < 80 && pageWords < 180, `${flowWords} words in the steps and warning, ${pageWords} on the page`);
+check("the steps: connect, send the amount, copy the link and go back to Luma", (await p.locator("ol.steps > li:visible h2").allInnerTexts()).join(" | ") === "Connect your wallet | Send 0.01 ETH | Copy the link and go back to Luma",
+  (await p.locator("ol.steps > li:visible h2").allInnerTexts()).join(" | "));
+check("all checks pass: folded under a closed Details, nothing to read in step 2 before connecting, step 3 only its title", !(await p.locator("#details").evaluate((d) => d.open)) && (await p.locator("#checks .mark.ok").count()) === 4
+  && !(await vis(p, "checks")) && (await vis(p, "details")) && !(await vis(p, "check-msg")) && !(await vis(p, "luma-after")) && !(await vis(p, "net-box")));
+check("the Send button shows the amount, and waits for a wallet", (await txt(p, "send")) === "Send 0.01 ETH" && (await dis(p, "send")) && !(await dis(p, "connect")));
+await p.close();
+
+// 3a. happy path from the wrong network (Arbitrum One): the page asks the wallet to switch as soon as it connects. The
+// guest says no at first: one line and a Switch button, and nothing can be sent until the wallet is on the right network.
+p = await open("live", g1, 42161, { refuseSwitch: 1 });
 check("live: all checks pass", (await p.locator("#checks .mark.ok").count()) === 4, await txt(p, "checks"));
 check("live: Kleros check and Etherscan link", /disputes go to Kleros Court/.test(await txt(p, "checks")) && (await p.locator("#contract-link").getAttribute("href")) === `https://etherscan.io/address/${kick.target}`);
 await connect(p);
-check("wrong network warning names Arbitrum One", /You're on Arbitrum One.*would be lost.*Switch to Ethereum mainnet/.test(await txt(p, "net-wrong")), await txt(p, "net-wrong"));
-check("send disabled on wrong network", await dis(p, "send"));
+check("connected on Arbitrum One: the wallet is asked right away to switch to the page's network", p.switches.join() === "0x539", JSON.stringify(p.switches));
+check("switch refused: one short line naming Arbitrum One, and a Switch button", (await txt(p, "net-wrong")) === "Your wallet stayed on Arbitrum One. Tap Switch, or pick Ethereum in your wallet."
+  && (await vis(p, "switch")) && !(await dis(p, "switch")) && (await txt(p, "switch")) === "Switch to Ethereum" && (await txt(p, "net-pill")) === "Arbitrum One", await txt(p, "net-wrong"));
+check("send disabled on wrong network", (await dis(p, "send")) && p.sent.length === 0);
 await p.click("#switch"); await settle(p);
-check("switched: pill shows the page's network", /network 1337/.test(await txt(p, "net-pill")), await txt(p, "net-pill"));
+check("switched with the button: pill shows the page's network, the line and the button gone", /network 1337/.test(await txt(p, "net-pill")) && !(await vis(p, "net-box")) && p.switches.join() === "0x539,0x539", await txt(p, "net-pill"));
 check("balance shown in ETH", (await txt(p, "bal-eth")) === "100 ETH", await txt(p, "bal-eth"));
 check("network fee estimate shown", /^about 0\.0001 ETH$/.test(await txt(p, "fee-eth")), await txt(p, "fee-eth"));
+check("all fine: step 2 says only 'Ready.'", (await txt(p, "check-msg")) === "Ready.", await txt(p, "check-msg"));
 check("send enabled", !(await dis(p, "send")));
+// the guest moves the wallet to Base by hand: Send blocked again, and the Switch button takes it back
+await p.evaluate(() => window.__emit("chainChanged", "0x2105")); await p.waitForTimeout(300);
+check("wallet moved to Base: one line naming Base, Switch offered, Send blocked", (await txt(p, "net-wrong")) === "Your wallet is on Base. Switch to Ethereum mainnet to send." && (await vis(p, "switch")) && (await dis(p, "send")), await txt(p, "net-wrong"));
+await p.click("#switch"); await settle(p);
+check("switched back: Send allowed again", !(await vis(p, "net-box")) && !(await dis(p, "send")) && (await txt(p, "check-msg")) === "Ready.", await txt(p, "check-msg"));
 const g1Before = await bal(g1);
 check("send success message", /Done\. 0\.01 ETH received/.test(await sendDeposit(p)), await txt(p, "send-msg"));
 check("tx link shown for Luma", /^https:\/\/etherscan\.io\/tx\/0x[0-9a-f]{64}$/.test(await txt(p, "tx-link")), await txt(p, "tx-link"));
+const step3 = await p.locator("#s-luma").innerText();
+check("step 3 shows only the transaction link (not the wallet), the Luma button and two short lines", (await p.locator("#luma-box dt").allTextContents()).join("|") === "Transaction link"
+  && (await p.locator("#tx-wallet, #copy-wallet").count()) === 0 && !step3.toLowerCase().includes(g1a.toLowerCase()) && !/ETH address|pending approval/i.test(step3)
+  && (await txt(p, "luma-link")) === "Copy link and go back to Luma" && /In Luma, pick Committed Spot, paste the link in “Deposit tx link” and submit\. You're in\./.test(step3)
+  && /If we can't give you a spot, your 0\.01 ETH goes back to the wallet you sent it from\./.test(step3) && words(step3) < 60, step3);
 check("contract holds exactly 0.01 ETH", (await bal(kick)) === D);
 const depTx = p.sent[0], depRcpt = await prov.getTransactionReceipt(depTx ? (await txt(p, "tx-link")).split("/").pop() : ethers.ZeroHash);
 check("guest paid exactly 0.01 ETH plus the network fee", (await bal(g1)) === g1Before - D - depRcpt.fee);
@@ -283,15 +341,54 @@ p = await open("live", ga, 1337, { rejectConnect: 1 });
 await p.click("#connect"); await p.waitForTimeout(300);
 const refusedNote = (await vis(p, "no-wallet")) ? await txt(p, "no-wallet") : "";
 await connect(p);
-check("wallet refused, then connected: the error note is gone", /The wallet didn't connect: User rejected the request/.test(refusedNote) && !(await vis(p, "no-wallet")) && (await txt(p, "who")).toLowerCase() === gaa.toLowerCase(), refusedNote);
+check("wallet refused, then connected: the error note is gone", /The wallet didn't connect: User rejected the request/.test(refusedNote) && !(await vis(p, "no-wallet")) && (await who(p)) === gaa.toLowerCase(), refusedNote);
+check("connected: step 1 shows the wallet shortened and its network, the button says Connected", (await txt(p, "who")) === `${gaa.slice(0, 6)}…${gaa.slice(-4)}` && (await txt(p, "connect")) === "Connected" && (await dis(p, "connect"))
+  && /network 1337/.test(await txt(p, "net-pill")) && p.switches.length === 0, await txt(p, "who"));
 await p.close();
 p = await open("live", ga, 1337, { lateWallet: true });
-const noWalletNote = (await vis(p, "no-wallet")) && /No wallet found in this browser/.test(await txt(p, "no-wallet"));
+const noWalletNote = (await vis(p, "no-wallet")) && /^No wallet found\. On a phone, open this page in your wallet app \(MetaMask, Rabby, Zerion…\)\. On a computer, add a wallet extension and reload\.$/.test(await txt(p, "no-wallet"));
 await p.evaluate(() => window.__inject()); await p.waitForTimeout(200);
 const goneOnceAdded = !(await vis(p, "no-wallet"));
 await connect(p);
-check("wallet added late by the wallet app: 'no wallet' shown, gone once it appears, and connecting works", noWalletNote && goneOnceAdded && (await txt(p, "who")).toLowerCase() === gaa.toLowerCase() && !(await vis(p, "no-wallet")), `${noWalletNote} ${goneOnceAdded}`);
+check("wallet added late by the wallet app: 'no wallet' shown, gone once it appears, and connecting works", noWalletNote && goneOnceAdded && (await who(p)) === gaa.toLowerCase() && !(await vis(p, "no-wallet")), `${noWalletNote} ${goneOnceAdded}`);
 check("no page errors (connecting)", p.errs.length === 0, p.errs.join("; "));
+await p.close();
+// on another network, the guest says yes: straight on to the right network, nothing else to do before Send
+p = await open("live", ga, 10);
+await connect(p);
+check("connected on Optimism: switched to the page's network at once, no Switch button, Send ready", p.switches.join() === "0x539" && !(await vis(p, "net-box")) && /network 1337/.test(await txt(p, "net-pill"))
+  && (await txt(p, "check-msg")) === "Ready." && !(await dis(p, "send")), `${JSON.stringify(p.switches)} ${await txt(p, "check-msg")}`);
+await p.close();
+// a wallet that doesn't know the page's network yet: the page adds it (which also switches to it)
+p = await open("live", ga, 8453, { unknownChain: true });
+await connect(p);
+const added = p.added[0] || {};
+check("wallet without the network: the page adds it (chain ID, ETH, RPC, explorer), then Send is ready", p.switches.join() === "0x539" && p.added.length === 1 && added.chainId === "0x539" && added.nativeCurrency?.symbol === "ETH"
+  && added.rpcUrls?.[0] === `http://127.0.0.1:${RPC}` && added.blockExplorerUrls?.[0] === "https://etherscan.io" && !(await vis(p, "net-box")) && !(await dis(p, "send")), JSON.stringify(p.added));
+check("no page errors (switching networks)", p.errs.length === 0, p.errs.join("; "));
+await p.close();
+// a wallet that never answers the switch request: the Switch button doesn't stay locked. After 20 s the line and the
+// button come back; a network changed by hand frees it at once; a later click sends a new request and switches.
+p = await open("live", ga, 42161, { hangSwitch: 2, clockInstall: true });
+await p.click("#connect");
+await waitText(p, "net-wrong", /^Confirm the switch/);
+check("switch request unanswered: 'confirm in your wallet', Switch and Send locked meanwhile", p.switches.join() === "0x539" && (await txt(p, "net-wrong")) === "Confirm the switch to Ethereum mainnet in your wallet."
+  && (await dis(p, "switch")) && (await dis(p, "send")), await txt(p, "net-wrong"));
+await p.clock.fastForward(21000);
+await waitText(p, "net-wrong", /stayed on/);
+check("still unanswered after 20 s: the one-line note and an enabled Switch button come back, Send blocked", (await txt(p, "net-wrong")) === "Your wallet stayed on Arbitrum One. Tap Switch, or pick Ethereum in your wallet."
+  && (await vis(p, "switch")) && !(await dis(p, "switch")) && (await dis(p, "send")) && p.sent.length === 0, await txt(p, "net-wrong"));
+await p.click("#switch");
+await waitText(p, "net-wrong", /^Confirm the switch/);
+check("Switch clicked: a new request is sent", p.switches.join() === "0x539,0x539" && (await dis(p, "switch")), JSON.stringify(p.switches));
+await p.evaluate(() => window.__emit("chainChanged", "0x2105"));
+await waitText(p, "net-wrong", /is on Base/);
+check("wallet moved to Base by hand while unanswered: the line names Base, Switch usable at once, Send blocked", (await txt(p, "net-wrong")) === "Your wallet is on Base. Switch to Ethereum mainnet to send."
+  && !(await dis(p, "switch")) && (await dis(p, "send")), await txt(p, "net-wrong"));
+await p.click("#switch"); await settle(p);
+check("a later click switches: line gone, Send ready", p.switches.join() === "0x539,0x539,0x539" && !(await vis(p, "net-box")) && /network 1337/.test(await txt(p, "net-pill"))
+  && (await txt(p, "check-msg")) === "Ready." && !(await dis(p, "send")), `${JSON.stringify(p.switches)} ${await txt(p, "check-msg")}`);
+check("no page errors (unanswered switch request)", p.errs.length === 0, p.errs.join("; "));
 await p.close();
 
 // 4. revisit: prior deposit detected, even through an RPC that only answers short block ranges
@@ -304,7 +401,8 @@ check("deposit page: no lookup or challenge tools", !(await vis(p, "lookup-addr"
 await toStatus(p);
 check("status page: lookup shown, deposit steps hidden", (await vis(p, "lookup-addr")) && !(await vis(p, "send")) && !(await vis(p, "luma-box")) && (await vis(p, "connect")));
 check("status page: today's Kleros fee and the jurors' policy linked", /0\.0162 ETH today/.test(await txt(p, "fee-now")) && (await p.locator("#policy-link a").getAttribute("href")) === `https://cdn.kleros.link${POLICY}`, await txt(p, "fee-now"));
-check("lookup: deposit received, waiting review", /Waiting for the hosts/.test(await lookupAs(p, g1a)), await txt(p, "lookup-out"));
+check("lookup: deposit received, the guest is in (no 'waiting for the hosts')", /^Deposit received\. You're in: the hosts add it to the contract before the event\. Deposit: /.test(await lookupAs(p, g1a))
+  && !/Waiting for the hosts|confirm the spot/i.test(await txt(p, "lookup-out")) && (await p.locator("#lookup-out").getAttribute("class")) === "note good", await txt(p, "lookup-out"));
 check("no page errors (range-limited RPC)", p.errs.length === 0, p.errs.join("; "));
 await p.close();
 // the history is read in chunks of logChunk blocks (7 here), never in one long range
@@ -318,7 +416,7 @@ await p.close();
 p = await open("live", null, 1337, { rateLimit: 6 });
 const busyOut = await lookupAs(p, g1a);
 const unsplit = p.logRanges.length > 0 && p.logRanges.every(([a, b]) => (a - deployBlock) % 7 === 0 && b - a <= 6);
-check("busy RPC: asked again after a pause, chunks not split, history read", /Waiting for the hosts/.test(busyOut) && p.limited === 6 && unsplit, `${busyOut} | ${JSON.stringify(p.logRanges)}`);
+check("busy RPC: asked again after a pause, chunks not split, history read", /^Deposit received\. You're in/.test(busyOut) && p.limited === 6 && unsplit, `${busyOut} | ${JSON.stringify(p.logRanges)}`);
 check("no page errors (busy RPC)", p.errs.length === 0, p.errs.join("; "));
 await p.close();
 
@@ -342,7 +440,7 @@ await pB.close();
 // 4d. switching accounts in the wallet: nothing of the previous account's deposit carries over
 const gaLink = await txt(pA, "tx-link");
 await pA.switchAccount(g3); await settle(pA);
-check("account switch: old link and send note cleared", !(await vis(pA, "luma-box")) && !(await vis(pA, "send-msg")) && (await txt(pA, "who")).toLowerCase() === g3a.toLowerCase(), await txt(pA, "check-msg"));
+check("account switch: old link and send note cleared", !(await vis(pA, "luma-box")) && !(await vis(pA, "send-msg")) && (await who(pA)) === g3a.toLowerCase(), await txt(pA, "check-msg"));
 check("account switch: the new wallet can send", !(await dis(pA, "send")), await txt(pA, "check-msg"));
 await pA.switchAccount(ga); await settle(pA);
 check("account switch back: its deposit found again", /already see a deposit/.test(await txt(pA, "check-msg")) && (await txt(pA, "tx-link")) === gaLink && (await dis(pA, "send")), await txt(pA, "check-msg"));
@@ -352,12 +450,12 @@ await pA.close();
 // 5. not enough ETH: less than the deposit, or the deposit but nothing for the network fee
 p = await open("live", poor);
 await connect(p);
-check("poor: needs 0.01 ETH on Ethereum mainnet", /You need 0\.01 ETH on Ethereum mainnet.*Arbitrum, Base, Optimism/.test(await txt(p, "check-msg")), await txt(p, "check-msg"));
+check("poor: needs 0.01 ETH on Ethereum mainnet", /^You need 0\.01 ETH on Ethereum mainnet, plus a little for the network fee\. ETH on Arbitrum, Base or Optimism doesn't count/.test(await txt(p, "check-msg")), await txt(p, "check-msg"));
 check("poor: send disabled", await dis(p, "send"));
 await p.close();
 p = await open("live", nofee);
 await connect(p);
-check("deposit but no fee money: asks for a little more ETH", /not enough left for the network fee/.test(await txt(p, "check-msg")) && (await dis(p, "send")), await txt(p, "check-msg"));
+check("deposit but no fee money: asks for a little more ETH", /You have 0\.01 ETH, but not enough for the network fee \(about 0\.0001 ETH\)\. Add a little more ETH/.test(await txt(p, "check-msg")) && (await dis(p, "send")), await txt(p, "check-msg"));
 await p.close();
 
 // 6. register g1, reject g2 after a plain-transfer deposit
@@ -381,7 +479,7 @@ const stray = await (await gx.sendTransaction({ to: kick.target, value: D })).wa
 await (await k.refund(await addr(gx), D)).wait();
 p = await open("live", gx);
 await connect(p);
-check("returned stray: a new deposit is allowed", /earlier deposit from this wallet was sent back/.test(await txt(p, "check-msg")) && !(await dis(p, "send")), await txt(p, "check-msg"));
+check("returned stray: a new deposit is allowed", (await txt(p, "check-msg")) === "Ready. Your earlier deposit was sent back, so send a new one." && !(await dis(p, "send")), await txt(p, "check-msg"));
 check("returned stray: its link is not offered for Luma", !(await vis(p, "luma-box")));
 check("returned stray: new deposit sent", /Done/.test(await sendDeposit(p)), await txt(p, "send-msg"));
 const gxLink = await txt(p, "tx-link");
@@ -399,7 +497,7 @@ const gs = new ethers.NonceManager(await fundNew()), gsa = await addr(gs);
 await (await gs.sendTransaction({ to: kick.target, value: E("0.005") })).wait();
 p = await open("live", gs);
 await connect(p);
-const shortRe = /We see 0\.005 ETH from this wallet, less than the 0\.01 ETH deposit: send a full 0\.01 ETH deposit; the hosts return the short payment\./;
+const shortRe = /This wallet sent 0\.005 ETH, less than the 0\.01 ETH deposit\. Send a full 0\.01 ETH; the hosts return the short payment\./;
 check("short payment: the deposit step says so, and a full deposit can be sent", shortRe.test(await txt(p, "check-msg")) && !(await dis(p, "send")) && !(await vis(p, "luma-box")), await txt(p, "check-msg"));
 out = await lookupAs(p, gsa);
 check("short payment: the lookup says so, not 'no deposit found'", shortRe.test(out) && !/No deposit found/.test(out), out);
@@ -447,7 +545,7 @@ await failedDep.wait().catch(() => {});
 p = await open("live", gf);
 const saveTx = (hash, at) => p.evaluate(([h, a, c, t]) => localStorage.setItem("gt-last-tx", JSON.stringify({ hash: h, account: a, contract: c, at: Date.now() - t })), [hash, gf.address, kick.target, at]);
 await saveTx(failedDep.hash, 0); await p.reload(); await p.waitForTimeout(800); await connect(p);
-check("a saved deposit that failed on-chain is forgotten: Send allowed", (await prov.getTransactionReceipt(failedDep.hash)).status === 0 && /All set/.test(await txt(p, "check-msg")) && !(await dis(p, "send"))
+check("a saved deposit that failed on-chain is forgotten: Send allowed", (await prov.getTransactionReceipt(failedDep.hash)).status === 0 && (await txt(p, "check-msg")) === "Ready." && !(await dis(p, "send"))
   && (await p.evaluate(() => localStorage.getItem("gt-last-tx"))) === null, await txt(p, "check-msg"));
 await saveTx("0x" + "ab".repeat(32), 31 * 60e3); await p.reload(); await p.waitForTimeout(800); await connect(p);
 check("a saved deposit the network still doesn't know 30 minutes on is forgotten: Send allowed", !(await dis(p, "send")) && (await p.evaluate(() => localStorage.getItem("gt-last-tx"))) === null, await txt(p, "check-msg"));
@@ -485,7 +583,7 @@ p = await sendHeld(gk);
 const keptTx = await p.evaluate(() => JSON.parse(localStorage.getItem("gt-last-tx") || "{}"));
 await (await gk.sendTransaction({ to: gk.address, value: 0, nonce: 0 })).wait();
 await p.reload(); await p.waitForTimeout(800); await connect(p);
-check("cancelled in the wallet (a later transaction used its nonce): forgotten, Send allowed", keptTx.nonce === 0 && /All set/.test(await txt(p, "check-msg")) && !(await dis(p, "send")) && !(await vis(p, "luma-box"))
+check("cancelled in the wallet (a later transaction used its nonce): forgotten, Send allowed", keptTx.nonce === 0 && (await txt(p, "check-msg")) === "Ready." && !(await dis(p, "send")) && !(await vis(p, "luma-box"))
   && (await p.evaluate(() => localStorage.getItem("gt-last-tx"))) === null, await txt(p, "check-msg"));
 await p.close();
 // the history can't be read: a confirmed deposit saved in this browser isn't taken for granted (the hosts declined
@@ -503,17 +601,23 @@ p = await open("live", g2);
 await connect(p);
 check("refunded guest: warned, send allowed", /refunded before/.test(await txt(p, "check-msg")) && !(await dis(p, "send")), await txt(p, "check-msg"));
 check("refunded guest: old refunded tx not offered for Luma", !(await vis(p, "luma-box")));
-await p.setViewportSize({ width: 390, height: 800 }); await p.emulateMedia({ colorScheme: "dark" });
-check("phone width: no horizontal scroll", await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-await p.screenshot({ path: path.join(outDir, "shot-phone.png"), fullPage: false });
+await p.setViewportSize({ width: 360, height: 800 }); await p.emulateMedia({ colorScheme: "dark" });
+// every button, the Luma button and the Details toggle shown on the page
+const tapTargets = (pg) => pg.evaluate(() => [...document.querySelectorAll("button, a.btn, summary")].filter((e) => e.getClientRects().length).map((e) => [e.id || e.textContent.trim(), Math.round(e.getBoundingClientRect().height)]));
+let small = (await tapTargets(p)).filter(([, h]) => h < 44);
+check("phone width (360px): no horizontal scroll, every button at least 44px tall", (await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth)) && small.length === 0 && (await tapTargets(p)).length >= 4, JSON.stringify(small));
+await p.screenshot({ path: path.join(outDir, "shot-phone.png"), fullPage: true });
 check("refunded guest: pays again", /Done/.test(await sendDeposit(p)), await txt(p, "send-msg"));
 const g2Link = await txt(p, "tx-link");
+small = (await tapTargets(p)).filter(([, h]) => h < 44);
+check("phone width (360px), step 3 with its link: no horizontal scroll, every button at least 44px tall", (await vis(p, "luma-link")) && (await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth)) && small.length === 0, JSON.stringify(small));
+await p.screenshot({ path: path.join(outDir, "shot-phone-sent.png"), fullPage: true });
 await p.close();
 p = await open("live", g2);
 await connect(p);
 check("refunded guest who paid again: new deposit offered for Luma, Send blocked", /already see a deposit/.test(await txt(p, "check-msg")) && (await txt(p, "tx-link")) === g2Link && (await dis(p, "send")), await txt(p, "check-msg"));
 out = await lookupAs(p, g2a);
-check("lookup refunded + new deposit: waiting for review", /Refunded earlier\. A new deposit/.test(out) && (await linkHref(p)) === g2Link, out);
+check("lookup refunded + new deposit: received, the hosts add it", /^Refunded earlier\. New deposit received: the hosts add it to the contract before the event\. Deposit: /.test(out) && !/Waiting for the hosts|confirm the spot/i.test(out) && (await linkHref(p)) === g2Link, out);
 await p.close();
 
 // 7b. a declined guest whose wallet contract refuses ETH: the refund waits in the contract, claimed to another address
@@ -544,7 +648,7 @@ await (await k.registerStakers([g3a])).wait();
 await prov.send("evm_increaseTime", [86400 + 10]); await prov.send("evm_mine", []);
 await (await k.postAttendance([g1a], 2n * D)).wait();
 p = await open("live", g3);
-check("listed: checks say list published", /attendance list is published/.test(await txt(p, "checks")), await txt(p, "checks"));
+check("listed: checks say list published, and step 2 says deposits are closed", /attendance list is published/.test(await txt(p, "checks")) && (await txt(p, "check-msg")) === "Deposits are closed: the attendance list is published.", await txt(p, "checks"));
 await connect(p);
 check("listed: lookup off-list offers challenge", /Not on the attendance list/.test(await lookupAs(p, g3a)) && /^Challenge \(0\.0162 ETH\)$/.test(await txt(p, "ch-action")), `${await txt(p, "lookup-out")} | ${await txt(p, "ch-action")}`);
 check("listed, window running: no Release payouts button", !(await vis(p, "release-box")));
@@ -853,7 +957,7 @@ await (await g1.sendTransaction({ to: late.target, value: D })).wait();
 await (await late.connect(owner).registerStakers([g1a])).wait();
 await prov.send("evm_increaseTime", [8 * 86400]); await prov.send("evm_mine", []);
 p = await open("late", g1, 1337, { clockAt: await chainNow() }); await connect(p);
-check("footer: self-withdrawal only if the list is never published", /never publish the attendance list by the claim deadline \(.+IST\)/.test(await p.locator("footer").innerText()), await p.locator("footer").innerText());
+check("footer: self-withdrawal only if the list is never published, and only for a confirmed deposit", /never publish the attendance list by the claim deadline \(.+IST\), you can take a confirmed deposit back yourself\./.test(await p.locator("footer").innerText()), await p.locator("footer").innerText());
 out = await lookupAs(p, g1a);
 check("deadline passed, no list: withdrawal offered", /never published before the deadline/.test(out) && (await vis(p, "claim-emergency")) && !(await vis(p, "claim-owed")), out);
 const safe = ethers.Wallet.createRandom().address;
