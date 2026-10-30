@@ -773,6 +773,69 @@ check("config contract: Register all names Ben only (not the late or the unliste
   dialogs.length === dBefore + 1 && ask3.includes(ben) && !ask3.includes(cai) && !ask3.includes(ana), ask3);
 check("config contract: Ben registered on-chain in one transaction; the late payer and the unlisted deposit not",
   Number(await k3.status(ben)) === 1 && Number(await k3.status(cai)) === 0 && Number(await k3.status(ana)) === 0 && (await k3.stakerCount()) === 1n && (await nonce()) === n0 + 1);
+await idle();
+
+// A busy network: the config's rpcUrl failing like rpc.mevblocker.io on 30 Oct (an error page without CORS headers, so
+// the browser only sees "Failed to fetch"). A stand-in for a public RPC forwards to the chain, except in its `mode`:
+// "busy" (HTTP 429 without CORS headers) or "drop" (the connection closed). With the chain as backup ("rpcBackups"), the
+// console reads through the backup and says so once per action; with nobody answering, a short plain error, the buttons
+// usable again, and the status read once the network is back. (test/admin.e2e.mjs has the other cases.)
+const standIn = async (mode) => {
+  const f = { mode, asked: 0 };
+  const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type", "access-control-allow-methods": "POST, OPTIONS" };
+  f.server = (await import("node:http")).createServer((rq, rs) => {
+    if (rq.method === "OPTIONS") { rs.writeHead(204, cors); return rs.end(); }
+    let body = "";
+    rq.on("data", (c) => (body += c));
+    rq.on("end", async () => {
+      f.asked++;
+      if (f.mode === "drop") return rq.socket.destroy();
+      if (f.mode === "busy") { rs.writeHead(429, { "content-type": "text/plain" }); return rs.end("Too Many Requests"); }
+      const r = await fetch(`http://127.0.0.1:${RPC}`, { method: "POST", headers: { "content-type": "application/json" }, body });
+      rs.writeHead(200, { ...cors, "content-type": "application/json" });
+      rs.end(await r.text());
+    });
+  });
+  await new Promise((r) => f.server.listen(0, "127.0.0.1", r));
+  f.url = `http://127.0.0.1:${f.server.address().port}`;
+  return f;
+};
+const fake = await standIn("busy"), down = await standIn("drop");
+const lines = (text, line) => text.split("\n").filter((l) => l === line).length;
+const BACKUP = `Network busy: using a backup server (127.0.0.1:${RPC}).`, BUSY = "✗ The Ethereum network is busy. Try again in a minute.";
+// (no deposit deadline: Cai's deposit counts)
+write("config.json", { ...config, rpcUrl: fake.url, rpcBackups: [config.rpcUrl], contract: k3Addr, receiver: k3Addr, deployBlock: early.blockNumber + 1 });
+const busySettings = await (await fetch(`http://localhost:${WEB}/settings.json`)).json();
+check("the console's settings name the RPCs the page reads through: the config's rpcUrl, then its backups",
+  JSON.stringify(busySettings.rpcs) === JSON.stringify([{ url: fake.url, logs: true }, { url: config.rpcUrl, logs: true }]), JSON.stringify(busySettings.rpcs));
+await open();
+await clearLog();
+await page.click("#connect"); await idle();
+check("RPC busy: the contract's status read through the backup, said once",
+  await waitStatus(/Registered guests\s*1/) && lines(await logText(), BACKUP) === 1 && fake.asked > 0 && !/✗/.test(await logText()), await logText());
+await clearLog();
+check("RPC busy: Load deposits through the backup, said once", await click("loadDeposits", /2 deposit\(s\) read/) && lines(await logText(), BACKUP) === 1, await logText());
+await idle();
+n0 = await nonce();
+check("RPC busy: Register all paid guests", await click("registerAll", /Registered 1 guest\./) && Number(await k3.status(cai)) === 1 && (await nonce()) === n0 + 1, await logText());
+await idle();
+// nobody answers: the stand-in busy, the backup closing every connection
+write("config.json", { ...config, rpcUrl: fake.url, rpcBackups: [down.url], contract: k3Addr, receiver: k3Addr, deployBlock: early.blockNumber + 1 });
+await open();
+await clearLog();
+const t0 = Date.now();
+await page.click("#connect");
+check("no server answering: within seconds, a short plain error", await waitLog(new RegExp(BUSY.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))) && Date.now() - t0 < 20_000, await logText());
+await idle();
+check("no server answering: Connect and Refresh usable again", !(await page.isDisabled("#connect")) && !(await page.isDisabled("#refresh")));
+await clearLog();
+await page.click("#refresh"); await idle();
+check("no server answering: Refresh says it in the status too", lines(await logText(), BUSY) === 1 && /^Contract\s*✗ The Ethereum network is busy\. Try again in a minute\.$/.test((await txt("status")).trim()), await txt("status"));
+fake.mode = "ok";
+await clearLog();
+await page.click("#refresh"); await idle();
+check("the network back: Refresh reads the status", await waitStatus(/Registered guests\s*2/) && !/✗/.test(await logText()), `${await txt("status")} | ${await logText()}`);
+for (const f of [fake, down]) { f.server.closeAllConnections(); f.server.close(); }
 write("config.json", config);
 // The shared core (scripts/core.mjs) runs in the browser as an ES module, "ethers" mapped to the ethers
 // ESM build with an import map, both served by the console: same results as the scripts in Node.

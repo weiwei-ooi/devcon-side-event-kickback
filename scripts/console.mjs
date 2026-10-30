@@ -62,6 +62,7 @@ function settings() {
     chainId: cfg.chainId,
     chainName: cfg.chainName,
     rpcUrl: cfg.rpcUrl,
+    rpcs: cfg.rpcs, // rpcUrl, then its backups (core.rpcList): the page reads through them in order
     explorer: cfg.explorer,
     symbol: cfg.symbol,
     deposit: cfg.deposit,

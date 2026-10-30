@@ -172,7 +172,7 @@ const H = "api_id,name,email,ticket_name,approval_status,checked_in_at,eth_addre
 const T = "Committed Spot (0.01 ETH)";
 const writeConfig = (deployBlock) => {
   const base = JSON.parse(fs.readFileSync(path.join(root, "config.json"), "utf8"));
-  fs.writeFileSync(path.join(root, CFG), JSON.stringify({ ...base, rpcUrl: RPC, receiver: K, contract: K, deployBlock: String(deployBlock) }, null, 2));
+  fs.writeFileSync(path.join(root, CFG), JSON.stringify({ ...base, rpcUrl: RPC, rpcBackups: false, receiver: K, contract: K, deployBlock: String(deployBlock) }, null, 2));
 };
 
 async function deployKick(label) {

@@ -53,6 +53,8 @@ const deploy = async (dep, resolver = proxy) => {
   return deployC("TruthPaysKickback", E(dep), "E2E", await addr(owner), now + 86400, now + 86400 * 9, [resolver.target, EXTRA, t.pieces, t.slots, POLICY]);
 };
 const kick = await deploy("0.01"), bad = await deploy("0.015"), late = await deploy("0.01"), otherKleros = await deploy("0.01", otherProxy);
+// spare: the deposit read through a backup RPC (4a'), apart from kick, whose numbers the later steps check
+const spare = await deploy("0.01");
 // someone else's case on the same Dispute Resolver first, with an appeal contribution: our case gets local ID 1 and
 // arbitrator ID 1001, and the page must not mix the two up
 await (await proxy.createDispute(EXTRA, "/ipfs/QmSomeoneElse", 2, { value: FEE })).wait();
@@ -67,8 +69,61 @@ const build = (contract, name, extra = {}) => {
   fs.writeFileSync(cfg, JSON.stringify({ eventName: "E2E", chain: "local", chainId: 1337, rpcUrl: `http://127.0.0.1:${RPC}`, logChunk: 7, explorer: "https://etherscan.io", deposit: "0.01", receiver: contract || "0x0000000000000000000000000000000000000001", contract, eventStart: new Date((now + 86400) * 1000).toISOString(), claimDeadline: new Date((now + 86400 * 9) * 1000).toISOString(), owner: "0x0000000000000000000000000000000000000001", deployBlock, kleros: { disputeResolver: proxy.target, arbitrator: liquid.target, policyURI: POLICY }, ...extra }));
   execFileSync("node", ["scripts/build-site.mjs", "--config", cfg, "--out", path.join(outDir, name), ...(contract ? [] : ["--preview"])], { cwd: proj, stdio: "pipe" });
 };
+// Public RPCs that fail as rpc.mevblocker.io did from a browser on 30 Oct 2026. Each request gets the next of `modes`, round
+// and round, after the first `hang` requests, which get no answer at all: "cors" (HTTP 429 without a CORS header: the browser
+// only sees "Failed to fetch"), "drop" (connection closed), "html" (an error page), "503", "busy" (JSON-RPC error "service
+// temporarily unavailable"). The CORS preflight passes. `seen`: the methods asked, in order.
+async function brokenRpc(modes, hang = 0) {
+  const seen = [], cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type", "access-control-allow-methods": "POST" };
+  const srv = http.createServer((rq, rs) => {
+    if (rq.method === "OPTIONS") { rs.writeHead(204, cors); return rs.end(); }
+    let body = "";
+    rq.on("data", (c) => (body += c));
+    rq.on("end", () => {
+      let q = {};
+      try { q = JSON.parse(body); } catch {}
+      seen.push(q.method);
+      if (hang > 0) { hang--; return; }
+      const mode = modes[(seen.length - 1) % modes.length];
+      if (mode === "drop") return rq.socket.destroy();
+      if (mode === "cors") { rs.writeHead(429, { "content-type": "text/plain" }); return rs.end("Too Many Requests"); }
+      if (mode === "html") { rs.writeHead(200, { "content-type": "text/html", ...cors }); return rs.end("<html>525: SSL handshake failed</html>"); }
+      if (mode === "503") { rs.writeHead(503, { "content-type": "text/plain", ...cors }); return rs.end("Service Unavailable"); }
+      rs.writeHead(200, { "content-type": "application/json", ...cors });
+      rs.end(JSON.stringify({ jsonrpc: "2.0", id: q.id, error: { code: -32603, message: "service temporarily unavailable" } }));
+    });
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  return { url: `http://127.0.0.1:${srv.address().port}`, seen };
+}
+// A public RPC that answers everything but log searches, which it refuses as busy ("service temporarily unavailable"),
+// as a page sees it when rpc.mevblocker.io is down and publicnode refuses old blocks. The rest goes to ganache.
+async function noLogsRpc() {
+  const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type", "access-control-allow-methods": "POST" };
+  const srv = http.createServer((rq, rs) => {
+    if (rq.method === "OPTIONS") { rs.writeHead(204, cors); return rs.end(); }
+    let body = "";
+    rq.on("data", (c) => (body += c));
+    rq.on("end", async () => {
+      const q = JSON.parse(body);
+      const reply = q.method === "eth_getLogs" ? { jsonrpc: "2.0", id: q.id, error: { code: -32603, message: "service temporarily unavailable" } }
+        : await (await fetch(`http://127.0.0.1:${RPC}`, { method: "POST", headers: { "content-type": "application/json" }, body })).json();
+      rs.writeHead(200, { "content-type": "application/json", ...cors });
+      rs.end(JSON.stringify(reply));
+    });
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  return { url: `http://127.0.0.1:${srv.address().port}` };
+}
+// flaky: the public RPC never answers its first request, then fails every other way; ganache is its backup.
+// downA, downB: both RPCs of a page fail every request
+const flaky = await brokenRpc(["cors", "drop", "busy", "html", "503"], 1), downA = await brokenRpc(["drop", "cors"]), downB = await brokenRpc(["503", "busy", "html"]);
+const noLogs = await noLogsRpc();
 build(kick.target, "live"); build(bad.target, "bad"); build(late.target, "late"); build(otherKleros.target, "otherkleros"); build("", "preview");
-http.createServer((rq, rs) => { if (!/^\/(live|bad|preview|late|otherkleros|case2|case3)?$/.test(rq.url)) { rs.writeHead(404); return rs.end(); } const f = path.join(outDir, rq.url.split("/")[1] || "live", "index.html"); rs.writeHead(200, { "content-type": "text/html" }); rs.end(fs.readFileSync(f)); }).listen(WEB);
+build(spare.target, "flaky", { rpcUrl: flaky.url, rpcBackups: [`http://127.0.0.1:${RPC}`] });
+build(kick.target, "down", { rpcUrl: downA.url, rpcBackups: [downB.url] });
+build(spare.target, "nologs", { rpcUrl: noLogs.url });
+http.createServer((rq, rs) => { if (!/^\/(live|bad|preview|late|otherkleros|case2|case3|flaky|down|nologs)?$/.test(rq.url)) { rs.writeHead(404); return rs.end(); } const f = path.join(outDir, rq.url.split("/")[1] || "live", "index.html"); rs.writeHead(200, { "content-type": "text/html" }); rs.end(fs.readFileSync(f)); }).listen(WEB);
 
 const results = [];
 const check = (name, ok, extra = "") => { results.push(ok); console.log(`${ok ? "PASS" : "FAIL"} ${name} ${ok ? "" : extra}`); };
@@ -254,6 +309,11 @@ let refusedUsdc = false;
 try { build(kick.target, "usdc", { token: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" }); } catch (e) { refusedUsdc = /token/.test(String(e.stderr)); }
 check("build-site refuses an old USDC config", refusedUsdc);
 const baked = fs.readFileSync(path.join(outDir, "live", "index.html"), "utf8");
+const cfgOf = (name) => { const h = fs.readFileSync(path.join(outDir, name, "index.html"), "utf8"); return JSON.parse(h.slice(h.indexOf("const CONFIG = ") + 15, h.indexOf(";\n/*END CONFIG*/"))); };
+check("built page: its RPCs baked in, rpcUrl first (a local chain gets no backups); the config's own backups after it",
+  JSON.stringify(cfgOf("live").rpcs) === JSON.stringify([{ url: `http://127.0.0.1:${RPC}`, logs: true }]) && cfgOf("live").rpc === `http://127.0.0.1:${RPC}`
+  && JSON.stringify(cfgOf("flaky").rpcs) === JSON.stringify([{ url: flaky.url, logs: true }, { url: `http://127.0.0.1:${RPC}`, logs: true }]) && cfgOf("flaky").rpc === flaky.url,
+  JSON.stringify([cfgOf("live").rpcs, cfgOf("flaky").rpcs]));
 check("built page: ETH deposit in wei, Kleros v1 addresses and IPFS service baked in, no USDC", baked.includes(`"depositWei": "${D}"`) && baked.includes(`"klerosResolver": "${proxy.target}"`) && baked.includes(`"klerosArbitrator": "${liquid.target}"`)
   && baked.includes('"ipfsUpload": "https://kleros-api.netlify.app/.netlify/functions/upload-to-ipfs"') && baked.includes('"logChunk": 7') && !/"usdc"|"decimals"|klerosDisputeKit|klerosEvidenceModule/.test(baked));
 
@@ -418,6 +478,63 @@ const busyOut = await lookupAs(p, g1a);
 const unsplit = p.logRanges.length > 0 && p.logRanges.every(([a, b]) => (a - deployBlock) % 7 === 0 && b - a <= 6);
 check("busy RPC: asked again after a pause, chunks not split, history read", /^Deposit received\. You're in/.test(busyOut) && p.limited === 6 && unsplit, `${busyOut} | ${JSON.stringify(p.logRanges)}`);
 check("no page errors (busy RPC)", p.errs.length === 0, p.errs.join("; "));
+await p.close();
+// 4a'. the public RPC fails as rpc.mevblocker.io did on 30 Oct: no answer at all to the first request, then answers the
+// browser blocks, closed connections, error pages, "service temporarily unavailable". The page says the network is busy
+// while it waits, then reads through the backup (ganache here) and stays with it; every log search still asks the public
+// RPC first (only it holds the whole history). The deposit goes through.
+const NOTE = "Network busy, still trying…";
+let noteAt = null, t0 = Date.now();
+p = await open("flaky", null, 1337);
+// where the steps start: the note shows over the page, so it never moves them
+const stepsAt = () => p.locator(".network").evaluate((el) => Math.round(el.getBoundingClientRect().top + scrollY));
+let topWith = null;
+for (let i = 0; i < 60 && noteAt === null; i++) { if (await vis(p, "net-busy")) { noteAt = Date.now() - t0; topWith = await stepsAt(); } else await p.waitForTimeout(250); }
+const noteText = await txt(p, "net-busy");
+for (let i = 0; i < 120 && (await p.locator("#checks .mark.ok").count()) < 4; i++) await p.waitForTimeout(250);
+const loaded = Date.now() - t0;
+check(`public RPC silent: after a few seconds one short line says so (${noteText})`, noteAt !== null && noteAt < 12000 && noteText === NOTE && (await p.locator("#net-busy").getAttribute("class")) === "note warn",
+  `${noteAt} ms, ${noteText}`);
+check("public RPC silent, then failing: the checks pass through the backup, the note gone", (await p.locator("#checks .mark.ok").count()) === 4 && !(await vis(p, "net-busy")) && loaded < 35000
+  && flaky.seen.length >= 2, `${loaded} ms: ${await txt(p, "checks")}`);
+check("the note shows over the page: showing or hiding it doesn't move the steps", topWith !== null && (await stepsAt()) === topWith, `${topWith} → ${await stepsAt()}`);
+await p.close();
+const gb = new ethers.NonceManager(ethers.Wallet.createRandom().connect(prov)), gba = await addr(gb);
+await (await owner.sendTransaction({ to: gba, value: E("1") })).wait();
+p = await open("flaky", gb, 1337);
+for (let i = 0; i < 120 && (await p.locator("#checks .mark.ok").count()) < 4; i++) await p.waitForTimeout(250);
+const flakyReads = flaky.seen.filter((m) => m !== "eth_getLogs").length;
+await connect(p);
+check("public RPC failing: connected, step 2 says 'Ready.'", (await txt(p, "check-msg")) === "Ready." && !(await dis(p, "send")) && !(await vis(p, "net-busy")), await txt(p, "check-msg"));
+check("public RPC failing: deposit sent through the backup", /^Done\. 0\.01 ETH received/.test(await sendDeposit(p)) && (await deposits(spare, gba)).join() === String(D)
+  && /^https:\/\/etherscan\.io\/tx\/0x[0-9a-f]{64}$/.test(await txt(p, "tx-link")), await txt(p, "send-msg"));
+const flakyLogs = flaky.seen.filter((m) => m === "eth_getLogs").length;
+check("reads stay with the backup that answered; every log search asks the public RPC first", flaky.seen.filter((m) => m !== "eth_getLogs").length === flakyReads
+  && p.logQueries > 0 && flakyLogs >= p.logQueries, `${flakyReads} reads, ${flaky.seen.length} requests, ${flakyLogs} log searches there, ${p.logQueries} through the backup`);
+check("no page errors (public RPC failing)", p.errs.length === 0, p.errs.join("; "));
+await p.close();
+// every RPC down and no wallet to fall back on: the note while the page asks again, then one plain line, no endless wait
+t0 = Date.now();
+p = await open("down", null, 1337, { closed: true });
+let noteSeen = false;
+for (let i = 0; i < 200 && !/Couldn't reach/.test(await p.locator("#check-msg").textContent()); i++) { noteSeen ||= await vis(p, "net-busy"); await p.waitForTimeout(250); }
+const downAt = Date.now() - t0;
+check("every RPC down: 'Network busy' while it tries again, then a plain error in step 2 within 40 s, Send blocked", noteSeen && downAt < 40000
+  && (await txt(p, "check-msg")) === "Couldn't reach Ethereum mainnet to check the contract (the network is busy). Reload the page in a minute." && (await p.locator("#check-msg").getAttribute("class")) === "note bad"
+  && !(await vis(p, "net-busy")) && (await dis(p, "send")) && downA.seen.length >= 5 && downB.seen.length >= 5, `${downAt} ms, ${downA.seen.length}+${downB.seen.length} requests: ${await txt(p, "check-msg")}`);
+check("no page errors (every RPC down)", p.errs.length === 0, p.errs.join("; "));
+await p.close();
+// the public RPC refuses every log search as busy, and the guest's wallet takes log searches of 4 blocks at most: the
+// history is read through the wallet, each range split for it, and the guest can deposit
+const gn = new ethers.NonceManager(ethers.Wallet.createRandom().connect(prov));
+await (await owner.sendTransaction({ to: await addr(gn), value: E("1") })).wait();
+p = await open("nologs", gn, 1337, { logRange: 3 });
+t0 = Date.now();
+await connect(p);
+for (let i = 0; i < 120 && !/Ready\.|Couldn't/.test(await txt(p, "check-msg")); i++) await p.waitForTimeout(250);
+check("log searches busy on every RPC, the wallet's node takes short ranges only: history read through the wallet, split; 'Ready.'",
+  (await txt(p, "check-msg")) === "Ready." && !(await dis(p, "send")) && Date.now() - t0 < 25000, `${Date.now() - t0} ms: ${await txt(p, "check-msg")}`);
+check("no page errors (log searches busy, short ranges in the wallet)", p.errs.length === 0, p.errs.join("; "));
 await p.close();
 
 // 4b. the deposit history can't be read: unknown, never "no deposit"

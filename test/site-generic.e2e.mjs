@@ -114,11 +114,41 @@ const configFile = (name, extra = {}) => {
   return f;
 };
 const build = (cfg, out, ...flags) => execFileSync("node", ["scripts/build-site.mjs", "--config", cfg, "--out", path.join(outDir, out), ...flags], { cwd: proj, stdio: "pipe" }).toString();
+// Public RPCs that fail as rpc.mevblocker.io did from a browser on 30 Oct 2026 (as in test/site.e2e.mjs): each request gets
+// the next of `modes`, round and round: "cors" (HTTP 429 without a CORS header: the browser only sees "Failed to fetch"),
+// "drop" (connection closed), "html" (an error page), "503", "busy" (JSON-RPC error "service temporarily unavailable").
+// The CORS preflight passes. `seen`: the methods asked.
+async function brokenRpc(modes) {
+  const seen = [], cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type", "access-control-allow-methods": "POST" };
+  const srv = http.createServer((rq, rs) => {
+    if (rq.method === "OPTIONS") { rs.writeHead(204, cors); return rs.end(); }
+    let body = "";
+    rq.on("data", (c) => (body += c));
+    rq.on("end", () => {
+      let q = {};
+      try { q = JSON.parse(body); } catch {}
+      seen.push(q.method);
+      const mode = modes[(seen.length - 1) % modes.length];
+      if (mode === "drop") return rq.socket.destroy();
+      if (mode === "cors") { rs.writeHead(429, { "content-type": "text/plain" }); return rs.end("Too Many Requests"); }
+      if (mode === "html") { rs.writeHead(200, { "content-type": "text/html", ...cors }); return rs.end("<html>525: SSL handshake failed</html>"); }
+      if (mode === "503") { rs.writeHead(503, { "content-type": "text/plain", ...cors }); return rs.end("Service Unavailable"); }
+      rs.writeHead(200, { "content-type": "application/json", ...cors });
+      rs.end(JSON.stringify({ jsonrpc: "2.0", id: q.id, error: { code: -32603, message: "service temporarily unavailable" } }));
+    });
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  return { url: `http://127.0.0.1:${srv.address().port}`, seen };
+}
+// event-flaky: the public RPC fails every request, ganache is its backup; event-down: both RPCs fail every request
+const flaky = await brokenRpc(["cors", "drop", "busy", "html", "503"]), downA = await brokenRpc(["drop", "cors"]), downB = await brokenRpc(["503", "busy", "html"]);
 build(configFile("generic"), "event", "--generic");
+build(configFile("flaky", { rpcUrl: flaky.url, rpcBackups: [rpcUrl] }), "event-flaky", "--generic");
+build(configFile("down", { rpcUrl: downA.url, rpcBackups: [downB.url] }), "event-down", "--generic");
 build(configFile("live"), "live");
 build(configFile("reserved", { eventName: tpName, receiver: tpReal.c.target, contract: tpReal.c.target, deployBlock: tpReal.block }), "event-tp", "--generic");
 http.createServer((rq, rs) => {
-  const m = new URL(rq.url, "http://x").pathname.match(/^\/(event|live|event-tp)\/$/);
+  const m = new URL(rq.url, "http://x").pathname.match(/^\/(event|live|event-tp|event-flaky|event-down)\/$/);
   if (!m) { rs.writeHead(404); return rs.end(); }
   rs.writeHead(200, { "content-type": "text/html" }); rs.end(fs.readFileSync(path.join(outDir, m[1], "index.html")));
 }).listen(WEB);
@@ -165,6 +195,11 @@ build(mainnet({ policyURI: POLICY }), "mainnet-event", "--generic");
 const mainCfg = cfgOf(fs.readFileSync(path.join(outDir, "mainnet-event", "index.html"), "utf8"));
 check("generic build for mainnet: Kleros's own Dispute Resolver and court, the public RPC, no contract", mainCfg.chainId === 1 && core.isKnownResolver(1, mainCfg.klerosResolver)
   && mainCfg.klerosArbitrator.toLowerCase() === core.KLEROS[1].arbitrator.toLowerCase() && mainCfg.rpc === "https://rpc.mevblocker.io" && mainCfg.contract === "" && mainCfg.klerosPolicy === "", JSON.stringify(mainCfg));
+check("generic build: its RPCs baked in, rpcUrl first, then mainnet's backups (a local chain gets none, unless the config names them)",
+  JSON.stringify(mainCfg.rpcs) === JSON.stringify(core.rpcList("https://rpc.mevblocker.io", 1)) && mainCfg.rpcs.length >= 3 && mainCfg.rpcs.slice(1).some((r) => !r.logs)
+  && JSON.stringify(genCfg.rpcs) === JSON.stringify([{ url: rpcUrl, logs: true }])
+  && JSON.stringify(cfgOf(fs.readFileSync(path.join(outDir, "event-flaky", "index.html"), "utf8")).rpcs) === JSON.stringify([{ url: flaky.url, logs: true }, { url: rpcUrl, logs: true }]),
+  JSON.stringify([mainCfg.rpcs, genCfg.rpcs]));
 
 // 2. the browser. Kleros's IPFS upload service and gateway are mocked as in test/site.e2e.mjs: a case description
 // ("metaevidence.json") is stored at the real CIDv0 of its bytes, and the gateway serves what was stored.
@@ -457,6 +492,25 @@ await p.close();
 p = await open(link(ev.c), g1, { noArchive: true });
 check("RPC without old state and no block in the link: asks for the full link, nothing else", await refused(p) && new RegExp(`Couldn't find when the deposit contract ${ev.c.target} was created.*Ask the organiser for the full link: it ends with &from= and a block number`).test(await txt(p, "link-note"))
   && !(await vis(p, "connect")) && !p.calls.some((c) => c.method === "eth_getLogs"), await txt(p, "link-note"));
+await p.close();
+
+// 2c'. the public RPC fails as rpc.mevblocker.io did on 30 Oct: the event is read through the backup (ganache here) and
+// every log search still asks the public RPC first; with every RPC down, the page says so plainly after a short while
+p = await open(link(ev.c, ev.block).replace("/event/", "/event-flaky/"), g1);
+await connect(p);
+check("public RPC failing: the event read through the backup, checks pass, the earlier deposit found, no busy note left", !(await refused(p)) && (await txt(p, "ev-name")) === evName
+  && (await p.locator("#checks .mark.ok").count()) === 4 && /already see a deposit/.test(await txt(p, "check-msg")) && !(await vis(p, "net-busy"))
+  && flaky.seen.includes("eth_getCode") && flaky.seen.filter((m) => m === "eth_getLogs").length >= p.calls.filter((c) => c.method === "eth_getLogs").length, `${JSON.stringify(flaky.seen.slice(0, 12))} | ${await txt(p, "check-msg")}`);
+check("no page errors (public RPC failing)", p.errs.length === 0, p.errs.join("; "));
+await p.close();
+const t0 = Date.now();
+p = await open(link(ev.c, ev.block).replace("/event/", "/event-down/"), null);
+let noteSeen = false;
+for (let i = 0; i < 200 && !(await refused(p)); i++) { noteSeen ||= await vis(p, "net-busy"); await p.waitForTimeout(250); }
+check("every RPC down: 'Network busy, still trying…' meanwhile, then one plain line within 40 s", noteSeen && Date.now() - t0 < 40000 && await refused(p)
+  && (await txt(p, "link-note")) === "Couldn't reach Ethereum mainnet to read the deposit contract (the network is busy). Reload the page in a minute." && !(await vis(p, "net-busy"))
+  && downA.seen.length >= 5 && downB.seen.length >= 5, `${Date.now() - t0} ms: ${await txt(p, "link-note")}`);
+check("no page errors (every RPC down)", p.errs.length === 0, p.errs.join("; "));
 await p.close();
 
 // 2d. contracts the page refuses: another dispute service, not a kickback contract, no contract at all

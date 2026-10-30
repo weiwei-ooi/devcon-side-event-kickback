@@ -70,7 +70,7 @@ There are two configs:
 - `config.json`: the **live** event (`"mode": "live"`).
 - `config.rehearsal.json`: a **rehearsal** on Ethereum mainnet with a throwaway contract that is never put on Luma (`"mode": "rehearsal"`, `poolCap` 0.25 ETH safety cap). Run it with `npm run console:rehearsal`.
 
-Both use `"chain": "ethereum"` (chain ID 1, explorer etherscan.io) and the public RPC `https://rpc.mevblocker.io`. Free public RPCs only return old event logs in small pieces, so the scripts read logs in chunks of `logChunk` blocks (5,000 by default) and retry when a request fails. The earlier Arbitrum Sepolia test-network mode (`config.testnet.json`) has been removed.
+Both use `"chain": "ethereum"` (chain ID 1, explorer etherscan.io) and the public RPC `https://rpc.mevblocker.io`. Free public RPCs only return old event logs in small pieces, so the scripts read logs in chunks of `logChunk` blocks (5,000 by default) and retry when a request fails. When MEV Blocker doesn't answer (busy, no answer within 20 s, an error page a browser blocks), the pages, the panel and the scripts read through backups instead: publicnode, then drpc, then 1rpc (`BACKUP_RPCS` in `scripts/core.mjs`, checked from a browser on 30 Oct 2026). Only MEV Blocker searches the contract's whole history, so log searches always ask it first and wait and retry while it is busy; publicnode only helps for recent blocks. The guest page shows "Network busy, still trying…" and the organiser panel says so under the button while this happens. `"rpcBackups": false` in a config turns the backups off (a local fork), or a list replaces them. The earlier Arbitrum Sepolia test-network mode (`config.testnet.json`) has been removed.
 
 ### Owner console (no code, no private keys)
 

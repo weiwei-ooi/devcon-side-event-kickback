@@ -348,6 +348,173 @@ test("eventClock reads the event's own clock from its case description, or gives
   }
 });
 
+// ---------------------------------------------------------------- reading through several RPCs
+
+// A fake JSON-RPC server: `answer(req, n)` gives the reply for one request of a payload of n ({ result } or { error }),
+// "busy" (HTTP 429 with no body a browser could read), "html" (an error page), "hang" (no answer), "drop" (connection
+// closed) or "nobatch" (the whole batch turned down with one error, id null, as eth.drpc.org's free plan does).
+async function fakeRpc(answer) {
+  const http = await import("node:http");
+  const seen = [];
+  const srv = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      const payload = JSON.parse(body), many = Array.isArray(payload) ? payload : [payload];
+      seen.push(...many.map((p) => p.method));
+      const replies = many.map((p) => ({ p, a: answer(p, many.length) }));
+      const odd = replies.find((r) => typeof r.a === "string")?.a;
+      if (odd === "hang") return;
+      if (odd === "drop") return req.socket.destroy();
+      if (odd === "busy") { res.writeHead(429); return res.end("Too Many Requests"); }
+      if (odd === "html") { res.writeHead(200, { "content-type": "text/html" }); return res.end("<html>525</html>"); }
+      if (odd === "nobatch") {
+        res.writeHead(200, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: 29, message: "Batch of more than 3 requests are not allowed on free tier" } }));
+      }
+      const out = replies.map(({ p, a }) => ({ jsonrpc: "2.0", id: p.id, ...a }));
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(Array.isArray(payload) ? out : out[0]));
+    });
+  });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  return { url: `http://127.0.0.1:${srv.address().port}`, seen, close: () => new Promise((r) => { srv.closeAllConnections?.(); srv.close(r); }) };
+}
+const LOG = { address: "0xd5c6a73c05fa431c748781dabaa99fe2590d677d", topics: [core.DEPOSITED_TOPIC], data: "0x" + "0".repeat(64),
+  blockNumber: "0x1913da2", blockHash: "0x" + "ab".repeat(32), transactionHash: "0x" + "cd".repeat(32), transactionIndex: "0x0", logIndex: "0x0", removed: false };
+const good = (p) => p.method === "eth_chainId" ? { result: "0x1" } : p.method === "eth_blockNumber" ? { result: "0x1914a6b" }
+  : p.method === "eth_getLogs" ? { result: [LOG] } : p.method === "eth_call" ? { result: "0x" + "00".repeat(12) + "259a1084c2043a7b3b5b288596e05c41b8efa5d6" } : { error: { code: -32601, message: "method not found" } };
+
+test("rpcList: rpcUrl first, then the chain's backups or the config's own; mainnet configs get them", () => {
+  assert.deepEqual(core.rpcList("https://a.example", 1337), [{ url: "https://a.example", logs: true }]);
+  const main = core.rpcList(core.DEFAULT_RPC, 1);
+  assert.equal(main[0].url, core.DEFAULT_RPC); assert.equal(main[0].logs, true);
+  assert.deepEqual(main.slice(1), core.BACKUP_RPCS[1]);
+  assert.ok(main.length >= 3 && main.slice(1).some((r) => r.logs) && main.slice(1).some((r) => !r.logs));
+  assert.deepEqual(core.rpcList("https://a.example", 1, false), [{ url: "https://a.example", logs: true }]);
+  assert.deepEqual(core.rpcList("https://a.example", 1, ["https://b.example", { url: "https://c.example", logs: false }, "https://a.example", "ftp://x", { url: "" }]),
+    [{ url: "https://a.example", logs: true }, { url: "https://b.example", logs: true }, { url: "https://c.example", logs: false }]);
+  const c = { deposit: "0.01", contract: "0xd5c6A73c05FA431c748781DaBAA99Fe2590d677D" };
+  assert.deepEqual(core.normalizeConfig({ ...c, chain: "ethereum", rpcUrl: core.DEFAULT_RPC }).rpcs, main);
+  assert.deepEqual(core.normalizeConfig({ ...c, chain: "ethereum" }).rpcs, main);
+  assert.deepEqual(core.normalizeConfig({ ...c, chain: "local", chainId: 1337, rpcUrl: "http://127.0.0.1:1" }).rpcs, [{ url: "http://127.0.0.1:1", logs: true }]);
+  for (const live of ["config.json", "config.rehearsal.json"]) assert.deepEqual(lib.loadConfig(path.join(root, live)).rpcs, main, live);
+});
+
+test("rpcBusy tells a busy or unreachable network from an answer (a revert, a range too long)", () => {
+  for (const m of ["Rate limit exceeded", "service temporarily unavailable", "Too Many Requests", "Failed to fetch", "fetch failed", "request timeout",
+    "header not found", "502 Bad Gateway", "exceeded maximum retry limit", "connect ECONNREFUSED 127.0.0.1:1"]) assert.ok(core.rpcBusy({ message: m }), m);
+  for (const m of ["execution reverted", "execution reverted: rate limit", "query exceeds max block range 5000", "invalid argument 0", "Archive requests require a personal token"])
+    assert.ok(!core.rpcBusy({ message: m }), m);
+  assert.ok(core.rpcBusy({ code: 429 }) && core.rpcBusy({ busy: true }) && core.rpcBusy({ code: "NETWORK_BUSY" }) && !core.rpcBusy(null));
+});
+
+test("readProvider: a busy, silent or broken RPC is skipped for the next; logs always ask rpcUrl first; answers are answers", async () => {
+  const opts = { staticNetwork: true, cacheTimeout: -1 };
+  // the first RPC is busy (429), the second answers: reads move to the second and stay there
+  let mode = "busy";
+  const a = await fakeRpc((p) => (mode === "ok" ? good(p) : mode));
+  const b = await fakeRpc(good);
+  const off = await fakeRpc(good); // logs: false
+  const switched = [];
+  try {
+    const p = core.readProvider([{ url: a.url, logs: true }, { url: off.url, logs: false }, { url: b.url, logs: true }], 1, opts, { timeoutMs: 400, onSwitch: (u) => switched.push(u) });
+    assert.ok(p instanceof ethers.JsonRpcProvider);
+    assert.equal(await p.getBlockNumber(), 0x1914a6b);
+    assert.deepEqual(switched, [off.url]); // the next one in the list answered
+    assert.equal(p.rpcUrl, off.url);
+    const aCalls = a.seen.length;
+    assert.equal((await p.call({ to: LOG.address, data: "0x8da5cb5b" })).slice(-40), "259a1084c2043a7b3b5b288596e05c41b8efa5d6");
+    assert.equal(a.seen.length, aCalls, "a read goes to the RPC that answered last");
+    // a log search starts with the first RPC again, skips the one without logs, and a backup that has them answers
+    const logs = await p.getLogs({ address: LOG.address, fromBlock: 1, toBlock: 2 });
+    assert.equal(logs.length, 1);
+    assert.equal(a.seen.filter((m) => m === "eth_getLogs").length, 1);
+    assert.equal(off.seen.filter((m) => m === "eth_getLogs").length, 0);
+    assert.equal(b.seen.filter((m) => m === "eth_getLogs").length, 1);
+    assert.equal(switched.at(-1), b.url);
+    // rpcUrl back: logs from it; its "range too long" is its answer (no backup asked)
+    mode = "ok";
+    await p.getLogs({ address: LOG.address, fromBlock: 1, toBlock: 2 });
+    assert.equal(b.seen.filter((m) => m === "eth_getLogs").length, 1);
+    const tooLong = await fakeRpc((q) => (q.method === "eth_getLogs" ? { error: { code: -32000, message: "query exceeds max block range 5000" } } : good(q)));
+    const p2 = core.readProvider([tooLong.url, b.url], 1, opts, { timeoutMs: 400 });
+    await assert.rejects(p2.getLogs({ address: LOG.address, fromBlock: 1, toBlock: 9999 }), /max block range/);
+    assert.equal(b.seen.filter((m) => m === "eth_getLogs").length, 1, "a range-too-long answer is not asked of a backup");
+    // a revert is an answer: no other RPC is asked
+    const rev = await fakeRpc((q) => (q.method === "eth_call" ? { error: { code: 3, message: "execution reverted", data: "0x" } } : good(q)));
+    const p3 = core.readProvider([rev.url, b.url], 1, opts, { timeoutMs: 400 });
+    const bCalls = b.seen.filter((m) => m === "eth_call").length;
+    await assert.rejects(p3.call({ to: LOG.address, data: "0x8da5cb5b" }), (e) => e.code === "CALL_EXCEPTION");
+    assert.equal(b.seen.filter((m) => m === "eth_call").length, bCalls);
+    await Promise.all([tooLong.close(), rev.close()]);
+  } finally { await Promise.all([a.close(), b.close(), off.close()]); }
+});
+
+test("readProvider: no answer in time, an error page or a closed connection moves on; nobody answering is NETWORK_BUSY", async () => {
+  const opts = { staticNetwork: true, cacheTimeout: -1 };
+  const hang = await fakeRpc(() => "hang"), html = await fakeRpc(() => "html"), drop = await fakeRpc(() => "drop"), b = await fakeRpc(good);
+  // a backup that refuses old log searches (publicnode) never hides rpcUrl's own failure
+  const archive = await fakeRpc((p) => (p.method === "eth_getLogs" ? { error: { code: -32701, message: "Archive requests require a personal token" } } : good(p)));
+  try {
+    const t0 = Date.now();
+    const p = core.readProvider([hang.url, html.url, drop.url, b.url], 1, opts, { timeoutMs: 300 });
+    assert.equal(await p.getBlockNumber(), 0x1914a6b);
+    assert.ok(Date.now() - t0 < 5000, "a silent RPC is given up on after the time limit");
+    const none = core.readProvider([hang.url, html.url, drop.url], 1, opts, { timeoutMs: 300 });
+    await assert.rejects(none.getBlockNumber(), (e) => core.rpcBusy(e) && /network is busy/.test(e.message));
+    const logs = core.readProvider([drop.url, archive.url], 1, opts, { timeoutMs: 300 });
+    await assert.rejects(logs.getLogs({ address: LOG.address, fromBlock: 1, toBlock: 2 }), (e) => core.rpcBusy(e) && !/Archive/.test(e.message));
+    assert.equal(await logs.getBlockNumber(), 0x1914a6b, "an archive refusal of a log search doesn't stop reads from the backup");
+    // a busy network makes the chunked log scan wait and ask the same range again, not split it
+    let n = 0;
+    const flaky = { getBlockNumber: async () => 10, getLogs: async () => { if (++n < 6) throw Object.assign(new Error("x"), { code: "NETWORK_BUSY", busy: true }); return [LOG]; } };
+    assert.equal((await core.getLogsChunked(flaky, {}, 0, 9, 100, { retries: 3, delayMs: 1, busyRetries: 3 })).length, 1);
+    assert.equal(n, 6, "the same range, asked again");
+    n = -100;
+    await assert.rejects(core.getLogsChunked(flaky, {}, 0, 999, 1000, { retries: 1, delayMs: 1, busyRetries: 2, minStep: 10 }), /blocks 0–999/);
+    assert.equal(n, -100 + 4, "not split while busy");
+  } finally { await Promise.all([hang.close(), html.close(), drop.close(), b.close(), archive.close()]); }
+});
+
+test("readProvider: rpcUrl answering \"service temporarily unavailable\" (30 Oct) moves reads and log searches to a backup", async () => {
+  const opts = { staticNetwork: true, cacheTimeout: -1 };
+  const down = await fakeRpc(() => ({ error: { code: -32603, message: "service temporarily unavailable" } })), b = await fakeRpc(good);
+  const switched = [];
+  try {
+    const p = core.readProvider([down.url, b.url], 1, opts, { timeoutMs: 400, onSwitch: (u) => switched.push(u) });
+    assert.equal(await p.getBlockNumber(), 0x1914a6b);
+    assert.equal((await p.getLogs({ address: LOG.address, fromBlock: 1, toBlock: 2 })).length, 1);
+    assert.deepEqual(down.seen, ["eth_blockNumber", "eth_getLogs"]);
+    assert.deepEqual(b.seen, ["eth_blockNumber", "eth_getLogs"]);
+    assert.deepEqual(switched, [b.url, b.url]);
+  } finally { await Promise.all([down.close(), b.close()]); }
+});
+
+test("readProvider: a server that turns a batch of reads down is not an answer, and never becomes the one asked first", async () => {
+  const opts = { staticNetwork: true, cacheTimeout: -1 };
+  let mode = "busy", biggest = 0;
+  const a = await fakeRpc((p) => (mode === "ok" ? good(p) : mode));
+  // one error for the whole batch, id null (drpc's free plan, more than 3), or the same refusal on each request
+  const whole = await fakeRpc((p, n) => { biggest = Math.max(biggest, n); return n > 3 ? "nobatch" : good(p); });
+  const each = await fakeRpc((p, n) => (n > 1 ? { error: { code: -32600, message: "batch size exceeded" } } : good(p)));
+  const b = await fakeRpc(good);
+  try {
+    const p = core.readProvider([a.url, { url: whole.url, logs: false }, { url: each.url, logs: false }, { url: b.url, logs: false }], 1, opts, { timeoutMs: 400 });
+    const owner = () => p.call({ to: LOG.address, data: "0x8da5cb5b" });
+    assert.equal(await p.getBlockNumber(), 0x1914a6b); // a busy: the next one answers a single read
+    assert.equal(p.rpcUrl, whole.url);
+    mode = "ok"; // a is back; the batch goes to the one that answered last first
+    const five = await Promise.all([owner(), owner(), owner(), owner(), owner()]);
+    assert.ok(biggest === 5 && five.every((r) => r.slice(-40) === "259a1084c2043a7b3b5b288596e05c41b8efa5d6"), `${biggest} ${five}`);
+    assert.equal(p.rpcUrl, b.url, "a server that turned the batch down is passed over, the next that answers it is asked first");
+    assert.equal(each.seen.length, 5);
+    const two = await Promise.all([owner(), owner()]);
+    assert.ok(two.every((r) => r.slice(-40) === "259a1084c2043a7b3b5b288596e05c41b8efa5d6"));
+    assert.equal(p.rpcUrl, b.url);
+  } finally { await Promise.all([a.close(), whole.close(), each.close(), b.close()]); }
+});
+
 // ---------------------------------------------------------------- the lists, on a local chain
 
 let server, prov, rpcUrl;

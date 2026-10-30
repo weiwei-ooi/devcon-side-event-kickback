@@ -5,7 +5,7 @@
 //   node scripts/build-admin.mjs --out <dir> [--config config.json] [--guest-page ../event/] [--no-default-event]
 //
 // Writes exactly four files to <dir>:
-//   index.html      the console in "hosted" mode, with its settings baked in (network, RPC, Kleros
+//   index.html      the console in "hosted" mode, with its settings baked in (network, RPC and its backups, Kleros
 //                   contracts and services, the generic juror policy and case description template,
 //                   and the config's contract as the event it opens by default, unless
 //                   --no-default-event: the public panel for any organiser opens only the event in its link)
@@ -87,6 +87,7 @@ const HOSTED = {
   chainId: cfg.chainId,
   chainName: cfg.chainId === 1 ? "Ethereum mainnet" : cfg.chainName,
   rpcUrl: cfg.rpcUrl,
+  rpcs: cfg.rpcs, // rpcUrl first, then the backups the page reads through when it does not answer (core.rpcList)
   explorer: cfg.explorer,
   logChunk: cfg.logChunk,
   kleros: {
@@ -128,5 +129,6 @@ fs.copyFileSync(path.join(ROOT, "node_modules", "ethers", "dist", "ethers.min.js
 fs.copyFileSync(path.join(ROOT, "scripts", "core.mjs"), path.join(out, "core.mjs"));
 fs.writeFileSync(path.join(out, "kickback.json"), JSON.stringify({ abi: artifact.abi, bytecode: artifact.bytecode }));
 console.log(`Wrote the admin panel to ${out} (index.html, ethers.min.js, core.mjs, kickback.json) for ${HOSTED.chainName} (chain ${HOSTED.chainId}).`);
+console.log(`Reads the chain through ${HOSTED.rpcs.map((r) => new URL(r.url).host).join(", then ")}.`);
 console.log(`Juror policy for new events: ${GENERIC_POLICY} at ${policyURI} (the panel saves it on IPFS before the first new event if needed).`);
 console.log(defaultEvent ? `Opens by default: ${defaultEvent.contract} (deploy block ${defaultEvent.deployBlock}).` : "No default event: the panel opens the contract named in its link (?contract=…&from=…).");

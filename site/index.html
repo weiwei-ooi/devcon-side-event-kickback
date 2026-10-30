@@ -144,6 +144,13 @@ body.status .deposit-only, body:not(.status) .status-only { display: none !impor
 body.refused .network, body.refused ol.steps, body.refused .details, body.refused .pagelink, body.refused .status-only, body.refused footer { display: none !important; }
 .pagelink { font-size: 0.92rem; }
 #status { scroll-margin-top: 12px; }
+/* "Network busy, still trying…": only while a read waits long, moves to a backup RPC or waits to ask again. Fixed at the
+   top of the screen, over the page: showing or hiding it never moves the steps under a guest's finger */
+#net-busy {
+  position: fixed; z-index: 2; top: max(8px, env(safe-area-inset-top, 0px)); margin: 0 auto; max-width: 600px;
+  left: max(16px, env(safe-area-inset-left, 0px)); right: max(16px, env(safe-area-inset-right, 0px));
+  box-shadow: 0 2px 12px rgb(0 0 0 / 0.18);
+}
 /* phones: every button and the Details toggle at least 44px tall */
 @media (max-width: 640px) {
   button, button.small, a.btn, input[type="text"] { min-height: 44px; }
@@ -169,6 +176,7 @@ body.refused .network, body.refused ol.steps, body.refused .details, body.refuse
 <!--generic:
   <div id="link-note" class="note" hidden></div>
 -->
+  <div id="net-busy" class="note warn" role="status" hidden>Network busy, still trying…</div>
 
   <div class="network deposit-only" role="note">
     <span class="tag">!</span>
@@ -307,6 +315,12 @@ const CONFIG = {
   "chainId": 1,
   "chainName": "Ethereum",
   "rpc": "https://rpc.mevblocker.io",
+  "rpcs": [
+    { "url": "https://rpc.mevblocker.io", "logs": true },
+    { "url": "https://ethereum-rpc.publicnode.com", "logs": true },
+    { "url": "https://eth.drpc.org", "logs": false },
+    { "url": "https://1rpc.io/eth", "logs": false }
+  ],
   "logChunk": 5000,
   "explorer": "https://etherscan.io",
   "deposit": "0.01",
@@ -446,12 +460,47 @@ const whenHtml = (ts, inside = false) => `<span data-ts="${Number(ts)}"${inside 
 const whenInHtml = (ts) => whenHtml(ts, true);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Reads go to the public Ethereum RPC, so they work before a wallet is connected and whatever network the wallet is on.
-// If the RPC fails, the wallet's own connection is tried. A revert is the chain's answer, not a network problem: it is
-// never retried, and its data is kept so the page can say why. So is an invalid opcode: contracts built with Solidity
-// before 0.8 (Kleros's Dispute Resolver, KlerosLiquid) stop that way on a failed check or a read past the end of a
-// list, and a geth node reports it as {code: -32000, message: "invalid opcode: INVALID"}, with no data.
-let rpcId = 0;
+// Reads go to public Ethereum RPCs, so they work before a wallet is connected and whatever network the wallet is on:
+// CONFIG.rpcs, CONFIG.rpc first (the only free one known to search the contract's whole history), then backups
+// (scripts/core.mjs rpcList). As scripts/core.mjs readProvider does: a read goes to the RPC that answered last; one that
+// gives no usable answer (none within RPC_WAIT, an HTTP error, an answer the browser blocks (a busy RPC's error page has
+// no CORS header: "Failed to fetch"), not JSON, "rate limit", "temporarily unavailable", a request it refuses, such as an
+// archive read) is not waited for: the next one is asked, round the list. A log search always starts with the first RPC
+// with `logs`, in list order, and a backup's refusal never replaces that one's error. Any other answer is the answer. If
+// that is an error, or none answers, the wallet's own connection is tried (when it is on the page's network); if it
+// can't answer either, the RPCs' error stands: busy: true and "the network is busy" when none answered.
+// A revert is the chain's answer, not a network problem: it is never retried, and its data is kept so the page can say
+// why. So is an invalid opcode: contracts built with Solidity before 0.8 (Kleros's Dispute Resolver, KlerosLiquid) stop
+// that way on a failed check or a read past the end of a list, and a geth node reports it as {code: -32000, message:
+// "invalid opcode: INVALID"}, with no data.
+// While a read waits more than SLOW_NOTE, moves to a backup, or waits to be asked again, "Network busy, still trying…"
+// shows at the top of the page (#net-busy), and goes once nothing is waiting any more.
+const RPCS = (Array.isArray(CONFIG.rpcs) && CONFIG.rpcs.length ? CONFIG.rpcs : [{ url: CONFIG.rpc, logs: true }]).filter((r) => r && /^https?:\/\/\S+$/.test(String(r.url)));
+const RPC_WAIT = 15000, SLOW_NOTE = 5000; // ms
+let rpcId = 0, rpcAt = 0; // rpcAt: the RPC that answered last
+// A busy or unreachable network (wait, or ask another), not an answer about the request: scripts/core.mjs rpcBusy
+function rpcBusy(e) {
+  if (!e) return false;
+  if (e.busy) return true;
+  const m = [e.shortMessage, e.message, e.error && e.error.message].filter(Boolean).join(" ");
+  if (/revert/i.test(m)) return false;
+  return e.code === 429 || e.code === "TIMEOUT" || e.code === "NETWORK_BUSY" || /rate.?limit|too many requests|temporarily unavailable|service unavailable|\bunavailable\b|overloaded|over capacity|try again later|throttl|timed? ?out|request timeout|bad gateway|gateway time|header not found|failed to fetch|fetch failed|network ?error|ECONNRE(SET|FUSED)|ETIMEDOUT|ENOTFOUND|socket hang up|exceeded maximum retry limit|\b(429|50[0-4]|52[0-9])\b/i.test(m);
+}
+// A server that can't do this kind of request at all (an archive read, a method or range its plan refuses): another may
+const rpcRefuses = (e) => /archive|personal token|api key|unauthori[sz]ed|not whitelisted|method not (found|available|allowed|supported)|not supported|is not available|limited to \d/i.test(String(e && e.message));
+// A log search over more blocks than the node takes ("block range too large", "exceed maximum block range: 1000"): split it
+const rangeTooLong = (e) => !rpcBusy(e) && /range|limit|too (many|large|long)|exceed|max/i.test(String(e && e.message));
+let waiting = 0; // reads that wait long, or for another try
+function busyNote(on) { waiting = Math.max(0, waiting + (on ? 1 : -1)); $("net-busy").hidden = !waiting; }
+async function whileBusy(promise) { busyNote(true); try { return await promise; } finally { busyNote(false); } }
+// A read the page can't open without (the contract, the event, a wallet's deposit): a busy network is asked again 4 times
+// over about 15 s, with the note on, before the page says so. (Counted in tries, not by the clock.)
+async function patiently(read) {
+  for (let i = 0; ; i++) {
+    try { return await read(); }
+    catch (e) { if (!e.busy || i >= 4) throw e; await whileBusy(sleep(1000 * 2 ** i)); }
+  }
+}
 function rpcError(err) {
   const e = new Error(String((err && err.message) || "RPC error"));
   const inner = err && err.data && typeof err.data === "object" ? err.data : {};
@@ -462,20 +511,52 @@ function rpcError(err) {
   e.data = data || "0x";
   return e;
 }
-async function rpc(method, params) {
+// One RPC's JSON-RPC answer ({ result } or { error }); it throws when there is none to use
+async function rpcAsk(url, method, params) {
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), RPC_WAIT); // the whole answer, not just its start
   try {
-    const r = await fetch(CONFIG.rpc, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }) });
-    if (r.status === 429) throw Object.assign(new Error("the network is busy (too many requests)"), { busy: true });
+    const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }), signal: ctl.signal });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const j = await r.json();
-    if (j.error) throw rpcError(j.error);
-    return j.result;
-  } catch (e) {
-    if (e.revert) throw e;
-    if (window.ethereum && state.account && state.chainId === CONFIG.chainId) {
-      try { return await window.ethereum.request({ method, params }); } catch (w) { throw rpcError(w); }
+    if (!j || typeof j !== "object" || !("result" in j || j.error)) throw new Error("unexpected answer");
+    return j;
+  } finally { clearTimeout(t); }
+}
+async function rpcRead(method, params, slow) {
+  const logs = method === "eth_getLogs", n = RPCS.length;
+  const order = logs ? RPCS.map((_, i) => i).filter((i) => RPCS[i].logs) : RPCS.map((_, k) => (rpcAt + k) % n);
+  let first = null;
+  for (const [tried, i] of order.entries()) {
+    let j;
+    try { j = await rpcAsk(RPCS[i].url, method, params); }
+    catch (e) { first = first || e; slow(); continue; }
+    if (j.error) {
+      const e = rpcError(j.error);
+      // busy, or a server that can't do this request: the next one; a backup's refusal of a log search too
+      if (!e.revert && (rpcBusy(e) || rpcRefuses(e) || (logs && tried > 0))) { first = first || e; slow(); continue; }
+      if (!logs) rpcAt = i;
+      throw e;
     }
-    throw e;
+    if (!logs) rpcAt = i;
+    return j.result;
   }
+  throw Object.assign(new Error("the network is busy"), { busy: true, cause: first });
+}
+async function rpc(method, params) {
+  let noted = false;
+  const slow = () => { if (!noted) { noted = true; busyNote(true); } };
+  const timer = setTimeout(slow, SLOW_NOTE);
+  try {
+    try { return await rpcRead(method, params, slow); }
+    catch (e) {
+      if (e.revert || !(window.ethereum && state.account && state.chainId === CONFIG.chainId)) throw e;
+      let w;
+      try { return await window.ethereum.request({ method, params }); } catch (x) { w = rpcError(x); }
+      // the wallet's answer stands for a revert, and for a log range too long for its node when no RPC answered (getLogs
+      // then splits the range for it); otherwise the RPCs' error does
+      throw w.revert || (e.busy && method === "eth_getLogs" && rangeTooLong(w)) ? w : e;
+    }
+  } finally { clearTimeout(timer); if (noted) busyNote(false); }
 }
 const call = (to, data, extra) => rpc("eth_call", [{ to, data, ...extra }, "latest"]);
 // Why a call reverted, in plain words (escape before showing: a reason string comes from the chain).
@@ -495,14 +576,13 @@ function explain(data) {
 // Logs since the deploy block, oldest first. Public mainnet RPCs only answer eth_getLogs over short ranges, so the
 // blocks are read in chunks of CONFIG.logChunk (5,000), a few chunks at a time. A failed chunk is retried twice; a
 // range the RPC refuses as too long is split in two straight away (down to single blocks, up to 1,500 requests).
-// A busy RPC (HTTP 429, "rate limit", "too many requests") is asked the same range again after a growing pause
-// (0.5, 1, 2, 4, 8 and 16 s): splitting would only send it more requests.
+// A busy network (no RPC answered, HTTP 429, "rate limit", "temporarily unavailable": rpcBusy) is asked the same range
+// again after a growing pause (0.5, 1, 2, 4, 8 and 16 s), with the busy note on: splitting would only send more requests.
 async function getLogs(filter) {
   const latest = Number(big(await rpc("eth_blockNumber", [])));
   const first = Number(CONFIG.deployBlock) || 0, step = Math.max(1, Number(CONFIG.logChunk) || 5000);
   const hex = (n) => "0x" + n.toString(16);
-  const busy = (e) => !!e && (e.busy || e.code === 429 || /rate.?limit|too many requests|\b429\b|throttl|try again later/i.test(String(e.message)));
-  const tooLong = (e) => !busy(e) && /range|limit|too (many|large|long)|exceed|max/i.test(String(e && e.message));
+  const busy = rpcBusy, tooLong = rangeTooLong;
   const out = [];
   let calls = 0;
   async function fetchRange(a, b) {
@@ -511,7 +591,7 @@ async function getLogs(filter) {
       try { return await rpc("eth_getLogs", [{ ...filter, fromBlock: hex(a), toBlock: hex(b) }]); }
       catch (e) {
         if (e.revert || tooLong(e) || attempt >= (busy(e) ? 6 : 2)) throw e;
-        await sleep(busy(e) ? 500 * 2 ** attempt + Math.floor(Math.random() * 250) : 400 * (attempt + 1));
+        await whileBusy(sleep(busy(e) ? 500 * 2 ** attempt + Math.floor(Math.random() * 250) : 400 * (attempt + 1)));
       }
     }
   }
@@ -622,7 +702,7 @@ async function loadEvent() {
   if (!isAddr(c)) return refuse(`${c ? "The deposit contract address in this link isn't complete." : "This link doesn't name a deposit contract."} Open the deposit link the organiser gave you: it ends with <span class="mono">?contract=0x…&amp;from=…</span>`);
   setNote(note, "", "Reading the event from its deposit contract…");
   let ev, block;
-  try { ev = await readEvent(c); if (ev.ok) block = await deployBlockOf(c, q.get("from")); }
+  try { ev = await patiently(() => readEvent(c)); if (ev.ok) block = await patiently(() => deployBlockOf(c, q.get("from"))); }
   catch (e) { return refuse(`Couldn't reach Ethereum mainnet to read the deposit contract (${esc(e.message)}). Reload the page in a minute.`); }
   if (!ev.code) return refuse(`There is no contract at ${at} on Ethereum mainnet. ${dont}`);
   if (!ev.ok) return refuse(`The contract at ${at} isn't a kickback deposit contract, so this page can't take deposits for it. ${dont}`);
@@ -749,10 +829,10 @@ async function loadContract() {
   $("contract-addr").textContent = c;
   $("contract-link").href = `${CONFIG.explorer}/address/${c}`;
   try {
-    const [code, dep, start, deadline, phase, count, pool, resolver] = await Promise.all([
+    const [code, dep, start, deadline, phase, count, pool, resolver] = await patiently(() => Promise.all([
       rpc("eth_getCode", [c, "latest"]), call(c, SEL.depositAmount), call(c, SEL.eventStart), call(c, SEL.claimDeadline),
       call(c, SEL.phase), call(c, SEL.stakerCount), rpc("eth_getBalance", [c, "latest"]), call(c, SEL.disputeResolver),
-    ]);
+    ]));
     const now = Math.floor(Date.now() / 1000);
     const info = {
       code: !!code && code !== "0x", deposit: big(dep), start: Number(big(start)), deadline: Number(big(deadline)),
@@ -870,7 +950,7 @@ async function afterWalletChange() {
   if (acct) {
     $("lookup-addr").value = $("lookup-addr").value || acct;
     let b = null, g = null;
-    try { b = await rpc("eth_getBalance", [acct, "latest"]); } catch {}
+    try { b = await patiently(() => rpc("eth_getBalance", [acct, "latest"])); } catch {}
     try { g = await rpc("eth_gasPrice", []); } catch {} // only for the fee estimate: the wallet sets the real fee
     if (state.account !== acct) return; // the wallet switched accounts meanwhile: that change refreshes the page
     state.eth = b === null ? null : big(b); state.gasPrice = g === null ? null : big(g);
@@ -956,7 +1036,7 @@ async function watchSentTx(acct, hash) {
 // Each is read on its own: a history that can't be read doesn't hide what the contract says (declined, refund owed).
 async function loadHistory(addr) {
   const c = CONFIG.contract, none = () => null;
-  const [st, ow, hist] = await Promise.all([call(c, SEL.status + pad(addr)).catch(none), call(c, SEL.owed + pad(addr)).catch(none), depositHistory(addr).catch(none)]);
+  const [st, ow, hist] = await Promise.all([patiently(() => call(c, SEL.status + pad(addr))).catch(none), patiently(() => call(c, SEL.owed + pad(addr))).catch(none), depositHistory(addr).catch(none)]);
   if (state.account !== addr) return;
   // a history we couldn't read is unknown, never "no deposit": sending stays blocked until it can be checked
   state.status = st === null ? null : Number(big(st)); state.owed = ow === null ? null : big(ow); state.prior = hist;
@@ -1446,8 +1526,8 @@ async function lookup() {
   setNote(out, "", "Checking…");
   try {
     const c = CONFIG.contract;
-    const [st, ow, ph, dl, att, we, chRaw] = await Promise.all([call(c, SEL.status + pad(addr)), call(c, SEL.owed + pad(addr)), call(c, SEL.phase), call(c, SEL.claimDeadline),
-      call(c, SEL.attended + pad(addr)), call(c, SEL.challengeEndsAt), call(c, SEL.challenges + pad(addr))]);
+    const [st, ow, ph, dl, att, we, chRaw] = await patiently(() => Promise.all([call(c, SEL.status + pad(addr)), call(c, SEL.owed + pad(addr)), call(c, SEL.phase), call(c, SEL.claimDeadline),
+      call(c, SEL.attended + pad(addr)), call(c, SEL.challengeEndsAt), call(c, SEL.challenges + pad(addr))]));
     const status = Number(big(st)), owed = big(ow), phase = Number(big(ph)), deadline = Number(big(dl));
     const attended = big(att) === 1n, windowEnd = Number(big(we));
     // challenges(staker): state, matcher, matchEndsAt, deposit, arbitratorDisputeID (KlerosLiquid), localDisputeID (Dispute Resolver), …

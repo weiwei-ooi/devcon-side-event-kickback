@@ -14,7 +14,7 @@
 // clock from its case description, with the core's table of timezone names baked in). It refuses a
 // contract whose code isn't the compiled kickback contract's (build/, checked byte for byte but for
 // the constructor's values), or whose disputes don't go to Kleros's own Dispute Resolver. From the
-// config it takes the network (chain, RPC, explorer, log chunk, the Kleros addresses) and the
+// config it takes the network (chain, RPCs, explorer, log chunk, the Kleros addresses) and the
 // config's own event: a contract whose name looks like that event's ("Truth Pays") is refused
 // unless it is the config's contract, so the page can't be used to dress up a look-alike.
 // Never publish it (or the admin panel) on the website of a baked page such as the live Truth Pays
@@ -48,8 +48,11 @@ if (!generic && !isAddr(cfg.contract) && !a.preview)
 const deployBlock = Number(cfg.deployBlock || 0);
 if (!generic && !a.preview && !(Number.isInteger(deployBlock) && deployBlock > 0))
   fail('No "deployBlock" in the config. Set it to the block number of the deploy transaction (shown on Etherscan), then build again.');
-// every read on the page goes through this RPC, before a wallet is even connected
+// every read on the page goes through this RPC, before a wallet is even connected (then the backups, when it doesn't answer)
 if (!/^https?:\/\//.test(cfg.rpcUrl || "")) fail('No "rpcUrl" in the config: the page needs a public RPC to read the contract.');
+// rpcUrl first, then the chain's backups or the config's "rpcBackups" (core.mjs rpcList): [{ url, logs }]
+const rpcs = (cfg.rpcs ?? []).map(({ url, logs }) => ({ url, logs: logs !== false }));
+if (rpcs[0]?.url !== cfg.rpcUrl) fail("The config's list of RPCs doesn't start with its rpcUrl.");
 const k = klerosConfig(cfg);
 // The generic page trusts any contract whose Dispute Resolver is this one: on a network where Kleros has its own
 // (Ethereum mainnet), only Kleros's. A config pointing elsewhere (a local test chain) is taken as it is.
@@ -62,6 +65,8 @@ const network = {
   // for wallet_addEthereumChain; the page's own text says "Ethereum mainnet"
   chainName: cfg.chainId === 1 ? "Ethereum" : cfg.chainName,
   rpc: cfg.rpcUrl,
+  // the page reads through these in turn when one doesn't answer; log searches only through those with logs: true
+  rpcs,
   // eth_getLogs is asked for this many blocks at a time (public mainnet RPCs refuse long ranges)
   logChunk: cfg.logChunk,
   explorer: cfg.explorer,

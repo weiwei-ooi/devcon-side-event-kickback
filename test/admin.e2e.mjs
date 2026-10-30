@@ -114,6 +114,9 @@ check("built from config.json: Ethereum mainnet, Kleros's Dispute Resolver and c
   HL?.chainId === 1 && HL.rpcUrl === live.rpcUrl && HL.kleros.disputeResolver.toLowerCase() === core.KLEROS[1].disputeResolver.toLowerCase() &&
   HL.kleros.arbitrator === core.KLEROS[1].arbitrator && HL.defaultEvent?.contract === ethers.getAddress(live.contract) && HL.defaultEvent?.deployBlock === live.deployBlock && HL.policy.uri === POLICY,
   b.stderr + JSON.stringify(HL?.defaultEvent));
+check("the RPCs the page reads through are baked in: rpcUrl alone for a local chain; on mainnet rpcUrl, then its backups",
+  JSON.stringify(H0?.rpcs) === JSON.stringify([{ url: config.rpcUrl, logs: true }]) && HL?.rpcs?.length > 1 && HL.rpcs[0].url === live.rpcUrl &&
+  JSON.stringify(HL.rpcs) === JSON.stringify(core.rpcList(live.rpcUrl, 1, live.rpcBackups)) && HL.rpcs.some((r) => r.url === "https://ethereum-rpc.publicnode.com"), JSON.stringify(HL?.rpcs));
 // the public panel for any organiser: same settings, no default event
 b = build(BUILD, "--out", path.join(tmp, "public"), "--no-default-event");
 const HP = b.status === 0 ? hostedOf(fs.readFileSync(path.join(tmp, "public", "index.html"), "utf8")) : null;
@@ -142,16 +145,19 @@ check("refused without build/ (npm run compile first)", b.status !== 0 && /build
 // ---------------------------------------------------------------- a static host, like GitHub Pages
 const TYPES = { ".html": "text/html; charset=utf-8", ".mjs": "text/javascript", ".js": "text/javascript", ".json": "application/json" };
 const served = [];
+const siteDir = path.join(tmp, "site"); // the admin panel, and the panels built for a busy network below
 const web = http.createServer((rq, rs) => {
   const p = new URL(rq.url, "http://x").pathname;
   served.push(p);
-  const file = p.startsWith("/admin/") ? path.join(adminDir, p.slice(7) || "index.html") : null;
-  if (!file || !file.startsWith(adminDir) || !fs.existsSync(file)) { rs.writeHead(404); return rs.end("not found"); }
+  const m = /^\/([\w-]+)\/(.*)$/.exec(p);
+  const file = m ? path.join(siteDir, m[1], m[2] || "index.html") : null;
+  if (!file || !file.startsWith(siteDir + path.sep) || !fs.existsSync(file)) { rs.writeHead(404); return rs.end("not found"); }
   rs.writeHead(200, { "content-type": TYPES[path.extname(file)] ?? "application/octet-stream" });
   rs.end(fs.readFileSync(file));
 });
 await new Promise((r) => web.listen(WEB, "127.0.0.1", r));
 const ADMIN = `http://localhost:${WEB}/admin/`;
+const LOCAL_PORTS = new Set([String(RPC)]); // the chain, and the stand-ins for public RPCs (a busy network, below)
 
 const browser = await chromium.launch();
 const page = await browser.newPage();
@@ -182,7 +188,7 @@ const outside = [], bodies = [];
 page.on("request", (r) => bodies.push(`${r.url()} ${r.postData() ?? ""}`));
 await page.route("**/*", (route) => {
   const u = new URL(route.request().url());
-  if ((u.hostname === "localhost" && u.port === String(WEB)) || (u.hostname === "127.0.0.1" && u.port === String(RPC))) return route.continue();
+  if ((u.hostname === "localhost" && u.port === String(WEB)) || (u.hostname === "127.0.0.1" && LOCAL_PORTS.has(u.port))) return route.continue();
   outside.push(u.href);
   return route.abort();
 });
@@ -230,6 +236,8 @@ page.on("dialog", (d) => {
 const lastDialog = () => dialogs[dialogs.length - 1] ?? "";
 const txt = (id) => page.locator("#" + id).innerText();
 const logText = () => txt("log");
+// no event shown in the status (an event that could not be opened leaves its error there)
+const noEvent = async () => !/Owner|Phase/.test(await txt("status"));
 const visible = () => page.evaluate(() => document.body.innerText);
 const waitLog = async (re) => { for (let i = 0; i < 160 && !re.test(await logText()); i++) await page.waitForTimeout(250); return re.test(await logText()); };
 const idle = async () => { await page.waitForTimeout(200); for (let i = 0; i < 400 && (await page.isDisabled("#refresh")); i++) await page.waitForTimeout(250); };
@@ -273,7 +281,7 @@ await page.fill("#addr", ethers.Wallet.createRandom().address);
 check("an address with no contract is explained", await click("refresh", /There is no contract at 0x[0-9a-fA-F]{40} on Local test chain/), await logText());
 await page.fill("#addr", liquid.target);
 check("a contract that is not a deposit contract is explained", await click("refresh", /is not a kickback deposit contract, so this page can't run it/), await logText());
-check("nothing shown for them", (await txt("status")) === "" && await page.isDisabled("#loadDeposits"));
+check("nothing shown for them, the error in the status", await noEvent() && /Event\s*✗ The contract at 0x[0-9a-fA-F]{40} is not a kickback deposit contract/.test(await txt("status")) && await page.isDisabled("#loadDeposits"), await txt("status"));
 await page.fill("#addr", "");
 
 // ---------------------------------------------------------------- a new event from the form
@@ -512,14 +520,14 @@ noHistory = true;
 await clearLog();
 await open(`?contract=${kAddr}`);
 check("deploy block not found: the page asks for Etherscan's Contract Creation block",
-  await waitLog(/Could not find the block this contract was created in .+ find its "Contract Creation" transaction, type that transaction's block number in "Deploy block", and press Open again/) && (await txt("status")) === "", await logText());
+  await waitLog(/Could not find the block this contract was created in .+ find its "Contract Creation" transaction, type that transaction's block number in "Deploy block", and press Open again/) && await noEvent(), await logText());
 noHistory = false;
 await page.fill("#fromBlock", String(kBlock));
 await page.click("#refresh"); await idle();
 check("typed in, the event opens", /Event\s*Admin E2E Night/.test(await txt("status")) && page.url().endsWith(`?contract=${kAddr}&from=${kBlock}`), await txt("status"));
 await clearLog();
 await open(`?contract=${kAddr}&from=${kBlock + 3}`);
-check("a deploy block after the creation is refused", await waitLog(/The contract already existed before block \d+, so deposits sent before that block would be missed/) && (await txt("status")) === "", await logText());
+check("a deploy block after the creation is refused", await waitLog(/The contract already existed before block \d+, so deposits sent before that block would be missed/) && await noEvent(), await logText());
 
 // a contract whose Dispute Resolver is not Kleros's
 const t1 = (Math.floor(chainNow / 60) + 180) * 60;
@@ -546,7 +554,7 @@ check("the copy answers like a kickback contract", (await copy.eventName()) === 
 await clearLog();
 await open(`?contract=${copy.target}&from=${copyBlock}`);
 check("a contract with other code is refused, with what to do", await waitLog(new RegExp(`The contract at ${copy.target} answers like a kickback deposit contract, but its code is not the one this page knows, so this page can't run it\\. Don't send ETH to it`)) &&
-  (await txt("status")) === "" && await page.isDisabled("#loadDeposits"), await logText());
+  await noEvent() && await page.isDisabled("#loadDeposits"), await logText());
 // a juror policy that is not an IPFS path: shown as text, never as a link (gateway + "@host/…" is another website)
 const oddArgs = argsAt("Odd Policy");
 oddArgs[5] = [...oddArgs[5]];
@@ -713,7 +721,7 @@ check("fits a phone's width: no sideways scrolling of the page", overflow <= 0, 
 // until the organiser picks one by hand
 const localOnly = (p) => p.route("**/*", (route) => {
   const u = new URL(route.request().url());
-  if ((u.hostname === "localhost" && u.port === String(WEB)) || (u.hostname === "127.0.0.1" && u.port === String(RPC))) return route.continue();
+  if ((u.hostname === "localhost" && u.port === String(WEB)) || (u.hostname === "127.0.0.1" && LOCAL_PORTS.has(u.port))) return route.continue();
   outside.push(u.href);
   return route.abort();
 });
@@ -847,13 +855,178 @@ check("code that did not load: the banner and the log say so, and what to do",
   deadBanner + " | " + deadLog);
 await dead.close();
 
+// ---------------------------------------------------------------- a busy network
+// Her panel on 30 Oct: rpc.mevblocker.io failing with an error page the browser can't read (no CORS header: "Failed to
+// fetch"). A stand-in for a public RPC forwards to the chain, except in its `mode`: "busy" (HTTP 429 without CORS
+// headers), "hang" (no answer), "drop" (the connection closed), "calls" (busy for contract reads only); `logsBusy`: that
+// many log searches answered "service
+// temporarily unavailable" (as mevblocker once did). Panels built with it as rpcUrl and the chain as backup open their
+// event through the backup and say so once per action, load the deposits and register them; a server that never
+// answers is given up on after the time limit (shortened here), and the wait is said; a busy log search is asked again,
+// the same range; with no server answering, a short plain error in the status and the log, the buttons usable again,
+// and the event opens once the network is back.
+const standIn = async () => {
+  const f = { mode: "ok", logsBusy: 0, asked: 0, logs: [] };
+  const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type", "access-control-allow-methods": "POST, OPTIONS" };
+  f.server = http.createServer((rq, rs) => {
+    if (rq.method === "OPTIONS") { rs.writeHead(204, cors); return rs.end(); }
+    let body = "";
+    rq.on("data", (c) => (body += c));
+    rq.on("end", () => {
+      f.asked++;
+      if (f.mode === "hang") return;
+      if (f.mode === "drop") return rq.socket.destroy();
+      const asked = [JSON.parse(body)].flat();
+      if (f.mode === "busy" || (f.mode === "calls" && asked.some((q) => q.method === "eth_call"))) { rs.writeHead(429, { "content-type": "text/plain" }); return rs.end("Too Many Requests"); }
+      const fwd = http.request(`http://127.0.0.1:${RPC}`, { method: "POST", headers: { "content-type": "application/json" } }, (res) => {
+        let text = "";
+        res.on("data", (c) => (text += c));
+        res.on("end", () => {
+          const fix = (a) => {
+            const q = asked.find((x) => x.id === a.id);
+            if (q?.method !== "eth_getLogs") return a;
+            f.logs.push(`${Number(q.params[0].fromBlock)}-${Number(q.params[0].toBlock)}`);
+            return f.logsBusy > 0 && f.logsBusy-- ? { jsonrpc: "2.0", id: a.id, error: { code: -32603, message: "service temporarily unavailable" } } : a;
+          };
+          const out = JSON.parse(text);
+          rs.writeHead(200, { ...cors, "content-type": "application/json" });
+          rs.end(JSON.stringify(Array.isArray(out) ? out.map(fix) : fix(out)));
+        });
+      });
+      fwd.end(body);
+    });
+  });
+  await new Promise((r) => f.server.listen(0, "127.0.0.1", r));
+  f.url = `http://127.0.0.1:${f.server.address().port}`;
+  LOCAL_PORTS.add(String(f.server.address().port));
+  return f;
+};
+const fake = await standIn(), down = await standIn();
+down.mode = "drop";
+// an event with two deposits, starting in a few hours (the chain's clock was moved forward above)
+const busyNow = (await prov.getBlock("latest")).timestamp;
+const busyArgs = core.deployArgs(core.newEventConfig({ ...FORM, eventName: "Busy Night", eventWhen: "soon", deposit: "0.01", eventStart: new Date((busyNow + 3 * 3600) * 1000).toISOString() }, network, me), me, genericTemplate);
+const busyK = await (await new ethers.ContractFactory(abi, load("TruthPaysKickback").bytecode, owner).deploy(...busyArgs)).waitForDeployment();
+const busyBlock = (await busyK.deploymentTransaction().wait()).blockNumber;
+for (const g of ["ana", "ben"]) await (await W[g].sendTransaction({ to: busyK.target, value: E("0.01") })).wait();
+// a panel for that event (opened by default, like her organiser panel), reading through the stand-in first
+const busyPanel = (name, rpcBackups) => {
+  const f = path.join(tmp, `${name}.json`);
+  fs.writeFileSync(f, JSON.stringify({ ...config, rpcUrl: fake.url, rpcBackups, logChunk: 1000, contract: busyK.target, receiver: busyK.target, deployBlock: busyBlock }));
+  const r = build(BUILD, "--out", path.join(siteDir, name), "--config", f);
+  return { ok: r.status === 0, err: r.stderr, H: r.status === 0 ? hostedOf(fs.readFileSync(path.join(siteDir, name, "index.html"), "utf8")) : null, url: `http://localhost:${WEB}/${name}/` };
+};
+const openPanel = async (url) => { await page.goto(url); await page.evaluate((ms) => (window.__skew = ms), skewMs); await idle(); };
+const lines = (text, line) => text.split("\n").filter((l) => l === line).length;
+const BACKUP = `Network busy: using a backup server (127.0.0.1:${RPC}).`, RETRY = "Network busy, retrying…";
+await page.addInitScript(() => (window.__rpcTimeoutMs = 1500)); // a silent server is given up on after 1.5 s here, not 20 s
+const BP = busyPanel("busy", [config.rpcUrl]);
+check("a panel built with a backup RPC: rpcUrl first, then the backup, baked in",
+  BP.ok && JSON.stringify(BP.H.rpcs) === JSON.stringify([{ url: fake.url, logs: true }, { url: config.rpcUrl, logs: true }]) && BP.H.defaultEvent?.contract === busyK.target, BP.err + JSON.stringify(BP.H?.rpcs));
+fake.mode = "busy";
+await openPanel(BP.url);
+let lt = await logText();
+check("RPC busy (an error page without CORS headers): the event opens through the backup, said once",
+  /Event\s*Busy Night/.test(await txt("status")) && /Opening the event…/.test(lt) && lines(lt, BACKUP) === 1 && fake.asked > 0 && !/✗/.test(lt), lt);
+await clearLog();
+check("RPC busy: Load deposits reads them through the backup, said once for the whole action",
+  await click("loadDeposits", /2 deposit\(s\) read/) && lines(await logText(), BACKUP) === 1, await logText());
+await connect();
+await clearLog();
+n0 = await nonce();
+check("RPC busy: Register all paid guests", await click("registerAll", /Registered 2 guests\./) && Number(await busyK.status(A.ana)) === 1 && Number(await busyK.status(A.ben)) === 1 && (await nonce()) === n0 + 1, await logText());
+// rpcUrl up but answering every log search "service temporarily unavailable" (mevblocker, 30 Oct), the backup searching
+// logs: each search goes to the backup at once, rpcUrl asked once per chunk, no pause and no "retrying"
+fake.mode = "ok"; fake.logsBusy = 1e9;
+await openPanel(BP.url);
+await clearLog();
+fake.logs.length = 0;
+const chunks = Math.ceil(((await prov.getBlockNumber()) - busyBlock + 1) / 1000);
+check("log searches answered \"temporarily unavailable\" by rpcUrl: the backup answers them, no pause, said once",
+  await click("loadDeposits", /2 deposit\(s\) read/) && lines(await logText(), BACKUP) === 1 && lines(await logText(), RETRY) === 0 && fake.logs.length === 3 * chunks && !/✗/.test(await logText()),
+  `${chunks} chunk(s): ${fake.logs.join(", ")} | ${await logText()}`);
+fake.logsBusy = 0;
+fake.mode = "hang";
+await openPanel(BP.url);
+lt = await logText();
+check("RPC silent: given up on after the time limit, the event opens through the backup; the wait and the backup said once",
+  /Event\s*Busy Night/.test(await txt("status")) && lines(lt, "Waiting for the Ethereum network…") === 1 && lines(lt, BACKUP) === 1 && !/✗/.test(lt), lt);
+await clearLog();
+check("RPC silent: Load deposits too", await click("loadDeposits", /2 deposit\(s\) read/) && lines(await logText(), BACKUP) === 1, await logText());
+fake.mode = "drop";
+await openPanel(BP.url);
+lt = await logText();
+check("RPC closing the connection: the event opens through the backup", /Event\s*Busy Night/.test(await txt("status")) && lines(lt, BACKUP) === 1 && !/✗/.test(lt), lt);
+// the backup can't search logs (like the free RPCs but publicnode on old blocks): a busy log search is asked again
+const LP = busyPanel("logs", [{ url: config.rpcUrl, logs: false }]);
+check("a backup that does not search logs, baked in", LP.ok && JSON.stringify(LP.H.rpcs) === JSON.stringify([{ url: fake.url, logs: true }, { url: config.rpcUrl, logs: false }]), LP.err);
+fake.mode = "ok";
+await (await W.cai.sendTransaction({ to: busyK.target, value: E("0.01") })).wait();
+await openPanel(LP.url);
+await clearLog();
+// what an action waits for, and why it failed, is also said under the button pressed: the log is at the bottom of the page
+const actNote = (id) => page.evaluate((id) => {
+  const n = document.querySelector(".actnote");
+  return n && !n.hidden && n.previousElementSibling?.contains(document.getElementById(id)) ? `${n.className}: ${n.textContent}` : "";
+}, id);
+fake.logs.length = 0; fake.logsBusy = 1e9;
+await page.click("#loadDeposits");
+let waitNote = "";
+for (let i = 0; i < 40 && !waitNote; i++) { waitNote = await actNote("loadDeposits"); if (!waitNote) await page.waitForTimeout(250); }
+fake.logsBusy = 0;
+const waitRead = await waitLog(/3 deposit\(s\) read/);
+await idle();
+check("a busy log search in step 3: said under the button pressed, gone once the deposits are read",
+  waitNote === `actnote warn: ${RETRY}` && waitRead && (await page.locator(".actnote").count()) === 0, `${waitNote} | ${await logText()}`);
+await clearLog();
+fake.logs.length = 0; fake.logsBusy = 2;
+check("log searches answered \"temporarily unavailable\": asked again (the same range), said once, the deposits read",
+  await click("loadDeposits", /3 deposit\(s\) read/) && fake.logsBusy === 0 && fake.logs[0] === fake.logs[1] && fake.logs[1] === fake.logs[2] && lines(await logText(), RETRY) === 1 && !/✗/.test(await logText()),
+  `${fake.logs.join(", ")} | ${await logText()}`);
+await connect();
+await page.click("#registerSel"); await idle();
+check("an action that fails says why under its button too", /^actnote err: ✗ Tick Register for the guests first/.test(await actNote("registerSel")), await actNote("registerSel"));
+check("Cai ticked for Register", await tick(A.cai, "register"));
+await prov.send("evm_mine", []); // a block after the table was read: the ticked list's check searches it
+fake.logs.length = 0; fake.logsBusy = 1;
+await clearLog();
+n0 = await nonce();
+check("a busy log search in the ticked list's check: a pause, the same range again, then registered",
+  await click("registerSel", /Registered 1 guest\./) && fake.logs[0] === fake.logs[1] && lines(await logText(), RETRY) === 1 && Number(await busyK.status(A.cai)) === 1 && (await nonce()) === n0 + 1
+  && (await page.locator(".actnote").count()) === 0,
+  `${fake.logs.join(", ")} | ${await logText()}`);
+// nobody answers: the stand-in busy, the backup closing every connection
+const DP = busyPanel("down", [down.url]);
+fake.mode = "busy";
+let t = Date.now();
+await openPanel(DP.url);
+lt = await logText();
+const downStatus = await txt("status");
+check("no server answering: within seconds, a short plain error in the log and where the event's status goes",
+  DP.ok && lines(lt, "✗ The Ethereum network is busy. Try again in a minute.") === 1 && /^Event\s*✗ The Ethereum network is busy\. Try again in a minute\.$/.test(downStatus.trim()) &&
+  !lt.includes("Network busy: using a backup") && Date.now() - t < 20_000, `${Date.now() - t} ms | ${downStatus} | ${lt}`);
+check("no server answering: Open and Connect usable again, nothing to act on",
+  !(await page.isDisabled("#refresh")) && !(await page.isDisabled("#connect")) && await page.isDisabled("#loadDeposits") && await page.isDisabled("#registerAll"));
+// the contract's code read, then no answer to its reads: the network is busy, not "not a kickback deposit contract"
+fake.mode = "calls";
+await clearLog();
+await page.click("#refresh"); await idle();
+check("the code read but not the contract's answers: the network is busy, not \"not a kickback contract\" (in the status, not twice)",
+  lines(await logText(), "✗ The Ethereum network is busy. Try again in a minute.") === 1 && !/not a kickback/.test(await logText()) && await noEvent()
+  && /✗ The Ethereum network is busy/.test(await txt("status")) && (await page.locator(".actnote").count()) === 0, await logText());
+fake.mode = "ok";
+await clearLog();
+await page.click("#refresh"); await idle();
+check("the network back: Open opens the event", /Event\s*Busy Night/.test(await txt("status")) && !/✗/.test(await logText()), `${await txt("status")} | ${await logText()}`);
+for (const f of [fake, down]) { f.server.closeAllConnections(); f.server.close(); }
+
 // ---------------------------------------------------------------- everywhere
 check("no dialog or log line mentions Claude or the console", !dialogs.some((d) => /claude|console/i.test(d)) && !/claude|console/i.test(await logText()),
   dialogs.find((d) => /claude|console/i.test(d)) ?? (await logText()).match(/.{0,80}(claude|console).{0,40}/i)?.[0]);
 check("every transaction: signed in the wallet with the chainId, the sender's own account, gas at most 2^24",
   sent.length > 0 && sent.every((t) => t.chainId === "0x539" && BigInt(t.gas) <= 16_777_216n && t.from.toLowerCase() === me.toLowerCase()), sent.map((t) => `${t.chainId}/${t.gas}/${t.from}`).join(","));
 check("nothing was fetched from outside this computer but Kleros's (simulated) services", outside.length === 0, outside.join(", "));
-check("the host only served the panel's own files", served.every((p) => p.startsWith("/admin/") || p === "/favicon.ico") && !served.some((p) => /settings\.json|config\.json|\/out\//.test(p)), [...new Set(served)].join(", "));
+check("the host only served the panels' own files", served.every((p) => /^\/(admin|busy|logs|down)\//.test(p) || p === "/favicon.ico") && !served.some((p) => /settings\.json|config\.json|\/out\//.test(p)), [...new Set(served)].join(", "));
 check("no page errors", errs.length === 0, errs.join("; "));
 
 await browser.close(); web.close(); await server.close();

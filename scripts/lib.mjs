@@ -72,10 +72,12 @@ export function deployArgs(cfg, owner, templateText) {
   return core.deployArgs(cfg, owner, text, { name: path.basename(file) });
 }
 
+// Reads go through rpcUrl, then the backups when it does not answer (core.mjs readProvider); RPC_URL: that one only.
 export function provider(cfg) {
-  const url = process.env.RPC_URL || cfg.rpcUrl;
-  if (!url) throw new Error("Set rpcUrl in config.json or RPC_URL env var");
-  return new ethers.JsonRpcProvider(url, cfg.chainId ? Number(cfg.chainId) : undefined, { staticNetwork: !!cfg.chainId });
+  const rpcs = process.env.RPC_URL ? [process.env.RPC_URL] : cfg.rpcs?.length ? cfg.rpcs : cfg.rpcUrl ? [cfg.rpcUrl] : [];
+  if (!rpcs.length) throw new Error("Set rpcUrl in config.json or RPC_URL env var");
+  return core.readProvider(rpcs, cfg.chainId ? Number(cfg.chainId) : undefined, { staticNetwork: !!cfg.chainId },
+    { onSwitch: (url) => console.warn(`(an RPC did not answer: reading through ${url})`) });
 }
 
 // ---------------------------------------------------------------- CSV / JSON files
