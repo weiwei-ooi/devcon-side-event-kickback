@@ -30,6 +30,36 @@ export const DECIMALS = 18;
  * recent blocks, flashbots returned nothing on old ranges). Scripts scan logs in `logChunk` blocks with retries. */
 export const DEFAULT_RPC = "https://rpc.mevblocker.io";
 export const DEFAULT_LOG_CHUNK = 5000;
+/**
+ * Backups for Ethereum mainnet, asked when rpcUrl does not answer (a busy RPC's error page carries no CORS header, so
+ * a browser only sees "Failed to fetch"). Checked from a browser origin on 30 Oct 2026: CORS open, eth_call answered.
+ * `logs`: it also answers log searches, which publicnode does over recent blocks only (older ones: "Archive requests
+ * require a personal token"); drpc and 1rpc refuse them on their free plans. No free RPC but rpcUrl searched the
+ * contract's whole history, so readProvider always asks rpcUrl first for logs. Left out: llamarpc (down),
+ * cloudflare-eth (errors), merkle (rate limited at once), flashbots (refuses eth_call, missed a log on an old range),
+ * blastapi and blockrazor (logs of 10–25 blocks), ankr (needs a key), payload.de (gone).
+ */
+export const BACKUP_RPCS = {
+  1: [
+    { url: "https://ethereum-rpc.publicnode.com", logs: true },
+    { url: "https://eth.drpc.org", logs: false },
+    { url: "https://1rpc.io/eth", logs: false },
+  ],
+};
+/**
+ * The RPCs a config reads through, in order: rpcUrl first (it answers log searches), then the backups:
+ * "rpcBackups" from the config (URLs, or { url, logs }; a URL alone answers logs) or the chain's BACKUP_RPCS.
+ * `false` as rpcBackups: rpcUrl only. Duplicates and anything not http(s) are dropped.
+ */
+export function rpcList(rpcUrl, chainId, backups) {
+  const extra = backups === false ? [] : Array.isArray(backups) ? backups : BACKUP_RPCS[Number(chainId)] ?? [];
+  const out = [];
+  for (const r of [{ url: rpcUrl, logs: true }, ...extra]) {
+    const e = typeof r === "string" ? { url: r, logs: true } : { url: r?.url, logs: r?.logs !== false };
+    if (/^https?:\/\/\S+$/.test(String(e.url ?? "")) && !out.some((o) => o.url === e.url)) out.push(e);
+  }
+  return out;
+}
 /** Sanity cap: a deposit above this is almost surely a stale amount (e.g. "25" from the USDC days). */
 export const MAX_DEPOSIT_ETH = "1";
 
@@ -92,6 +122,7 @@ export function normalizeConfig(cfg, file = "config.json", { depositCap = true }
     chainId,
     chainName: cfg.chainName ?? chain?.name ?? String(cfg.chain ?? "custom network"),
     rpcUrl: cfg.rpcUrl || (chain ? DEFAULT_RPC : ""),
+    rpcs: rpcList(cfg.rpcUrl || (chain ? DEFAULT_RPC : ""), chainId, cfg.rpcBackups),
     explorer: cfg.explorer ?? chain?.explorer ?? "",
     symbol: SYMBOL,
     decimals: DECIMALS,
@@ -1171,6 +1202,102 @@ export function pairReturns(deposits, events, { deposit, prefer = new Set(), sta
   return { byDeposit, unbacked, unpaired };
 }
 
+// ---------------------------------------------------------------- reading through several RPCs
+
+/** An RPC error that says the server is busy or down for now (wait and ask again), not an answer about the request. */
+export function rpcBusy(e) {
+  if (!e) return false;
+  if (e.busy) return true;
+  const m = [e.shortMessage, e.message, e.error?.message, e.info?.error?.message].filter(Boolean).join(" ");
+  if (/revert/i.test(m)) return false;
+  return e.code === 429 || e.code === "TIMEOUT" || e.code === "NETWORK_BUSY" || /rate.?limit|too many requests|temporarily unavailable|service unavailable|\bunavailable\b|overloaded|over capacity|try again later|timed? ?out|request timeout|bad gateway|gateway time|header not found|failed to fetch|fetch failed|network ?error|ECONNRE(SET|FUSED)|ETIMEDOUT|ENOTFOUND|socket hang up|exceeded maximum retry limit|\b(429|50[0-4]|52[0-9])\b/i.test(m);
+}
+// A server that can't do this kind of request at all (an archive read, a method or range its plan refuses, a batch of
+// reads: eth.drpc.org's free plan takes 3 at most): another may.
+const rpcRefuses = (e) => {
+  const m = [e?.shortMessage, e?.message].filter(Boolean).join(" ");
+  return !/revert/i.test(m) && /archive|personal token|api key|unauthori[sz]ed|not whitelisted|method not (found|available|allowed|supported)|not supported|is not available|limited to \d|batch/i.test(m);
+};
+const hostOf = (url) => { try { return new URL(url).host; } catch { return String(url); } };
+
+/**
+ * A read-only provider over several RPCs (rpcList: [{ url, logs }], rpcUrl first). A request goes to the RPC that
+ * answered last; one that gives no usable answer (no answer within `timeoutMs`, an HTTP error, a page the browser
+ * blocks, not JSON, no reply to one of the requests, "rate limit", "temporarily unavailable", an archive read or a
+ * batch it refuses) is not waited for, and never becomes the one asked first: the next one is asked, round the list.
+ * A log search (eth_getLogs) always starts with the first RPC with `logs`, in list order, since only rpcUrl is known
+ * to hold the whole history; a backup's refusal never replaces rpcUrl's error. Any other answer, a revert or "range
+ * too long" included, is the answer. When none answers, the error has busy: true and code "NETWORK_BUSY": wait and
+ * try again. `onSwitch(url)`: another RPC took over (for logs: a backup answered). A signed transaction
+ * (eth_sendRawTransaction) is only sent to the RPC that answered last.
+ * With a single RPC it is a plain JsonRpcProvider (ethers' own retries on HTTP 429).
+ */
+export function readProvider(rpcs, chainId, options = {}, { timeoutMs = 20_000, onSwitch } = {}) {
+  const list = (Array.isArray(rpcs) ? rpcs : [rpcs]).map((r) => (typeof r === "string" ? { url: r, logs: true } : r)).filter((r) => r?.url);
+  if (!list.length) throw new Error("No RPC to read the chain through: set rpcUrl in the config.");
+  if (list.length === 1) return new ethers.JsonRpcProvider(list[0].url, chainId, options);
+  return new FallbackRpc(list, chainId, options, { timeoutMs, onSwitch });
+}
+
+class FallbackRpc extends ethers.JsonRpcProvider {
+  #rpcs; #at = 0; #timeout; #onSwitch;
+  constructor(rpcs, chainId, options, { timeoutMs, onSwitch }) {
+    super(rpcs[0].url, chainId, options);
+    this.#rpcs = rpcs; this.#timeout = timeoutMs; this.#onSwitch = onSwitch;
+  }
+  /** The RPC that answered last (reads other than log searches go there first). */
+  get rpcUrl() { return this.#rpcs[this.#at].url; }
+  get rpcUrls() { return this.#rpcs.map((r) => r.url); }
+  async #ask(url, payload) {
+    const req = new ethers.FetchRequest(url);
+    req.body = JSON.stringify(payload);
+    req.setHeader("content-type", "application/json");
+    req.timeout = this.#timeout;
+    req.setThrottleParams({ maxAttempts: 1 }); // a busy one (HTTP 429) is not waited for: the next one is asked
+    // ethers' time limit ends when the answer starts (in a browser): an answer that never finishes is cut off here
+    const stop = setTimeout(() => { try { req.cancel(); } catch {} }, this.#timeout + 1000);
+    let res;
+    try { res = await req.send(); } finally { clearTimeout(stop); }
+    res.assertOk();
+    const body = res.bodyJson;
+    const out = Array.isArray(body) ? body : [body];
+    // a reply for every request, by its id: a server that turns a whole batch down answers one error with id null, and
+    // ethers would fail each read ("missing response for request"); not an answer, the next server is asked
+    const ids = [payload].flat().map((p) => p?.id);
+    if (out.some((r) => !r || typeof r !== "object") || !ids.every((id) => out.some((r) => r.id === id)))
+      throw Object.assign(new Error(`${hostOf(url)}: ${out.find((r) => r?.error)?.error?.message ?? "unexpected answer"}`), { busy: true });
+    return out;
+  }
+  async _send(payload) {
+    const many = Array.isArray(payload) ? payload : [payload];
+    const logs = many.some((p) => p?.method === "eth_getLogs");
+    const n = this.#rpcs.length;
+    // a signed transaction goes to one RPC only: one that timed out may still have sent it on
+    const order = many.some((p) => p?.method === "eth_sendRawTransaction") ? [this.#at]
+      : logs ? this.#rpcs.map((r, i) => i).filter((i) => this.#rpcs[i].logs) : [...Array(n).keys()].map((k) => (this.#at + k) % n);
+    let first, last;
+    for (const [tried, i] of order.entries()) {
+      const { url } = this.#rpcs[i];
+      try {
+        const out = await this.#ask(url, payload);
+        const err = out.find((r) => r.error)?.error;
+        // busy, or a server that can't do this request: the next one; a backup's refusal of a log search too
+        if (err && (rpcBusy(err) || rpcRefuses(err) || (logs && tried > 0)))
+          throw Object.assign(new Error(`${hostOf(url)}: ${err.message ?? "error"}`), { busy: rpcBusy(err), rpcError: err });
+        if (logs ? tried > 0 : i !== this.#at) this.#onSwitch?.(url);
+        if (!logs) this.#at = i;
+        return out;
+      } catch (e) {
+        first ??= e; last = e;
+      }
+    }
+    const e = logs ? first : last;
+    const why = e?.shortMessage || e?.message || "no answer";
+    throw Object.assign(new Error(`The Ethereum network is busy: no server answered (${why}). Try again in a minute.`), {
+      code: "NETWORK_BUSY", busy: true, cause: e });
+  }
+}
+
 /**
  * eth_getLogs over a block range in chunks of `step` blocks (cfg.logChunk, 5,000 by default), so
  * public RPCs that cap the range still answer. A chunk that fails is tried again `retries` times,
@@ -1179,7 +1306,7 @@ export function pairReturns(deposits, events, { deposit, prefer = new Set(), sta
  * Only then does the scan stop, with a message saying what to change.
  */
 export async function getLogsChunked(prov, filter, fromBlock, toBlock = "latest", step = DEFAULT_LOG_CHUNK,
-  { retries = 3, delayMs = 1000, minStep = 100 } = {}) {
+  { retries = 3, delayMs = 1000, minStep = 100, busyRetries = 3 } = {}) {
   const latest = toBlock === "latest" ? await prov.getBlockNumber() : Number(toBlock);
   const out = [];
   const range = async (from, to) => {
@@ -1192,7 +1319,14 @@ export async function getLogsChunked(prov, filter, fromBlock, toBlock = "latest"
         err = e;
       }
     }
-    if (to - from + 1 > minStep) {
+    // a busy network gets a longer pause and the same range again, a few more times: splitting would only ask more
+    if (rpcBusy(err)) {
+      for (let attempt = 0; attempt < busyRetries && rpcBusy(err); attempt++) {
+        await new Promise((r) => setTimeout(r, delayMs * 2 ** (retries + attempt)));
+        try { return void out.push(...(await prov.getLogs({ ...filter, fromBlock: from, toBlock: to }))); } catch (e) { err = e; }
+      }
+    }
+    if (to - from + 1 > minStep && !rpcBusy(err)) {
       const mid = from + Math.floor((to - from + 1) / 2);
       await range(from, mid - 1);
       return range(mid, to);

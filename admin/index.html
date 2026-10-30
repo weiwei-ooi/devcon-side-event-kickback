@@ -49,6 +49,8 @@
   .kv { display:grid; grid-template-columns:170px 1fr; gap:4px 12px; }
   .kv div:nth-child(odd) { color:var(--muted); }
   #log { white-space:pre-wrap; background:#12002b; border-radius:10px; padding:12px; min-height:60px; font-family:ui-monospace,Menlo,monospace; font-size:12.5px; }
+  /* under the button pressed: what its action waits for, or why it failed (wrap) */
+  .actnote { margin-top:8px; font-size:14px; overflow-wrap:anywhere; }
   .ok { color:var(--ok); } .err { color:var(--err); } .warn { color:var(--warn); }
   a { color:var(--blue); }
   select { background:#12002b; border:1px solid var(--line); color:var(--text); border-radius:8px; padding:8px 10px; }
@@ -249,6 +251,24 @@ import * as core from "kickback/core";
   "chainId": 1,
   "chainName": "Ethereum mainnet",
   "rpcUrl": "https://rpc.mevblocker.io",
+  "rpcs": [
+    {
+      "url": "https://rpc.mevblocker.io",
+      "logs": true
+    },
+    {
+      "url": "https://ethereum-rpc.publicnode.com",
+      "logs": true
+    },
+    {
+      "url": "https://eth.drpc.org",
+      "logs": false
+    },
+    {
+      "url": "https://1rpc.io/eth",
+      "logs": false
+    }
+  ],
   "explorer": "https://etherscan.io",
   "logChunk": 5000,
   "kleros": {
@@ -613,16 +633,64 @@ function explain(e) {
     return "The contract refused: " + err.name;
   }
   for (const [re, text] of KLEROS_ERRORS) if (re.test(raw)) return text;
-  const httpCode = e?.info?.responseStatus ?? e?.error?.status;
-  if (code === 429 || code === -32005 || /\b429\b/.test(String(httpCode ?? "")) || /rate.?limit|could not coalesce|too many requests/i.test(brief))
-    return "The network connection is busy (rate limited). Wait a minute and try again. Nothing was sent.";
-  if (/insufficient funds/i.test(brief)) return "This wallet does not have enough ETH for this (amount plus network fee).";
   if (e?.code === "TIMEOUT") return "No answer from the network in time. Check the last “Sent:” link in the log before trying again.";
+  // no server answered (core.readProvider; also inside a log search's own error), or one said it is busy or rate limited
+  const httpCode = e?.info?.responseStatus ?? e?.error?.status;
+  if (code === "NETWORK_BUSY" || e?.busy || /The Ethereum network is busy/.test(raw) || code === 429 || code === -32005 || /\b429\b/.test(String(httpCode ?? ""))
+      || /could not coalesce/i.test(brief) || (brief && core.rpcBusy({ message: brief })))
+    return "The Ethereum network is busy. Try again in a minute.";
+  if (/insufficient funds/i.test(brief)) return "This wallet does not have enough ETH for this (amount plus network fee).";
   return raw || String(e);
 }
 
 // ------------------------------------------------------------ setup
 async function getJson(p) { const r = await fetch(p, { cache: "no-store" }); if (!r.ok) throw new Error(`${p}: ${r.status}`); return r.json(); }
+
+// Reads, gas and fee estimates go through the config's RPC, then its backups (core.readProvider): a server that gives
+// no answer within RPC_TIMEOUT_MS is not waited for. Each action says once, in the log and under its button, that a
+// backup answered, that a busy log search is asked again, or that a read waits long (wrap), so greyed-out buttons are
+// never silent.
+// (a local chain mines a block only per transaction: no cached block number, which could leave a receipt waiting for
+// a block that never comes, and no 4-second wait between polls; no cache on mainnet either: a balance read right
+// after a transaction must not be the one from before it)
+const RPC_TIMEOUT_MS = Number(window.__rpcTimeoutMs) || 20_000; // (the browser tests shorten it)
+const SLOW_READ_MS = RPC_TIMEOUT_MS * 0.4; // 8 s
+let said = new Set(); // the notes said in this action
+const reads = new Map(); // the reads under way: when each began
+// A line under the button pressed (wrap): the log is at the bottom of the page, so what an action waits for, and why it
+// failed, is also said where she looks. Gone when the action ends well, or when the next one starts.
+let actNote = null;
+const actionNote = (msg, cls = "warn") => { if (actNote) { actNote.textContent = ui(msg); actNote.className = "actnote " + cls; actNote.hidden = false; } };
+const sayOnce = (key, msg) => { if (!said.has(key)) { said.add(key); log(msg, "warn"); actionNote(msg); } };
+const hostOf = (url) => { try { return new URL(url).host; } catch { return String(url); } };
+function reader() {
+  const list = chain.rpcs?.length ? chain.rpcs : [{ url: chain.rpc, logs: true }];
+  const p = core.readProvider(list, chain.chainId, { staticNetwork: true, cacheTimeout: -1, ...(chain.chainId !== MAINNET ? { pollingInterval: 250 } : {}) }, {
+    timeoutMs: RPC_TIMEOUT_MS,
+    onSwitch: (url) => { if (url !== list[0].url) sayOnce(url, `Network busy: using a backup server (${hostOf(url)}).`); },
+  });
+  // a log search refused as busy is asked again (getLogsChunked here and in the core)
+  const send = p._send.bind(p);
+  let n = 0;
+  p._send = async (payload) => {
+    const id = n++, logs = [payload].flat().some((q) => q?.method === "eth_getLogs");
+    reads.set(id, performance.now());
+    try {
+      const out = await send(payload);
+      if (logs && out.some((r) => r?.error && core.rpcBusy(r.error))) sayOnce("retry", "Network busy, retrying…");
+      return out;
+    } catch (e) {
+      if (logs && core.rpcBusy(e)) sayOnce("retry", "Network busy, retrying…");
+      throw e;
+    } finally { reads.delete(id); }
+  };
+  return p;
+}
+// While an event (or, in the local console, the contract) is read for the first time, its status says so: the log is
+// at the bottom of the page. The status replaces that line; an action that ends without it shows its error there
+// instead, or nothing (wrap).
+let statusNoted = false;
+const statusNote = (text, cls) => { kv($("status"), [[hosted ? "Event" : "Contract", text, cls]]); statusNoted = true; };
 
 async function init() {
   if (hosted) return initHosted();
@@ -631,15 +699,12 @@ async function init() {
   // the config as the scripts read it (lib.mjs): network, deposit in wei, Kleros, deploy arguments
   try { settings = await getJson("/settings.json"); } catch { log("The console could not read its settings. Is it still running?", "err"); return; }
   if (settings.error) { log(settings.error + " Ask Claude to fix the config.", "err"); return; }
-  chain = { chainId: Number(settings.chainId), name: settings.chainName, rpc: settings.rpcUrl, explorer: settings.explorer };
+  chain = { chainId: Number(settings.chainId), name: settings.chainName, rpc: settings.rpcUrl, rpcs: settings.rpcs, explorer: settings.explorer };
   artifact = await getJson("/build/TruthPaysKickback.json");
   iface = new ethers.Interface(artifact.abi);
-  // Reads, gas and fee estimates go through the public RPC, so the wallet only has to sign.
-  // (a local chain mines a block only per transaction: no cached block number, which could leave a
-  // receipt waiting for a block that never comes, and no 4-second wait between polls)
+  // reads through the public RPC and its backups, so the wallet only has to sign
   const local = chain.chainId !== MAINNET;
-  // (no cache on mainnet either: a balance read right after a transaction must not be the one from before it)
-  rp = new ethers.JsonRpcProvider(chain.rpc, chain.chainId, { staticNetwork: true, cacheTimeout: -1, ...(local ? { pollingInterval: 250 } : {}) });
+  rp = reader();
 
   // anything but Ethereum mainnet is a local test chain (the tests); the rehearsal runs on mainnet
   mode = cfg.mode === "rehearsal" ? "rehearsal" : local ? "local" : "live";
@@ -796,17 +861,25 @@ const parsed = (r, contract = contractAddr()) =>
 // then refuse one: search in chunks of `logChunk` blocks (config), retrying each chunk a few times.
 // A range that keeps failing is split in two and each half searched on its own (some RPCs refuse a
 // range with too many logs), like the scripts do (lib.mjs); a single block that keeps failing stops it.
+// A busy network (core.rpcBusy) gets longer pauses and the same range again: splitting would only ask more.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const BUSY_PAUSE_MS = 2000; // then 4, 8 and 16 s
 async function getLogsChunked(filter, from, to) {
   const step = Number(settings.logChunk) || 5000;
   if ((to - from) / step > 2000) throw new Error(T("The contract's deploy block is missing from the config, so the search would take too long. Ask Claude to add deployBlock.", "The contract's deploy block is missing, so the search would take too long. Enter it (Etherscan: the block of its \"Contract Creation\" transaction) and press Open."));
   const out = [];
   const range = async (a, b, tries) => {
-    for (let attempt = 1; ; attempt++) {
+    for (let attempt = 1, waited = 0; ; ) {
       try { out.push(...(await rp.getLogs({ ...filter, fromBlock: a, toBlock: b }))); return; }
       catch (e) {
+        if (core.rpcBusy(e)) {
+          if (++waited > 3) throw e;
+          sayOnce("retry", "Network busy, retrying…");
+          await sleep(BUSY_PAUSE_MS * 2 ** waited);
+          continue;
+        }
         if (attempt >= tries) { if (a >= b) throw e; break; }
-        await sleep(attempt * 1000);
+        await sleep(attempt++ * 1000);
       }
     }
     const mid = a + Math.floor((b - a + 1) / 2);
@@ -893,7 +966,10 @@ async function deploy() {
 
 async function refresh() {
   if (hosted) await openEvent(); // the event in the address box: read on-chain, with its deploy block
-  else if (ev && ev.contract !== contractAddr()) forgetLocal(); // another contract: the deposits shown were the previous one's
+  else {
+    if (ev && ev.contract !== contractAddr()) forgetLocal(); // another contract: the deposits shown were the previous one's
+    if (!state) statusNote("Reading…");
+  }
   const c = new ethers.Contract(contractAddr(), artifact.abi, rp);
   const [owner, pending, phase, count, dep, bal, owedTotal, spare, start, end, attCount, windowEnd, pendingCh, chList, fee, escrow, heldBack] = await Promise.all([
     c.owner(), c.pendingOwner(), c.phase(), c.stakerCount(), c.depositAmount(), rp.getBalance(c.target), c.owedTotal(), c.spare(), c.eventStart(), c.claimDeadline(),
@@ -937,6 +1013,7 @@ async function refresh() {
     );
   }
   kv($("status"), pairs);
+  statusNoted = false;
   const chPairs = [
     ["Challenge window", state.phase === 0 ? "opens when you post the list" : state.phase === 1 ? `until ${when(state.windowEnd)}` : "closed"],
     ["Challenge deposit", fee === null ? "unknown" : eth(fee) + " (the Kleros fee)"],
@@ -1712,7 +1789,7 @@ async function initHosted() {
   const walk = document.createTreeWalker(document.querySelector("main"), NodeFilter.SHOW_TEXT);
   for (let n; (n = walk.nextNode()); ) n.nodeValue = ui(n.nodeValue);
   document.title = "Kickback · Admin panel";
-  chain = { chainId: Number(HOSTED.chainId), name: HOSTED.chainName, rpc: HOSTED.rpcUrl, explorer: HOSTED.explorer };
+  chain = { chainId: Number(HOSTED.chainId), name: HOSTED.chainName, rpc: HOSTED.rpcUrl, rpcs: HOSTED.rpcs, explorer: HOSTED.explorer };
   settings = {
     chainId: chain.chainId, chainName: chain.name, rpcUrl: chain.rpc, explorer: chain.explorer, logChunk: HOSTED.logChunk,
     kleros: { ...HOSTED.kleros, policyURI: HOSTED.policy.uri }, knownKleros: core.KLEROS[chain.chainId] ?? null,
@@ -1720,7 +1797,7 @@ async function initHosted() {
   };
   cfg = {};
   const local = chain.chainId !== MAINNET;
-  rp = new ethers.JsonRpcProvider(chain.rpc, chain.chainId, { staticNetwork: true, cacheTimeout: -1, ...(local ? { pollingInterval: 250 } : {}) });
+  rp = reader();
   mode = local ? "local" : "live";
   const b = $("banner"); b.hidden = false; b.className = "banner " + mode;
   b.textContent = local ? `LOCAL TEST CHAIN (${chain.name}, chain ${chain.chainId}): practice run. Nothing here uses real money.`
@@ -1799,10 +1876,13 @@ async function openEvent() {
   if (ev && ev.contract === a && (typed === "" || typed === String(ev.deployBlock))) { $("fromBlock").value = String(ev.deployBlock); return ev; }
   if (typed && !/^\d+$/.test(typed)) throw new Error("Deploy block: type the block number only (digits), or leave it empty.");
   forgetEvent();
+  statusNote("Opening…");
+  log("Opening the event…");
   let e;
   // the contract's code must be the kickback contract this page was built with: answers alone can be faked
   try { e = await core.readEvent(rp, a, artifact.abi, { runtime: HOSTED?.runtime }); }
   catch (err) {
+    if (err.code === "NOT_KICKBACK" && core.rpcBusy(err.cause)) throw err.cause; // its answers did not come: the network, not the contract
     if (err.code === "NO_KICKBACK_CONTRACT") throw new Error(`There is no contract at ${a} on ${chain.name}. Check the address (a contract on another network can't be used here).`);
     if (err.code === "NOT_KICKBACK") throw new Error(`The contract at ${a} is not a kickback deposit contract, so this page can't run it.`);
     if (err.code === "UNKNOWN_CODE") throw new Error(`The contract at ${a} answers like a kickback deposit contract, but its code is not the one this page knows, so this page can't run it. Don't send ETH to it.`);
@@ -1851,6 +1931,7 @@ async function openLocal() {
   let e;
   try { e = await core.readEvent(rp, a, artifact.abi); }
   catch (err) {
+    if (err.code === "NOT_KICKBACK" && core.rpcBusy(err.cause)) throw err.cause; // its answers did not come: the network, not the contract
     if (err.code === "NO_KICKBACK_CONTRACT") throw new Error(`There is no contract at ${a} on ${chain.name}.`);
     if (err.code === "NOT_KICKBACK") throw new Error(`The contract at ${a} is not a kickback deposit contract.`);
     throw err;
@@ -2430,13 +2511,22 @@ setInterval(() => { if (!busy) applyButtons(); }, 30_000); // unlocks by itself 
 
 // One action at a time: every button stays disabled until the current action has finished.
 const ALL_BUTTONS = ["connect", "deploy", "refresh", ...OWNER_BUTTONS, ...ANYONE_BUTTONS, ...READ_BUTTONS, ...HOSTED_OWNER_BUTTONS, ...HOSTED_READ_BUTTONS, ...HOSTED_FORM_BUTTONS];
-const wrap = (fn) => async () => {
+const wrap = (fn) => async (event) => {
   if (busy) return;
   busy = true;
+  said = new Set();
+  actNote?.remove(); actNote = null;
+  const row = event?.currentTarget?.closest?.(".row");
+  if (row) { actNote = document.createElement("div"); actNote.setAttribute("role", "status"); actNote.hidden = true; row.after(actNote); }
   const was = Object.fromEntries(ALL_BUTTONS.map((id) => [id, $(id).disabled]));
   ALL_BUTTONS.forEach((id) => ($(id).disabled = true));
-  try { await fn(); } catch (e) { log("✗ " + explain(e), "err"); }
+  const slow = setInterval(() => { if ([...reads.values()].some((t) => performance.now() - t > SLOW_READ_MS)) sayOnce("slow", "Waiting for the Ethereum network…"); }, 250);
+  let failed = "";
+  try { await fn(); } catch (e) { failed = explain(e); log("✗ " + failed, "err"); }
   finally {
+    clearInterval(slow);
+    if (failed && !statusNoted) actionNote("✗ " + failed, "err"); else { actNote?.remove(); actNote = null; }
+    if (statusNoted) { if (failed) statusNote("✗ " + ui(failed), "err"); else $("status").replaceChildren(); statusNoted = false; }
     busy = false;
     ALL_BUTTONS.forEach((id) => ($(id).disabled = was[id]));
     if (state && (account || hosted)) applyButtons();
