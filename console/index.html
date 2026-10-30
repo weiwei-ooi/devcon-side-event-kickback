@@ -1736,6 +1736,7 @@ async function openEvent() {
   $("eventTitle").textContent = `Event: ${e.eventName}`;
   document.title = `Kickback · Admin panel · ${e.eventName}`;
   try { history.replaceState(null, "", `${location.pathname}?contract=${a}&from=${from}`); } catch {}
+  log(`Opened: ${e.eventName}.`);
   return ev;
 }
 

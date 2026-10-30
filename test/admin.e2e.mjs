@@ -927,7 +927,7 @@ fake.mode = "busy";
 await openPanel(BP.url);
 let lt = await logText();
 check("RPC busy (an error page without CORS headers): the event opens through the backup, said once",
-  /Event\s*Busy Night/.test(await txt("status")) && /Opening the event…/.test(lt) && lines(lt, BACKUP) === 1 && fake.asked > 0 && !/✗/.test(lt), lt);
+  /Event\s*Busy Night/.test(await txt("status")) && /Opening the event…/.test(lt) && /Opened: Busy Night\./.test(lt) && lines(lt, BACKUP) === 1 && fake.asked > 0 && !/✗/.test(lt), lt);
 await clearLog();
 check("RPC busy: Load deposits reads them through the backup, said once for the whole action",
   await click("loadDeposits", /2 deposit\(s\) read/) && lines(await logText(), BACKUP) === 1, await logText());
