@@ -667,7 +667,7 @@ check("the ticked list made before that return is refused",
 await clearLog();
 check("load deposits again", await click("loadDeposits", /9 deposit\(s\) read/), await logText());
 const louRow = await rowTx(tx.lou);
-check("the Luma tick did not survive: the deposit is no longer held, Refund can't be ticked", louRow && !louRow.ref && !louRow.refOn && /received, not registered/.test(louRow.text), JSON.stringify(louRow));
+check("the Luma tick did not survive: the deposit was given back (\"returned\"), Refund can't be ticked", louRow && !louRow.ref && !louRow.refOn && /returned/.test(louRow.text) && !/received, not registered/.test(louRow.text), JSON.stringify(louRow));
 check("nothing to refund: no transaction, Lou neither refunded nor paid twice",
   await click("refundSel", /Tick Refund for the guests first/) && (await nonce()) === n0 && Number(await kick.status(lou.address)) === 0 && (await bal(lou.address)) === louBal, await logText());
 await page.setInputFiles("#planFile", planOf({ stakers: 2 }));

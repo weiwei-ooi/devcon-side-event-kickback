@@ -684,7 +684,7 @@ test("checkGuests and buildPayout give exactly the lists the scripts write (a co
   // after the event: Ana checked in on Luma, Cai is on the door list, Dan did not come
   await prov.send("evm_increaseTime", [3600 + 600]);
   await prov.send("evm_mine", []);
-  // a late payment: "unregistered" whatever happens to it, so only heldForSpot says whether it is still there
+  // a late payment: "unregistered" until it is given back ("returned" once refund() sent all of it back)
   const gusLate = await pay(gus, "0.01");
   const gusRow = async () => (await core.depositsOverview({ prov, cfg, abi, scanFrom: cfg.deployBlock })).deposits.find((d) => d.tx === gusLate);
   let g = await gusRow();
@@ -692,7 +692,7 @@ test("checkGuests and buildPayout give exactly the lists the scripts write (a co
   assert.deepEqual([g.status, g.code, g.heldForSpot, g.canRegister, g.canRefund], ["unregistered", "OUTSIDE_WINDOW", true, false, true]);
   await (await kick.connect(owner).refund(await addr(gus), E("0.01"))).wait(); // returned with "Return a stray transfer"
   g = await gusRow();
-  assert.deepEqual([g.status, g.held, g.heldForSpot, g.canRefund], ["unregistered", 0n, false, false]);
+  assert.deepEqual([g.status, g.held, g.heldForSpot, g.canRefund], ["returned", 0n, false, false]);
   // Gus pays late again, and this time she ticks Refund: exactly the deposit back, nothing left to return
   const gusLate2 = await pay(gus, "0.01");
   const gusRow2 = async () => (await core.depositsOverview({ prov, cfg, abi, scanFrom: cfg.deployBlock })).deposits.find((d) => d.tx === gusLate2);
