@@ -688,10 +688,23 @@ test("checkGuests and buildPayout give exactly the lists the scripts write (a co
   const gusLate = await pay(gus, "0.01");
   const gusRow = async () => (await core.depositsOverview({ prov, cfg, abi, scanFrom: cfg.deployBlock })).deposits.find((d) => d.tx === gusLate);
   let g = await gusRow();
-  assert.deepEqual([g.status, g.code, g.heldForSpot, g.canRegister], ["unregistered", "OUTSIDE_WINDOW", true, false]);
+  // it can't be registered, but it can be ticked for Refund (rejectAndRefund accepts any unregistered payer)
+  assert.deepEqual([g.status, g.code, g.heldForSpot, g.canRegister, g.canRefund], ["unregistered", "OUTSIDE_WINDOW", true, false, true]);
   await (await kick.connect(owner).refund(await addr(gus), E("0.01"))).wait(); // returned with "Return a stray transfer"
   g = await gusRow();
-  assert.deepEqual([g.status, g.held, g.heldForSpot], ["unregistered", 0n, false]);
+  assert.deepEqual([g.status, g.held, g.heldForSpot, g.canRefund], ["unregistered", 0n, false, false]);
+  // Gus pays late again, and this time she ticks Refund: exactly the deposit back, nothing left to return
+  const gusLate2 = await pay(gus, "0.01");
+  const gusRow2 = async () => (await core.depositsOverview({ prov, cfg, abi, scanFrom: cfg.deployBlock })).deposits.find((d) => d.tx === gusLate2);
+  g = await gusRow2();
+  assert.deepEqual([g.status, g.code, g.canRegister, g.canRefund], ["unregistered", "OUTSIDE_WINDOW", false, true]);
+  const gusBal = await prov.getBalance(await addr(gus));
+  await (await kick.connect(owner).rejectAndRefund([await addr(gus)])).wait();
+  assert.equal((await prov.getBalance(await addr(gus))) - gusBal, E("0.01"));
+  const afterLate = await core.depositsOverview({ prov, cfg, abi, scanFrom: cfg.deployBlock });
+  g = afterLate.deposits.find((d) => d.tx === gusLate2);
+  assert.deepEqual([g.status, g.held, g.heldForSpot, g.canRefund], ["refunded", 0n, false, false]);
+  assert.deepEqual(afterLate.returns.filter((x) => x.wallet === g.from), []);
   const afterCsv = [H, ...(await lines({ Ana: "2027-03-12T19:30:00.000Z", Hal: "2027-03-12T19:40:00.000Z" }))].join("\n");
   fs.writeFileSync(path.join(dir, "after.csv"), afterCsv);
   const doorCsv = "email,note\ncai@x.io,came late\nnobody@x.io,\n";

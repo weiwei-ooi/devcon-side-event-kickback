@@ -763,8 +763,8 @@ check("config contract: load deposits from the config's deployBlock", await clic
 const r3 = await rows();
 check("config contract: the deposit before deployBlock is not listed; the on-time one can be ticked for Register",
   r3.length === 2 && !(await rowOf(ana)) && (await rowOf(ben))?.reg && /received, not registered/.test((await rowOf(ben)).text), JSON.stringify(r3));
-check("config contract: the deposit after depositDeadline shows OUTSIDE_WINDOW and can't be ticked",
-  /OUTSIDE_WINDOW/.test((await rowOf(cai))?.text) && !(await rowOf(cai)).reg && !(await rowOf(cai)).ref, (await rowOf(cai))?.text);
+check("config contract: the deposit after depositDeadline shows OUTSIDE_WINDOW: Refund can be ticked, Register can't",
+  /OUTSIDE_WINDOW/.test((await rowOf(cai))?.text) && !(await rowOf(cai)).reg && (await rowOf(cai)).ref, (await rowOf(cai))?.text);
 dBefore = dialogs.length;
 n0 = await nonce();
 check("config contract: Register all paid guests", await click("registerAll", /Registered 1 guest\./), await logText());
