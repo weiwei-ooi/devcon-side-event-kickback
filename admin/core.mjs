@@ -1674,7 +1674,8 @@ export async function checkGuests({ prov, cfg, abi, rows, scanFrom, contract, lo
  *     it is staked, or nothing was returned from it that would leave less than the deposit), canRegister, canRefund }
  * canRegister: registerStakers accepts the wallet for this deposit (only before the attendance list is
  * posted). canRefund: rejectAndRefund sends this deposit back (an unregistered payer whose deposit is
- * held, in any phase, or a registered staker while the attendance list is not posted). Money beyond one deposit (overpaid, short, late) is in `returns`, to
+ * held, in any phase, a late payer whose whole deposit is still held, or a registered staker while the
+ * attendance list is not posted). Money beyond one deposit (overpaid, short, late) is in `returns`, to
  * give back with refund(). Also returns the whole checkGuests result as `check` (null when no deposit came in yet).
  */
 export async function depositsOverview({ prov, cfg, abi, scanFrom, contract, log = QUIET }) {
@@ -1698,13 +1699,15 @@ export async function depositsOverview({ prov, cfg, abi, scanFrom, contract, log
     const pairing = check.byDeposit.get(key);
     const s = check.statusOf.get(d.from.toLowerCase());
     const status = r.onchain ?? (s === undefined ? "unknown" : LABEL[s]);
+    // the contract still holds a whole deposit of this payment for a spot: staked, or not returned (in full or in part)
+    const heldForSpot = !!pairing && (pairing.staked || pairing.remaining >= cfg.depositUnits);
+    // a late payment can't be registered, but rejectAndRefund sends it back like any unregistered payer's deposit
+    const lateHeld = r.code === "OUTSIDE_WINDOW" && status === "unregistered" && heldForSpot;
     out.push({
       tx: d.tx, from: d.from, amount: d.amount, block: d.block, sentAt: r.sent_at ?? "", explorer: `${cfg.explorer}/tx/${d.tx}`,
-      status, held: pairing ? pairing.remaining : 0n, code: r.code ?? "", note: r.note ?? "",
-      // the contract still holds a whole deposit of this payment for a spot: staked, or not returned (in full or in part)
-      heldForSpot: !!pairing && (pairing.staked || pairing.remaining >= cfg.depositUnits),
+      status, held: pairing ? pairing.remaining : 0n, code: r.code ?? "", note: r.note ?? "", heldForSpot,
       canRegister: reviewable.has(key) && check.listOpen, // registerStakers only works before the attendance list
-      canRefund: (reviewable.has(key) && status === "unregistered") || (r.code === "VERIFIED" && status === "registered" && check.listOpen),
+      canRefund: (reviewable.has(key) && status === "unregistered") || lateHeld || (r.code === "VERIFIED" && status === "registered" && check.listOpen),
     });
   }
   return { deposits: out, returns: check.returns, check };
