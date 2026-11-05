@@ -1698,7 +1698,9 @@ export async function depositsOverview({ prov, cfg, abi, scanFrom, contract, log
     const r = byKey.get(key) ?? check.results.find((x) => x.tx === d.tx) ?? {};
     const pairing = check.byDeposit.get(key);
     const s = check.statusOf.get(d.from.toLowerCase());
-    const status = r.onchain ?? (s === undefined ? "unknown" : LABEL[s]);
+    const was = r.onchain ?? (s === undefined ? "unknown" : LABEL[s]);
+    // a late or short payment given back in full with refund() ('Return a stray transfer') changes no status
+    const status = was === "unregistered" && pairing && !pairing.staked && pairing.remaining === 0n ? "returned" : was;
     // the contract still holds a whole deposit of this payment for a spot: staked, or not returned (in full or in part)
     const heldForSpot = !!pairing && (pairing.staked || pairing.remaining >= cfg.depositUnits);
     // a late payment can't be registered, but rejectAndRefund sends it back like any unregistered payer's deposit
