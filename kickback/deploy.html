@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deploy the protocol · Proof of Presence</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="img/kleros-symbol.svg" type="image/svg+xml">
+<script src="config.js"></script>
+<script src="chrome.js"></script>
+<script type="importmap">{ "imports": { "ethers": "./vendor/ethers.min.js" } }</script>
+</head>
+<body>
+<header class="top"></header>
+<main class="narrow">
+  <h1>Deploy the protocol</h1>
+  <p class="lead">Done once per network, by whoever runs a copy of this site. It deploys three contracts from your wallet: the case writer (the jurors' case template), the event implementation (Kleros settings) and the factory organisers use. None of them has an owner afterwards.</p>
+  <div class="note warn">Most people never need this page: on Ethereum mainnet use the existing deployment. Deploying costs gas for about 8 million gas units.</div>
+  <div class="card">
+    <label for="resolver">Kleros Dispute Resolver</label><input id="resolver" class="mono">
+    <div class="two">
+      <div><label for="court">Court ID</label><input id="court" inputmode="numeric"></div>
+      <div><label for="jurors">Jurors</label><input id="jurors" inputmode="numeric"></div>
+    </div>
+    <label for="policy">Juror policy on IPFS <small>(/ipfs/Qm…/attendance-policy.md)</small></label><input id="policy" class="mono">
+    <div class="row"><button id="pin" class="secondary">Upload docs/attendance-policy.md to IPFS (Kleros)</button></div>
+    <div class="two">
+      <div><label for="chP">Challenge window (hours)</label><input id="chP" value="24"></div>
+      <div><label for="maP">Match window (hours)</label><input id="maP" value="24"></div>
+    </div>
+    <div class="row"><button id="deploy">Connect wallet and deploy</button></div>
+    <div id="note" class="note" hidden></div>
+    <label for="out">Add this to <code>deployments/</code> in your copy of the repository, then rebuild:</label>
+    <textarea id="out" readonly></textarea>
+  </div>
+</main>
+<footer class="site"></footer>
+<script>popChrome();</script>
+<script type="module">
+import { ethers, P, NET, connect, sendTx, artifact, uploadToKleros, say, action, $, esc, txUrl } from "./app.js";
+const k = NET.kleros ?? {};
+$("#resolver").value = k.disputeResolver ?? "";
+$("#court").value = k.subcourt ?? 0;
+$("#jurors").value = k.jurors ?? 3;
+$("#policy").value = NET.policyURI ?? "";
+action($("#pin"), "#note", async () => {
+  const text = await fetch("docs/attendance-policy.md").then((r) => r.text());
+  const want = P.ipfsPathOf(text);
+  const got = await uploadToKleros(text, "attendance-policy.md", "file");
+  $("#policy").value = got;
+  say("#note", `Uploaded: ${esc(got)}${got === want ? " (matches the file)" : ""}.`, "ok");
+});
+action($("#deploy"), "#note", async () => {
+  const me = await connect();
+  const policyURI = $("#policy").value.trim();
+  if (!/^\/ipfs\/\w+/.test(policyURI)) throw new Error("Upload the juror policy first (or paste its /ipfs/ path).");
+  const art = Object.fromEntries(await Promise.all(["PresenceCaseWriter", "PresenceEvent", "PresenceFactory"].map(async (n) => [n, await artifact(n)])));
+  const templateText = await fetch("docs/metaevidence.template.json").then((r) => r.text());
+  const block = await me.provider.getBlockNumber();
+  const d = await P.deployProtocol(me.signer, art, {
+    disputeResolver: $("#resolver").value.trim(), extraData: P.extraDataOf(Number($("#court").value), Number($("#jurors").value)), policyURI, templateText,
+    network: NET.name, explorer: NET.explorer, challengePeriod: Math.round(Number($("#chP").value) * 3600), matchPeriod: Math.round(Number($("#maP").value) * 3600),
+  }, (name, tx) => say("#note", `${esc(name)}: <a href="${txUrl(tx.hash)}" rel="noopener">sent</a>, waiting…`, "busy"));
+  const out = { chainId: Number(NET.chainId), factory: d.factory, implementation: d.implementation, caseWriter: d.caseWriter, fromBlock: block, policyURI,
+    disputeResolver: $("#resolver").value.trim(), subcourt: Number($("#court").value), jurors: Number($("#jurors").value), deployedBy: me.address, deployedAt: new Date().toISOString() };
+  $("#out").value = JSON.stringify(out, null, 2);
+  say("#note", "Deployed.", "ok");
+});
+</script>
+</body>
+</html>

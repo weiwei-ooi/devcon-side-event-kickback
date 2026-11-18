@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Create a kickback event · Proof of Presence</title>
+<meta name="description" content="Create an event with refundable deposits and a Kleros attendance challenge, in one transaction.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="img/kleros-symbol.svg" type="image/svg+xml">
+<script src="config.js"></script>
+<script src="chrome.js"></script>
+<script type="importmap">{ "imports": { "ethers": "./vendor/ethers.min.js" } }</script>
+</head>
+<body>
+<header class="top"><div class="slot"><button id="connect" class="secondary">Connect wallet</button></div></header>
+<main class="narrow">
+  <div id="topNote" class="note" hidden></div>
+  <span class="eyebrow">New event</span>
+  <h1>Create your <em>kickback event</em></h1>
+  <p class="lead">Fill this in and confirm one transaction in your wallet. Your wallet becomes the organiser, and you get a link to share with guests.</p>
+    <div class="card">
+      <label for="fName">Event name <small>(shown to guests and to Kleros jurors; no quotes or backslashes)</small></label>
+      <input id="fName" maxlength="200" placeholder="Builders Dinner, Berlin">
+      <label for="fUrl">Event page <small>(optional, e.g. your Luma link)</small></label>
+      <input id="fUrl" placeholder="https://luma.com/…">
+      <div class="two">
+        <div><label for="fStart">Starts <small>(your time)</small></label><input id="fStart" type="datetime-local"></div>
+        <div><label for="fEnd">Ends <small>(deposits stay open until then)</small></label><input id="fEnd" type="datetime-local"></div>
+      </div>
+      <div class="two">
+        <div><label for="fAsset">Deposit in</label>
+          <select id="fAsset"><option value="eth">ETH</option><option value="token">An ERC-20 token (e.g. USDC)</option></select></div>
+        <div><label for="fAmount">Deposit amount</label><input id="fAmount" inputmode="decimal" value="0.01"></div>
+      </div>
+      <div id="tokenRow" hidden><label for="fToken">Token address <small>(no fee-on-transfer tokens)</small></label><input id="fToken" placeholder="0x…"><div id="tokenInfo" class="small muted"></div></div>
+      <div class="two">
+        <div><label for="fCap">Capacity <small>(0 = no limit)</small></label><input id="fCap" inputmode="numeric" value="0"></div>
+        <div><label for="fDays">Days after the end to post the list <small>(at least 7)</small></label><input id="fDays" inputmode="numeric" value="14"></div>
+      </div>
+      <p class="small muted" style="margin-top:16px">Fixed for every event: after you close the attendance list, guests left off have <span class="pCh">1 day</span> to challenge it and anyone has <span class="pMa">1 day</span> to match a challenge, which opens a Kleros case. These settings cannot be changed after creation.</p>
+      <div class="row"><button id="create" class="big">Create event</button></div>
+      <div id="createNote" class="note" hidden></div>
+    </div>
+  <p class="small muted">Costs only the network fee (about 400,000 gas). The organiser can give deposits back, post the list and pay everyone out, but can never keep deposits.</p>
+</main>
+<footer class="site"></footer>
+<script>popChrome();</script>
+<script type="module">
+import { ethers, P, NET, deployed, factory, connect, sendTx, errorInterface, plainError, txUrl, duration, short, say, action, $, notDeployedNote, reader } from "./app.js";
+let me;
+$("#netName").textContent = NET.name ? `Network: ${NET.name}` : "";
+action($("#connect"), "#topNote", async () => {
+  me = await connect();
+  $("#connect").textContent = short(me.address);
+});
+$("#fAsset").onchange = () => {
+  $("#tokenRow").hidden = $("#fAsset").value !== "token";
+  if ($("#fAsset").value === "token" && $("#fAmount").value === "0.01") $("#fAmount").value = "25";
+};
+let tokenMeta;
+$("#fToken").onchange = async () => {
+  tokenMeta = null;
+  const t = $("#fToken").value.trim();
+  if (!ethers.isAddress(t)) return ($("#tokenInfo").textContent = "Not an address.");
+  try {
+    const c = new ethers.Contract(t, ["function symbol() view returns (string)", "function decimals() view returns (uint8)"], reader());
+    tokenMeta = { symbol: await c.symbol(), decimals: Number(await c.decimals()) };
+    $("#tokenInfo").textContent = `${tokenMeta.symbol}, ${tokenMeta.decimals} decimals.`;
+  } catch {
+    $("#tokenInfo").textContent = "This address does not answer like an ERC-20 token on " + (NET.name ?? "this network") + ".";
+  }
+};
+const tsOf = (v) => (v ? Math.floor(new Date(v).getTime() / 1000) : 0);
+action($("#create"), "#createNote", async () => {
+  if (!me) me = await connect();
+  const isToken = $("#fAsset").value === "token";
+  if (isToken && !tokenMeta) throw new Error("Enter a token address that answers like an ERC-20 token.");
+  const decimals = isToken ? tokenMeta.decimals : 18;
+  let units;
+  try { units = ethers.parseUnits($("#fAmount").value.trim(), decimals); } catch { throw new Error("The deposit amount is not a number."); }
+  const end = tsOf($("#fEnd").value);
+  const cfg = P.eventConfig({
+    name: $("#fName").value, url: $("#fUrl").value, token: isToken ? $("#fToken").value.trim() : ethers.ZeroAddress, depositAmount: units,
+    eventStart: tsOf($("#fStart").value), eventEnd: end, claimDeadline: end + Number($("#fDays").value || 0) * 86400, capacity: Number($("#fCap").value || 0),
+  });
+  const f = await factory(me.signer);
+  const tuple = [cfg.name, cfg.url, cfg.token, cfg.depositAmount, cfg.eventStart, cfg.eventEnd, cfg.claimDeadline, cfg.capacity];
+  await f.createEvent.staticCall(tuple).catch((e) => { throw new Error(plainError(e)); });
+  say("#createNote", "Confirm in your wallet…", "busy");
+  const r = await sendTx(f.createEvent(tuple), (h) => say("#createNote", `Creating… <a href="${txUrl(h)}" rel="noopener">view</a>`, "busy"));
+  const log = r.logs.map((l) => { try { return f.interface.parseLog(l); } catch { return null; } }).find((x) => x?.name === "EventCreated");
+  location.href = `organiser.html?e=${log.args.eventContract}`;
+});
+errorInterface().catch(() => {});
+if (!deployed()) say("#topNote", notDeployedNote(), "warn");
+</script>
+</body>
+</html>

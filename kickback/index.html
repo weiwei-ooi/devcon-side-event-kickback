@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proof of Presence · Powered by Kleros</title>
+<meta name="description" content="Kickback deposits for events: guests book with a refundable deposit, everyone who shows up shares the no-shows' deposits, and Kleros Court settles any dispute about who came.">
+<link rel="icon" href="img/kleros-symbol.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+<script src="config.js"></script>
+<script src="chrome.js"></script>
+<script type="importmap">{ "imports": { "ethers": "./vendor/ethers.min.js" } }</script>
+</head>
+<body>
+<header class="top"></header>
+<main class="home">
+  <section class="hero-band">
+    <span class="symbol bg-symbol" aria-hidden="true"></span>
+    <div class="hero">
+      <div class="hero-copy">
+        <span class="eyebrow">Kickback deposits for events</span>
+        <h1>Show up. <em>Get paid.</em></h1>
+        <p class="lead">Guests book a spot with a small refundable deposit. Everyone who comes gets it back, plus a share of the no-shows' deposits. If someone is left off the list, Kleros jurors decide.</p>
+        <div class="row">
+          <a class="button big" id="createBtn" href="create.html">Create your kickback event</a>
+          <a class="button big secondary" href="#find">Find an event</a>
+        </div>
+        <a class="powered" href="https://kleros.io" rel="noopener">Powered by <span class="logo" role="img" aria-label="Kleros"></span></a>
+      </div>
+      <div class="pool-card" aria-label="Example">
+        <span class="eyebrow">Example: 10 guests book, 0.01 ETH each</span>
+        <div class="pool-line"><span>Pool</span><b>0.10 ETH</b></div>
+        <div class="pool-line"><span>Guests who came</span><b>8</b></div>
+        <div class="pool-line win"><span>Each guest who came gets</span><b>0.0125 ETH</b></div>
+        <div class="pool-line lose"><span>Each no-show gets</span><b>0</b></div>
+        <span class="small muted">Their deposit back, plus an equal share of the 2 no-shows' deposits.</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="section-h"><h2>How it works</h2></div>
+    <div class="steps3">
+      <div class="card"><span class="num">1</span><h3>Book a spot</h3><p>Guests send the deposit (ETH or the event's token) from their own wallet and are in at once. Booking stays open until the event ends, so walk-ins can book at the door.</p></div>
+      <div class="card"><span class="num">2</span><h3>Show up</h3><p>After the event, the organiser posts who came. Anyone left off has a day to challenge it.</p></div>
+      <div class="card"><span class="num">3</span><h3>Get paid</h3><p>The pool is split equally among everyone who came. No-shows lose their deposit. The organiser can never keep it.</p></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="kleros-band">
+      <span class="symbol" aria-hidden="true"></span>
+      <div>
+        <h2>Fair lists, <em>settled by Kleros</em></h2>
+        <p>Every event has the Kleros challenge built in. A guest left off the list can say "I was there". If anyone disagrees, the case goes to <a href="https://court.kleros.io" rel="noopener">Kleros Court</a>, where independent jurors follow a public <a href="docs/attendance-policy.md">attendance policy</a>. No admin, no upgrades: nobody can change the rules or move deposits.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="find">
+    <div class="section-h"><h2>Find an event</h2></div>
+    <div class="find"><input id="addr" placeholder="Paste the event address (0x…)" autocomplete="off" aria-label="Event address"><button id="go">Open</button></div>
+    <div id="findNote" class="note" hidden></div>
+    <p class="small muted">Anyone can create an event, so a name proves nothing: book only through the link the organiser gave you.</p>
+    <div id="recent" class="muted">Loading…</div>
+  </section>
+
+  <section class="section">
+    <div class="promo">
+      <span id="ghIcon"></span>
+      <div class="promo-text"><b>Open source. Fork it, plug it in.</b>Use this site, host your own copy on Netlify, or run it on another chain. MIT licensed.</div>
+      <div class="row"><a class="button secondary" id="repoLink" href="#" rel="noopener">View on GitHub</a></div>
+    </div>
+  </section>
+</main>
+<footer class="site"></footer>
+<script>popChrome(); document.getElementById("ghIcon").innerHTML = POP_ICONS.github; document.getElementById("repoLink").href = POP_REPO;</script>
+<script type="module">
+import { NET, deployed, factory, eventContract, esc, short, say, $, notDeployedNote, when } from "./app.js";
+$("#netName").textContent = NET.name ? `Network: ${NET.name}` : "";
+$("#go").onclick = () => {
+  const a = $("#addr").value.trim();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(a)) return say("#findNote", "Paste the event's address (0x followed by 40 characters).", "err");
+  location.href = `event.html?e=${a}`;
+};
+$("#addr").onkeydown = (e) => e.key === "Enter" && $("#go").click();
+(async () => {
+  if (!deployed()) return ($("#recent").innerHTML = `<div class="note warn">${notDeployedNote()}</div>`);
+  try {
+    const f = await factory();
+    const n = Number(await f.eventCount());
+    if (!n) return ($("#recent").textContent = "No events yet. Be the first!");
+    const list = [...(await f.events(Math.max(0, n - 8), 8))].reverse();
+    const rows = await Promise.all(list.map(async (a) => {
+      const ev = await eventContract(a);
+      const [name, start] = await Promise.all([ev.eventName(), ev.eventStart()]);
+      return `<li><a href="event.html?e=${a}"><b>${esc(name)}</b><span>${esc(when(Number(start)))} · ${short(a)}</span></a></li>`;
+    }));
+    $("#recent").innerHTML = `<p class="eyebrow" style="margin:22px 0 10px">Recent events</p><ul class="event-list">${rows.join("")}</ul>`;
+  } catch (e) {
+    $("#recent").textContent = "Could not read the network right now. Try again in a minute.";
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Book your spot · Proof of Presence</title>
+<meta name="description" content="Book your spot at an event with a refundable deposit.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="img/kleros-symbol.svg" type="image/svg+xml">
+<script src="config.js"></script>
+<script src="chrome.js"></script>
+<script type="importmap">{ "imports": { "ethers": "./vendor/ethers.min.js" } }</script>
+</head>
+<body>
+<header class="top"><div class="slot"><a id="orgLink" class="nav hide-s" href="organiser.html">Organiser view</a><button id="connectTop" class="secondary">Connect wallet</button></div></header>
+<main class="narrow">
+  <div id="loadNote" class="note">Loading the event…</div>
+  <section id="ev" hidden>
+    <span id="phase" class="pill"></span>
+    <h1 id="name"></h1>
+    <p class="lead" id="when"></p>
+    <dl class="facts card">
+      <dt>Deposit</dt><dd id="deposit"></dd>
+      <dt>Booked</dt><dd id="booked"></dd>
+      <dt>Deposits close</dt><dd id="closes"></dd>
+      <dt>Organiser</dt><dd><a id="organiser" class="mono" rel="noopener"></a></dd>
+      <dt>Event page</dt><dd id="url"></dd>
+      <dt>Contract</dt><dd><a id="contract" class="mono" rel="noopener"></a></dd>
+    </dl>
+
+    <div class="card" id="book">
+      <h2>Book your spot</h2>
+      <p class="small muted" id="rules"></p>
+      <div class="step" id="s1"><div class="n">1</div><div style="flex:1"><b>Connect your wallet</b><div class="small muted" id="netHint"></div>
+        <div class="row"><button id="connect">Connect wallet</button></div></div></div>
+      <div class="step" id="s2" style="margin-top:14px"><div class="n">2</div><div style="flex:1"><b id="payLabel">Send the deposit</b>
+        <div class="small muted" id="payHint"></div>
+        <div class="row"><button id="approve" hidden>Allow the deposit</button><button id="pay" disabled>Send deposit</button></div></div></div>
+      <div class="step" id="s3" style="margin-top:14px"><div class="n">3</div><div style="flex:1"><b>Keep the receipt and go back</b>
+        <div class="small muted">Paste the transaction link where the organiser asked for it (for example your registration).</div>
+        <div class="row" id="receipt" hidden><input id="txLink" readonly><button id="copy" class="secondary">Copy link</button><a id="back" class="button secondary" rel="noopener">Back to the event page</a></div></div></div>
+      <div id="bookNote" class="note" hidden></div>
+    </div>
+
+    <div class="card" id="mine" hidden>
+      <h2>Your spot</h2>
+      <p id="mineText"></p>
+      <div id="challengeBox" hidden>
+        <p class="small">You are not on the attendance list. If you were there, challenge the list before <b id="chEnds"></b>. You pay a challenge deposit of <b id="chDeposit"></b> (the Kleros fee). If nobody matches it within <span id="matchWin"></span>, you are added and get it back. If someone matches it, Kleros jurors decide, and the winner gets what is left of both deposits.</p>
+        <div class="row"><button id="challenge">Challenge the list</button></div>
+      </div>
+      <div id="caseBox" hidden>
+        <p class="small" id="caseText"></p>
+        <details><summary>Send evidence to the jurors</summary>
+          <label for="evTitle">Title</label><input id="evTitle" placeholder="Photo of me at the venue">
+          <label for="evText">What it shows <small>(you can paste a link to a photo or a post)</small></label><textarea id="evText"></textarea>
+          <div class="row"><button id="sendEvidence" class="secondary">Send evidence</button></div>
+        </details>
+        <details id="appealBox" hidden><summary>Appeal</summary>
+          <p class="small" id="appealText"></p>
+          <div class="row"><button id="fundAttended" class="secondary">Fund "Attended"</button><button id="fundAbsent" class="secondary">Fund "Did not attend"</button></div>
+        </details>
+      </div>
+      <div id="withdrawBox" hidden>
+        <p><b id="claimText"></b></p>
+        <div class="row"><button id="withdraw">Withdraw to my wallet</button></div>
+      </div>
+      <div id="mineNote" class="note" hidden></div>
+    </div>
+  </section>
+</main>
+<footer class="site"></footer>
+<script>popChrome();</script>
+<script type="module">
+import { plainError as plain, ethers, P, NET, deployed, loadEvent, connect, sendTx, errorInterface, publishCase, uploadToKleros, amount, eth, txUrl, addrUrl, caseUrl, when, duration, nowS, esc, short, say, action, $, notDeployedNote } from "./app.js";
+
+const RESOLVER_ABI = [
+  "function submitEvidence(uint256 localDisputeID, string evidenceURI)",
+  "function fundAppeal(uint256 localDisputeID, uint256 ruling) payable returns (bool)",
+];
+const ERC20 = ["function allowance(address,address) view returns (uint256)", "function approve(address,uint256) returns (bool)", "function balanceOf(address) view returns (uint256)"];
+const addr = new URLSearchParams(location.search).get("e") ?? "";
+let E, me;
+$("#netName").textContent = NET.name ? `Network: ${NET.name}` : "";
+await errorInterface().catch(() => {});
+
+async function load() {
+  E = await loadEvent(addr);
+  document.title = `${E.name} · Book your spot`;
+  $("#orgLink").href = `organiser.html?e=${E.address}`;
+  $("#phase").textContent = { Open: nowS() < E.end ? "Booking open" : "Attendance being posted", Listed: "Attendance list posted", Finalized: "Paid out", Cancelled: "Cancelled" }[E.phase];
+  $("#name").textContent = E.name;
+  $("#when").textContent = `${when(E.start)} to ${when(E.end)}`;
+  $("#deposit").innerHTML = `<b>${esc(amount(E, E.deposit))}</b>` + (E.isEth ? "" : ` <span class="small muted">(token <a class="mono" href="${addrUrl(E.token)}" rel="noopener">${short(E.token)}</a>)</span>`) + ` on ${esc(NET.name ?? "")}`;
+  $("#booked").textContent = E.capacity ? `${E.stakerCount} of ${E.capacity} spots` : `${E.stakerCount} guests`;
+  $("#closes").textContent = when(E.end) + " (when the event ends)";
+  $("#organiser").textContent = E.owner;
+  $("#organiser").href = addrUrl(E.owner);
+  $("#contract").textContent = E.address;
+  $("#contract").href = addrUrl(E.address);
+  const safeUrl = /^https?:\/\//i.test(E.url) ? E.url : "";
+  $("#url").innerHTML = safeUrl ? `<a href="${esc(safeUrl)}" rel="noopener nofollow">${esc(safeUrl)}</a>` : E.url ? esc(E.url) : `<span class="muted">none given</span>`;
+  $("#rules").textContent = `Come to the event and you get your ${amount(E, E.deposit)} back, plus an equal share of the deposits of people who booked and did not come. If you do not come, you lose it. The organiser can turn a guest away before the list is posted; that guest gets the deposit back.`;
+  $("#netHint").textContent = `Your wallet will be asked to switch to ${NET.name ?? "the event's network"}. Only send from ${NET.name ?? "that network"}: a deposit sent on another network does not arrive.`;
+  $("#payLabel").textContent = `Send ${amount(E, E.deposit)}`;
+  $("#payHint").textContent = E.isEth ? "The exact amount is filled in for you. You also pay a small network fee." : `Two steps: allow the event to take ${amount(E, E.deposit)}, then send it. You also pay small network fees in ${NET.currency ?? "ETH"}.`;
+  const open = E.phase === "Open" && nowS() < E.end;
+  $("#book").hidden = !open;
+  if ($("#back")) {
+    $("#back").href = safeUrl || "./";
+    $("#back").textContent = safeUrl ? "Back to the event page" : "Done";
+  }
+  $("#loadNote").hidden = true;
+  $("#ev").hidden = false;
+  if (me) await showMine();
+}
+
+async function showMine() {
+  const ev = E.contract;
+  const [st, att, c, cl] = await Promise.all([ev.status(me.address), ev.attended(me.address), ev.challenges(me.address), ev.claimable(me.address)]);
+  const status = P.STATUS[Number(st)];
+  const cs = P.CHALLENGE_STATES[Number(c.state)];
+  $("#mine").hidden = false;
+  const lines = {
+    None: "This wallet has no deposit for this event.",
+    Staker: att ? "You have a spot and you are on the attendance list." : "You have a spot. See you there!",
+    Rejected: "The organiser turned this wallet away and gave the deposit back.",
+    Refunded: "Your deposit has been given back.",
+  };
+  let text = lines[status];
+  if (status === "Staker" && E.phase === "Finalized" && !att && cs !== "Disputed") text = "You are not on the final attendance list, so your deposit went to the attendees.";
+  if (status === "Staker" && E.phase === "Cancelled") text = "The event was cancelled: take your deposit back below.";
+  $("#mineText").textContent = text;
+  if (status === "Staker") {
+    $("#book").hidden = true;
+  }
+  // challenge
+  const canChallenge = status === "Staker" && !att && E.phase === "Listed" && nowS() <= E.challengeEndsAt && cs === "None";
+  $("#challengeBox").hidden = !canChallenge;
+  if (canChallenge) {
+    $("#chEnds").textContent = when(E.challengeEndsAt);
+    $("#chDeposit").textContent = eth(E.challengeDeposit);
+    $("#matchWin").textContent = duration(E.matchPeriod);
+  }
+  $("#caseBox").hidden = cs === "None";
+  if (cs === "Waiting") $("#caseText").innerHTML = `You challenged the list. If nobody matches your challenge by <b>${esc(when(Number(c.matchEndsAt)))}</b>, you are added to the list and get your challenge deposit back.`;
+  if (cs === "Disputed") $("#caseText").innerHTML = `Your challenge was matched: <a href="${caseUrl(c.arbitratorDisputeID)}" rel="noopener">Kleros case ${c.arbitratorDisputeID}</a>. Send evidence that you were there (photos, posts, people who saw you). A round takes about 3 weeks; your share is set aside until then.`;
+  if (cs === "Resolved") $("#caseText").textContent = att ? "Your challenge was settled: you are on the list." : "Your challenge was settled: the jurors found you did not attend.";
+  $("#caseBox").querySelectorAll("details").forEach((d) => (d.hidden = cs !== "Disputed"));
+  if (cs === "Disputed") await showAppeal(c);
+  // withdraw
+  const total = cl[0] + cl[1];
+  $("#withdrawBox").hidden = total === 0n;
+  if (total > 0n) $("#claimText").textContent = "You can withdraw " + [cl[0] > 0n ? amount(E, cl[0]) : "", cl[1] > 0n ? eth(cl[1]) : ""].filter(Boolean).join(" and ") + ".";
+  me.challenge = c;
+}
+
+async function showAppeal(c) {
+  try {
+    const s = await E.contract.appealStatus(me.address);
+    const t = nowS();
+    if (Number(s.end) === 0 || t >= Number(s.end)) return ($("#appealBox").hidden = true);
+    $("#appealBox").hidden = false;
+    const current = ["no answer (tie or refusal)", "Attended", "Did not attend"][Number(s.ruling)];
+    $("#appealText").innerHTML = `The jurors voted <b>${current}</b>. Until ${esc(when(Number(s.end)))} anyone can appeal by funding an answer: "Attended" needs ${esc(eth(s.costAttended))}, "Did not attend" needs ${esc(eth(s.costAbsent))} (the side that lost the vote must be funded before ${esc(when(Number(s.loserEnd)))}). <b>If only one side is funded, that side wins.</b> Funding goes straight to Kleros's Dispute Resolver, which pays back or rewards funders.`;
+    me.appeal = s;
+  } catch {
+    $("#appealBox").hidden = true;
+  }
+}
+
+async function onConnect() {
+  me = await connect();
+  $("#s1").classList.add("done");
+  $("#connect").textContent = $("#connectTop").textContent = short(me.address);
+  if (!E.isEth) {
+    const t = new ethers.Contract(E.token, ERC20, me.signer);
+    const allowance = await t.allowance(me.address, E.address);
+    $("#approve").hidden = allowance >= E.deposit;
+  }
+  $("#pay").disabled = false;
+  say("#bookNote", "");
+  await showMine();
+}
+action($("#connect"), "#bookNote", onConnect);
+action($("#connectTop"), "#loadNote", onConnect);
+action($("#approve"), "#bookNote", async () => {
+  const t = new ethers.Contract(E.token, ERC20, me.signer);
+  say("#bookNote", "Confirm the approval in your wallet…", "busy");
+  await sendTx(t.approve(E.address, E.deposit));
+  $("#approve").hidden = true;
+  say("#bookNote", "Approved. Now send the deposit.", "ok");
+});
+action($("#pay"), "#bookNote", async () => {
+  if (!$("#approve").hidden) throw new Error("First allow the deposit (the button on the left).");
+  const ev = E.contract.connect(me.signer);
+  await ev.deposit.staticCall({ value: E.isEth ? E.deposit : 0n, from: me.address }).catch((e) => { throw new Error(plain(e)); });
+  say("#bookNote", "Confirm the deposit in your wallet…", "busy");
+  const r = await sendTx(ev.deposit({ value: E.isEth ? E.deposit : 0n }), (h) => say("#bookNote", `Sent. Waiting for the network… <a href="${txUrl(h)}" rel="noopener">view</a>`, "busy"));
+  $("#s2").classList.add("done");
+  $("#txLink").value = txUrl(r.hash);
+  $("#receipt").hidden = false;
+  say("#bookNote", "You're in! Your spot is booked.", "ok");
+  await load();
+  $("#book").hidden = false;
+  $("#connect").disabled = $("#pay").disabled = true;
+});
+$("#copy").onclick = async () => {
+  await navigator.clipboard?.writeText($("#txLink").value).catch(() => {});
+  $("#txLink").select();
+  $("#copy").textContent = "Copied";
+};
+action($("#challenge"), "#mineNote", async () => {
+  const ev = E.contract.connect(me.signer);
+  const cost = await E.contract.challengeDeposit();
+  await ev.challenge.staticCall({ value: cost, from: me.address }).catch((e) => { throw new Error(plain(e)); });
+  say("#mineNote", "Confirm the challenge deposit in your wallet…", "busy");
+  await sendTx(ev.challenge({ value: cost }));
+  // publish this case's description now, so jurors can read it as soon as someone matches
+  await publishCase(E, me.address).catch(() => {});
+  say("#mineNote", "Challenge sent.", "ok");
+  await load();
+});
+action($("#sendEvidence"), "#mineNote", async () => {
+  const name = $("#evTitle").value.trim(), description = $("#evText").value.trim();
+  if (!name || !description) throw new Error("Give your evidence a title and a description.");
+  say("#mineNote", "Saving your evidence on IPFS…", "busy");
+  const uri = await uploadToKleros(JSON.stringify({ name, description }), "evidence.json", "evidence");
+  const resolver = new ethers.Contract(await E.contract.disputeResolver(), RESOLVER_ABI, me.signer);
+  await sendTx(resolver.submitEvidence(me.challenge.localDisputeID, uri));
+  say("#mineNote", `Evidence sent to the jurors (<a href="${caseUrl(me.challenge.arbitratorDisputeID)}" rel="noopener">see the case</a>).`, "ok");
+});
+for (const [id, side, key] of [["#fundAttended", 1, "costAttended"], ["#fundAbsent", 2, "costAbsent"]]) {
+  action($(id), "#mineNote", async () => {
+    const resolver = new ethers.Contract(await E.contract.disputeResolver(), RESOLVER_ABI, me.signer);
+    await sendTx(resolver.fundAppeal(me.challenge.localDisputeID, side, { value: me.appeal[key] }));
+    say("#mineNote", "Appeal funded. Any extra was sent back to you.", "ok");
+    await load();
+  });
+}
+action($("#withdraw"), "#mineNote", async () => {
+  await sendTx(E.contract.connect(me.signer).withdraw(me.address));
+  say("#mineNote", "Sent to your wallet.", "ok");
+  await load();
+});
+
+if (!deployed()) say("#loadNote", notDeployedNote(), "warn");
+else if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) say("#loadNote", 'This link has no event in it. Ask the organiser for the event\'s link, or <a href="./">find the event</a>.', "warn");
+else load().catch((e) => say("#loadNote", esc(e.message ?? e), "err"));
+</script>
+</body>
+</html>
