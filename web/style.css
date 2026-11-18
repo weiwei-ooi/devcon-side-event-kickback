@@ -51,6 +51,19 @@ html, body { margin: 0; }
 html { scroll-padding-top: 80px; }
 body { background: var(--bg); color: var(--fg); font: 17px/1.6 var(--body); -webkit-font-smoothing: antialiased; overflow-x: hidden; min-height: 100vh; display: flex; flex-direction: column; }
 body > main { flex: 1 0 auto; }
+/* Kleros touches: a soft purple glow behind every page, a faint dot grid, and watermark symbols (all decorative) */
+body { background: radial-gradient(1200px 700px at 100% 0%, var(--glow2), transparent 70%), radial-gradient(1000px 600px at 0% 100%, var(--glow2), transparent 70%), var(--bg); }
+.dots { position: absolute; inset: 0; pointer-events: none; opacity: 0.55;
+  background-image: radial-gradient(color-mix(in srgb, var(--accent) 35%, transparent) 1px, transparent 1.4px); background-size: 22px 22px;
+  -webkit-mask: radial-gradient(55% 75% at 80% 30%, #000, transparent 75%); mask: radial-gradient(55% 75% at 80% 30%, #000, transparent 75%); }
+.mark { display: inline-flex; align-items: center; gap: 10px; }
+.mark .symbol { width: 22px; color: var(--lavender); }
+.ring { position: absolute; border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); border-radius: 50%; pointer-events: none; }
+footer.site { position: relative; overflow: hidden; }
+footer.site .bg-symbol { position: absolute; right: -80px; bottom: -120px; width: 380px; color: var(--accent); opacity: var(--symbol-opacity); pointer-events: none; }
+footer.site .cols { position: relative; }
+main:not(.home) { position: relative; }
+.page-symbol { position: absolute; right: -60px; top: 10px; width: 260px; color: var(--accent); opacity: calc(var(--symbol-opacity) * 0.9); pointer-events: none; z-index: -1; }
 a { color: var(--lavender); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 img { max-width: 100%; }
@@ -159,6 +172,9 @@ li { margin: 4px 0; }
 .hero-band { position: relative; overflow: hidden; border-bottom: 1px solid var(--line);
   background: radial-gradient(60% 90% at 85% 10%, var(--glow), transparent 70%), radial-gradient(50% 80% at 0% 100%, var(--glow2), transparent 70%), var(--bg); }
 .hero-band .bg-symbol { position: absolute; right: -110px; top: -90px; width: 520px; color: var(--accent); opacity: var(--symbol-opacity); pointer-events: none; }
+.hero-band .bg-symbol.small { right: auto; top: auto; left: -70px; bottom: -80px; width: 220px; opacity: calc(var(--symbol-opacity) * 0.8); transform: rotate(18deg); }
+.hero-band .ring.r1 { width: 640px; height: 640px; right: -240px; top: -220px; }
+.hero-band .ring.r2 { width: 900px; height: 900px; right: -370px; top: -350px; opacity: 0.6; }
 .hero { position: relative; z-index: 1; max-width: 1080px; margin: 0 auto; padding: var(--s-8) 16px var(--s-7); display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: var(--s-7); align-items: center; }
 .hero-copy { display: grid; gap: var(--s-4); }
 .hero-copy h1 { font-size: clamp(2.6rem, 6vw, 4.2rem); line-height: 1.02; margin: 0; }
@@ -176,6 +192,8 @@ li { margin: 4px 0; }
 .pool-line.lose b { color: var(--rec); }
 .steps3 { display: grid; gap: 14px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .steps3 .card { margin: 0; }
+.steps3 .card { position: relative; overflow: hidden; }
+.steps3 .card::after { content: ""; position: absolute; right: -26px; bottom: -26px; width: 96px; height: 96px; background: var(--accent); opacity: 0.06; -webkit-mask: url(img/kleros-symbol.svg) center / contain no-repeat; mask: url(img/kleros-symbol.svg) center / contain no-repeat; }
 .steps3 .num { font: italic 400 2rem/1 var(--display); color: var(--lavender); }
 .steps3 h3 { margin: 10px 0 6px; font-size: 1.08rem; }
 .steps3 p { margin: 0; color: var(--muted); font-size: 0.95rem; }
@@ -197,6 +215,7 @@ li { margin: 4px 0; }
 .find { display: flex; gap: 10px; flex-wrap: wrap; }
 .find input { flex: 1 1 260px; width: auto; }
 @media (max-width: 860px) {
+  .ring, .page-symbol { display: none; }
   .hero { grid-template-columns: minmax(0, 1fr); gap: var(--s-6); padding-block: var(--s-6) var(--s-6); }
   .steps3 { grid-template-columns: minmax(0, 1fr); }
   .promo { grid-template-columns: auto minmax(0, 1fr); }
