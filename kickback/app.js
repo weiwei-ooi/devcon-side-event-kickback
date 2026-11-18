@@ -233,5 +233,5 @@ export function action(btn, out, fn) {
 }
 
 export function notDeployedNote() {
-  return `Proof of Presence is not deployed on ${esc(NET.name ?? "this network")} yet. A developer deploys it once with the <a href="deploy.html">deploy page</a>, then adds the addresses to <code>deployments/</code>.`;
+  return `<b>Opening soon.</b> Kickback events on ${esc(NET.name ?? "this network")} are not open yet, so you can look around but cannot create an event or book a spot today. Check back shortly.`;
 }
