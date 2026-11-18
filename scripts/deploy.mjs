@@ -1,40 +1,40 @@
 #!/usr/bin/env node
-// Deploy TruthPaysKickback (developers only; the organiser deploys from the owner console).
+// Developers only: deploys the protocol from a private key and writes deployments/<network>.json.
+// Organisers never need this, and nobody needs it on a network that already has a deployment.
+// The deploy page (deploy.html) does the same from a browser wallet, without a private key.
 //
-//   PRIVATE_KEY=0x… node scripts/deploy.mjs [--config config.json] [--owner 0x…]
-//
-// The deployer only pays gas; --owner (or config.owner) becomes the contract owner.
-// Timing comes from config: the attendance list can be posted from "eventStart"; after
-// "claimDeadline" (at least 7 days later) it can no longer be posted and stakers can withdraw.
-// Kleros settings come from config.kleros (see klerosConfig in lib.mjs): Kleros Court v1 through
-// the Dispute Resolver, court and jurors, the pinned juror policy (required in live mode) and the
-// case description template (each Kleros case gets its own description, written by the contract).
+//   PRIVATE_KEY=0x… RPC_URL=https://… POLICY_URI=/ipfs/Qm…/attendance-policy.md \
+//   [NETWORK=ethereum] [RESOLVER=0x…] [SUBCOURT=0] [JURORS=3] [CHALLENGE_HOURS=24] [MATCH_HOURS=24] npm run deploy
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { ethers } from "ethers";
-import { args, loadConfig, provider, loadAbi, deployArgs, klerosConfig, fmtEth } from "./lib.mjs";
+import { NETWORKS, deployProtocol, extraDataOf, ipfsPathOf } from "./protocol.mjs";
 
-const a = args();
-const cfg = loadConfig(a.config ?? "config.json");
-if (!process.env.PRIVATE_KEY) throw new Error("Set PRIVATE_KEY (deployer, only needs gas)");
-const prov = provider(cfg);
-const chainId = Number(await prov.send("eth_chainId", []));
-if (chainId !== Number(cfg.chainId)) throw new Error(`The RPC is on chain ${chainId}, the config says ${cfg.chainId} (${cfg.chainName}). Stopped.`);
-const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, prov);
-const owner = ethers.getAddress(a.owner ?? cfg.owner ?? wallet.address);
-// [deposit (wei), eventName, owner, eventStart, claimDeadline, [disputeResolver, extraData, template pieces, slots, policyURI]]
-const params = deployArgs(cfg, owner);
-const [deposit, eventName, , start, end, [resolver, , pieces, , policyURI]] = params;
-const k = klerosConfig(cfg);
-
-const { abi, bytecode } = loadAbi("TruthPaysKickback");
-console.log(`Deploying "${eventName}" on ${cfg.chainName} (chain ${cfg.chainId}): deposit ${fmtEth(deposit)}, owner ${owner}`);
-console.log(`  attendance list from ${new Date(start * 1000).toISOString()}, by ${new Date(end * 1000).toISOString()}`);
-console.log(`  Kleros: Dispute Resolver ${resolver}, court ${k.court}, ${k.jurors} jurors`);
-console.log(`  case description template ${k.metaEvidenceTemplate} (${pieces.length - 1} values filled in per case), policy ${policyURI || "(none)"}`);
-const c = await new ethers.ContractFactory(abi, bytecode, wallet).deploy(...params, { chainId: cfg.chainId });
-await c.waitForDeployment();
-const addr = await c.getAddress();
-const receipt = await c.deploymentTransaction().wait();
-const { timestamp } = await prov.getBlock(receipt.blockNumber);
-console.log(`✅ Deployed: ${addr} (block ${receipt.blockNumber})\n   ${cfg.explorer}/address/${addr}`);
-console.log(`Put this in the config: "receiver" and "contract": "${addr}", "deployBlock": "${receipt.blockNumber}", ` +
-  `"depositOpensAt": "${new Date(Number(timestamp) * 1000).toISOString()}". Then share the address as the deposit address (Ethereum mainnet only).`);
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const env = process.env;
+const fail = (m) => (console.error(m), process.exit(1));
+if (!env.PRIVATE_KEY || !env.RPC_URL) fail("Set PRIVATE_KEY and RPC_URL.");
+if (!/^\/ipfs\/\w{46,}/.test(env.POLICY_URI ?? "")) fail("Set POLICY_URI to the juror policy's IPFS path (upload docs/attendance-policy.md first).");
+const prov = new ethers.JsonRpcProvider(env.RPC_URL);
+const { chainId } = await prov.getNetwork();
+const net = NETWORKS[Number(chainId)] ?? {};
+const key = env.NETWORK ?? net.key ?? `chain-${chainId}`;
+const out = path.join(root, "deployments", `${key}.json`);
+if (fs.existsSync(out) && !env.OVERWRITE) fail(`${out} exists already. Use the existing deployment, or set OVERWRITE=1.`);
+const resolver = env.RESOLVER ?? net.kleros?.disputeResolver;
+if (!ethers.isAddress(resolver ?? "")) fail("Set RESOLVER (no Kleros Dispute Resolver is known for this chain).");
+const policyFile = fs.readFileSync(path.join(root, "docs/attendance-policy.md"), "utf8");
+if (env.POLICY_URI.split("/")[2] !== ipfsPathOf(policyFile).split("/")[2] && !env.POLICY_URI.includes("/attendance-policy")) console.warn("Note: POLICY_URI is not the IPFS path of docs/attendance-policy.md as it is now.");
+const signer = new ethers.Wallet(env.PRIVATE_KEY, prov);
+const artifacts = Object.fromEntries(["PresenceCaseWriter", "PresenceEvent", "PresenceFactory"].map((n) => [n, JSON.parse(fs.readFileSync(path.join(root, "build", `${n}.json`), "utf8"))]));
+const subcourt = Number(env.SUBCOURT ?? net.kleros?.subcourt ?? 0), jurors = Number(env.JURORS ?? net.kleros?.jurors ?? 3);
+const fromBlock = await prov.getBlockNumber();
+const d = await deployProtocol(signer, artifacts, {
+  disputeResolver: resolver, extraData: extraDataOf(subcourt, jurors), policyURI: env.POLICY_URI,
+  templateText: fs.readFileSync(path.join(root, "docs/metaevidence.template.json"), "utf8"),
+  network: net.name ?? `chain ${chainId}`, explorer: net.explorer ?? "", challengePeriod: Number(env.CHALLENGE_HOURS ?? 24) * 3600, matchPeriod: Number(env.MATCH_HOURS ?? 24) * 3600,
+}, (n, tx) => console.log(`${n}: ${tx.hash}`));
+const dep = { chainId: Number(chainId), factory: d.factory, implementation: d.implementation, caseWriter: d.caseWriter, fromBlock, policyURI: env.POLICY_URI, disputeResolver: resolver, subcourt, jurors, deployedBy: signer.address, deployedAt: new Date().toISOString() };
+fs.writeFileSync(out, JSON.stringify(dep, null, 2) + "\n");
+console.log(`Saved ${path.relative(root, out)}. Rebuild the site: npm run build`);

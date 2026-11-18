@@ -1,272 +1,99 @@
-# Truth Pays: Kickback-style deposits for Luma
+# Proof of Presence
 
-Guests who want a guaranteed spot send a **refundable deposit in ETH on Ethereum mainnet** (the amount is `deposit` in `config.json`: 0.01 ETH for now, about $23 on 27 Oct 2026). Guests who show up get their deposit back, **plus an equal share of the no-shows' deposits**. Everyone else can still request a free spot, which the hosts approve by hand. A staker who was there but missed at check-in can challenge the attendance list on **Kleros**.
+**Refundable event deposits where showing up pays, with the attendance list open to challenge in Kleros Court.**
 
-```
- Guest                       Organisers                              Contract (Ethereum mainnet)
- ─────                       ──────────                              ───────────────────────────
- send the ETH deposit ───────────────────────────────────────────▶  holds deposits (Deposited event)
- register on Luma, paste
- wallet + tx link ─────────▶ verify-deposits.mjs ──▶ organiser approves / declines on Luma
-                                                ├─▶ approved: registerStakers()  ─▶ public staker list
-                                                └─▶ declined: rejectAndRefund()  ─▶ deposit straight back
- check in at the door ─────▶ Luma check-in app
-                             build-payout.mjs ─────▶ postAttendance(attendees, share)
-                                                     │  1 day: a staker left off the list can challenge() (ETH deposit = Kleros fee)
-                                                     │  1 day: anyone can matchChallenge() → Kleros case; unmatched = attended
-                                                     │  Kleros Court: evidence, votes, appeals (funded on Kleros), final ruling → resolveChallenge()
-                                                     ▼
-                             anyone ───────────────▶ releasePayouts() once no challenge waits for a match
-                                                     ─▶ pool ÷ (attendees + open cases); one share set aside per open case
-```
+Guests book a spot with a small deposit (ETH or any ERC-20 token). After the event, everyone who came shares the whole pool: their deposit back plus an equal share of the no-shows' deposits. If the organiser leaves someone off the attendance list, that guest can challenge it, and [Kleros](https://kleros.io) jurors decide.
 
-**Example (with a 0.01 ETH deposit):** 100 stakers make a 1 ETH pool. If 80 show up, each of them gets **0.0125 ETH** back: their own 0.01 plus 0.0025 from the no-shows.
+It is permissionless: anyone creates an event from the factory with their own deposit, dates and capacity, and runs it from the organiser panel. Built by Kleros, MIT licensed.
 
-## Live deployment (Truth Pays, Ethereum mainnet)
+- **Deposit page** for guests: `event.html?e=<event address>`
+- **Organiser panel**: `organiser.html` (create an event, post the list, handle challenges, pay out)
+- **Deploy page** (once per network): `deploy.html`
 
-| | |
-|---|---|
-| Deposit contract | [`0xd5c6A73c05FA431c748781DaBAA99Fe2590d677D`](https://etherscan.io/address/0xd5c6A73c05FA431c748781DaBAA99Fe2590d677D#code) (source verified on Etherscan, Exact Match) |
-| Deployed | 28 Oct 2026 09:07:59 UTC, block 26290226, tx [`0xddab9133…e184ec`](https://etherscan.io/tx/0xddab913311c6f8f856c6359697c15f8bd33bb5fdd7869e964b16c29efae184ec), from the owner wallet `0x259a1084C2043a7B3b5b288596E05C41b8EFa5d6` |
-| Code | `contracts/TruthPaysKickback.sol` as of commit 21b8f58 (v7), solc 0.8.28, optimizer 200, EVM paris |
-| Settings | 0.01 ETH deposit; attendance list from 4 Nov 2026 18:00 IST; settle by 18 Nov 2026 18:00 IST; Kleros Court v1, General Court, 3 jurors, through the Dispute Resolver `0x4b89…82a4`; juror policy `/ipfs/QmPzb9q9TyHS2jPmoCd1U9eDfZ9Nijh5NSFhhvJGVU7knE` |
-| Guest deposit page | https://weiwei-ooi.github.io/devcon-side-event-kickback/deposit/ (the same page is also at the site root, for older links) |
-| Organiser panel | https://weiwei-ooi.github.io/devcon-side-event-kickback/organiser/ (this event preloaded; connect the owner wallet to register, refund, post the list, handle challenges and pay out) |
-| Luma | Committed Spot needs no approval since 30 Oct ("stake and you're in"); the ticket, the deposit-link question and "How to get in" link the deposit page (event still Private) |
+## How an event works
 
-`deployments/truth-pays-mainnet/` keeps the record (`deployment.json`) and the two files used for the Etherscan verification (`standard-input.json`, `constructor-arguments.txt`), so anyone can check the deployed code again.
+| When | What happens | Who |
+| --- | --- | --- |
+| From creation **until the event ends** | Guests send exactly the deposit and are booked at once. Walk-ins can still book while the event is running. | Guests |
+| Until the list is closed | The organiser can turn a guest away: that guest gets exactly their deposit back. | Organiser |
+| From the event's end until the deadline (at least 7 days later) | The organiser posts who came (in several batches if needed) and closes the list. | Organiser |
+| Challenge window (1 day) | A guest left off the list who says they came pays a challenge deposit equal to the Kleros fee. | Guest |
+| Match window (1 day from each challenge) | Anyone who disagrees pays the same. This opens a Kleros case with a description the contract writes itself (event, wallet, organiser, deposit). If nobody matches, the guest counts as attended and gets the challenge deposit back. | Anyone (usually the organiser) |
+| After the challenge window | Anyone releases the payouts. The pool is split into equal shares, one per attendee and one set aside per open Kleros case, so a case never holds anyone else's money. | Anyone |
+| When a case is ruled (about 3 weeks per round) | Attended: the guest joins the list and gets the set-aside share plus what is left of both challenge deposits. Did not attend (or refused to arbitrate): the set-aside share is split among everyone else, so all attendees end with the same total. | Anyone settles it |
+| Any time after payout | Each person withdraws, or anyone pushes everyone's money in one transaction. A wallet that refuses a payment keeps it claimable. | Anyone |
 
-## What's here
-
-| File | What it does |
-|---|---|
-| `contracts/TruthPaysKickback.sol` | Takes the ETH deposits, keeps a public staker list, publishes the attendance list, runs the Kleros challenge window, and splits the pool equally among attendees. It also refunds declined guests, handles cancellation (full refunds), returns mistaken transfers (spare ETH only), sends back tokens (USDC, for example) sent to it by mistake (`returnToken`, which never moves ETH), keeps failed payments for the guest to claim, lets stakers withdraw their own deposit if the organiser never posts the attendance list, and sweeps rounding dust after settlement. |
-| `scripts/verify-deposits.mjs` | Reads the Luma guest CSV and checks every pasted tx against the contract's `Deposited` events: ETH sent to the deposit contract, from the guest's wallet, at least the deposit amount, inside the deposit window, and not reused. It also lists deposits that nobody claimed. |
-| `scripts/build-payout.mjs` | Matches the Luma check-in export (plus an optional manual list) against the stakers and computes each payout. |
-| `scripts/owner.mjs` | Sends the owner transactions directly, if the owner is a normal wallet (developers only). |
-| `scripts/deploy.mjs` | Deploys the contract (developers only). |
-| `console/` + `scripts/console.mjs` | The owner console: a local page where the organiser clicks buttons and confirms in her wallet. |
-| `site/index.html` + `scripts/build-site.mjs` | The public guest deposit page: switches the wallet to Ethereum mainnet, checks the contract, sends exactly the deposit and gives the Etherscan tx link for Luma. See "Guest deposit page". |
-| `scripts/core.mjs` | The shared logic, used by the scripts, the owner console and the public admin panel alike: deploy arguments and case descriptions, the IPFS path of a text, the Luma list check (`checkGuests`), the payout (`buildPayout`), the deposits table (`depositsOverview`), reading an event from its contract (`readEvent`). It runs in Node and in the browser; `scripts/lib.mjs` re-exports it and adds the file parts. |
-| `scripts/build-admin.mjs` | Builds the public admin panel (`console/index.html` in hosted mode) as four static files. See "Public admin panel and deposit page for any event". |
-| `docs/attendance-policy.generic.md`, `docs/metaevidence.generic.template.json` | The juror policy and case description template for events created from the public admin panel: the same rules as the live ones, with the event's details (title, date and time, place, hosts, link) filled in from the organiser's form. |
-| `docs/attendance-policy.md` | The policy Kleros jurors apply in an attendance case. Pinned on IPFS before the live deploy; `policyURI` in the configs is its IPFS path (see "The juror policy and each case's description"). |
-| `docs/metaevidence.template.json` | The template of each case's description (ERC-1497 "metaevidence": title, description, question, answers, link to the policy). The deploy fills in the event name, deposit, explorer, policy and organiser; the contract then writes one description per case with the guest's wallet and its own address. |
-| `test/` | Contract tests against a local copy of Kleros Court v1 and its Dispute Resolver (guards, wallets that refuse ETH or burn gas, reentrancy, 150 guests, a payout to 150 gas-burning wallets inside one transaction's gas cap, tokens sent by mistake, every challenge and appeal path), an end-to-end test of the scripts on a local chain, browser tests of the guest page and the owner console, and `test/fork.e2e.mjs` (`npm run test:fork`): the whole lifecycle on a local copy of Ethereum mainnet against the real Kleros Dispute Resolver and KlerosLiquid (how to start the copy is in the file's header). |
-
-All the owner transactions are also written out as **Safe Transaction Builder** files (`out/safe-*.json`), for developers who want a Safe to own the contract. The organiser's own setup uses her dedicated Zerion wallet, not a Safe.
-
-## Setup
-
-```bash
-npm install
-npm run compile
-npm test            # ~4 min, runs on a local in-memory chain
-cp -n config.example.json config.json   # only if config.json is missing; then fill it in
-```
-
-There are two configs:
-
-- `config.json`: the **live** event (`"mode": "live"`).
-- `config.rehearsal.json`: a **rehearsal** on Ethereum mainnet with a throwaway contract that is never put on Luma (`"mode": "rehearsal"`, `poolCap` 0.25 ETH safety cap). Run it with `npm run console:rehearsal`.
-
-Both use `"chain": "ethereum"` (chain ID 1, explorer etherscan.io) and the public RPC `https://rpc.mevblocker.io`. Free public RPCs only return old event logs in small pieces, so the scripts read logs in chunks of `logChunk` blocks (5,000 by default) and retry when a request fails. When MEV Blocker doesn't answer (busy, no answer within 20 s, an error page a browser blocks), the pages, the panel and the scripts read through backups instead: publicnode, then drpc, then 1rpc (`BACKUP_RPCS` in `scripts/core.mjs`, checked from a browser on 30 Oct 2026). Only MEV Blocker searches the contract's whole history, so log searches always ask it first and wait and retry while it is busy; publicnode only helps for recent blocks. The guest page shows "Network busy, still trying…" and the organiser panel says so under the button while this happens. `"rpcBackups": false` in a config turns the backups off (a local fork), or a list replaces them. The earlier Arbitrum Sepolia test-network mode (`config.testnet.json`) has been removed.
-
-### Owner console (no code, no private keys)
-
-```bash
-npm run console      # opens http://localhost:8787
-```
-
-The owner console is a local page: **Connect wallet**, **Deploy contract**, **Register stakers**, **Refund declined guests**, **Post attendance list** and, after the challenge window, **Release payouts** (with a challenge list, **Add to the list**, **Dispute** and **Settle** in between), plus (folded away) remove-and-refund one guest, return a stray transfer, return tokens sent by mistake, collect leftovers and cancel. Every button simulates the transaction first and explains any problem in plain words before the wallet opens; reads and fee estimates go through the public RPC so the wallet only signs. The gas limit is the estimate plus 30%, never above 16,777,216 (2^24), the most one Ethereum transaction may use since EIP-7825 (Fusaka). **Register stakers** and **Refund declined guests** refuse a list made for another deposit amount than the contract's (the lists carry the deposit they were checked against). A banner shows whether it is LIVE or a REHEARSAL.
-
-**The owner wallet needs a little ETH on Ethereum mainnet** for network fees. Fees were very low on 27 Oct 2026 (about 0.04 gwei), but they can rise; keep about 0.05 ETH on it, plus the Kleros fee (about 0.0162 ETH today) for each challenge she disputes, and appeal money if a case is appealed.
-
-### Developer alternative (private key in the environment)
-
-Deploy once. The deployer only pays gas, and the given wallet becomes the owner:
-
-```bash
-PRIVATE_KEY=0x… node scripts/deploy.mjs --owner 0xOwnerWallet   # uses eventStart / claimDeadline from config
-```
-
-Put the deployed address in `config.json` as **both** `receiver` and `contract`, the deploy block as `deployBlock` (used to find deposits nobody claimed), set `depositOpensAt` to the deploy time, and share the address as the deposit address. Verify the source on Etherscan (Solidity 0.8.28, optimizer on, 200 runs, EVM `paris`) so guests can use `claim` / `emergencyWithdraw` from Etherscan's "Write contract" tab if they ever need to.
-
-## The juror policy and each case's description
-
-Kleros shows jurors a **case description** (an ERC-1497 "metaevidence" file) for each case, and it links to the **juror policy** (`docs/attendance-policy.md`). Both are fixed in the contract when it is deployed: changing them later needs a new contract.
-
-**Each case has its own description, written by the contract.** It names the event (title, date, venue, hosts, the contract's event name), the exact wallet the jurors rule on, its deposit, the deposit contract (with an Etherscan link to its Read Contract tab, where `challenges(wallet)` shows the case number) and the organiser's wallet, whose evidence counts as the organiser's statement. Its `aliases` label the guest's and the organiser's wallets in both checksummed and lower case, because Kleros Court looks evidence senders up in lower case. At deploy, `scripts/lib.mjs` (`caseTemplate`) fills `docs/metaevidence.template.json` with the event name, deposit, explorer, policy path and organiser wallet, and splits it at `{{wallet}}`, `{{walletLower}}` and `{{contract}}`; the contract stores those pieces (`metaEvidenceTemplate()`). When a challenge is matched, `caseMetaEvidence(staker)` puts the wallet (checksummed and in lower case) and the contract's own address back in, computes the file's IPFS path exactly as `ipfs add` does (CIDv0, `/ipfs/Qm…`), and the contract opens the case with that path (`MetaEvidence` event on the Dispute Resolver). So the wording is fixed in advance and neither side can change it.
-
-The path is only an address: jurors see the text once the file is on IPFS. The console and the guest page upload it to Kleros's IPFS service right before a match and check that the service returns the same path; if that fails, anyone can upload it later and the same path then resolves. `node scripts/owner.mjs case-description --staker 0x…` writes the exact file (`out/case-<wallet>.json`) and prints its path and gateway link.
-
-Before the live deploy, pin the juror policy:
-
-1. Upload `docs/attendance-policy.md` through Kleros's IPFS upload service (`https://kleros-api.netlify.app/.netlify/functions/upload-to-ipfs?operation=file&pinToGraph=false`, multipart field `data`, the same service Kleros's own apps use). It returns `/ipfs/<cid>`. Check the file at `https://cdn.kleros.link/ipfs/<cid>` and that it is byte-identical.
-2. Set that path in `config.json` (and `config.rehearsal.json`) as `kleros.policyURI`. `ipfsPathOf` in `scripts/lib.mjs` computes the same path from the file, so a changed policy shows up as a different path.
-
-The deploy refuses in live mode until `policyURI` is an `/ipfs/…` path, and it refuses earlier pins that describe older versions (`STALE_PINS` in `scripts/lib.mjs`). `kleros.metaEvidenceURI` is gone: a config that still sets it is refused. A rehearsal can be deployed without a policy, but a challenge matched in a rehearsal opens a **real** Kleros case (see "Rehearsal" below).
-
-## Luma setup
-
-1. **Ticket types** (all free on Luma, since the money moves on-chain):
-   - `Committed Spot` with the deposit in its name (for example "Committed Spot (0.01 ETH refundable deposit)"): requires approval. You approve it once the script verifies the deposit.
-   - `Request to Join (Free)`: requires approval and is curated by hand.
-2. **Registration questions:** Turn on the built-in `ETH Address` field. Add a text question named `Deposit tx link`, so the column header contains "tx" or "transaction". If your names differ, set them in `config.columns`, for example `{ "tx": "Your question text", "wallet": "eth_address" }`.
-3. **Exporting:** Go to Guests → Export CSV whenever you want to verify. After the event, export again; the `checked_in_at` column is filled for everyone scanned at the door.
-
-## Running it
-
-**During registration** (re-run as often as you like; it skips anyone already registered):
-
-```bash
-node scripts/verify-deposits.mjs --guests ~/Downloads/luma-guests.csv --scan-from-block <deploy block>
-```
-
-- `out/verified.csv`: every verified payer, with their Luma decision and on-chain status.
-- `out/to-review.csv`: verified payers waiting for your approve / decline on Luma.
-- `out/new-stakers.json`: approved and verified, not yet registered (console: **Register stakers**).
-- `out/refunds.json`: declined payers whose deposit is still held (console: **Refund declined guests**).
-- `out/issues.csv`: email these guests. The codes are explained below.
-- `out/unmatched.csv`: deposits that arrived but that no registration's own wallet claims (amount still to return, net of returns already made). A deposit pasted on Luma by a guest whose wallet did not send it (`WRONG_SENDER`, `UNUSUAL_SENDER`, `AMBIGUOUS_SENDER`) is listed here too, with a note naming the guest: sort it out with them before returning it. So is a deposit whose tx link appears anywhere in a guest's Luma answers, or that came from the ETH address a guest gave on Luma: the note names them, so ask them for the right link before returning anything. A deposit whose row could not be checked yet (`RPC_ERROR`, `TX_PENDING`, `TX_NOT_FOUND`) is left out until the next run.
-- `out/returns.csv`: every other amount to give back with **Return a stray transfer**: short payments, overpaid excess, late payers not declined, a second deposit from the same wallet, paid-again declines, partly returned deposits. Net of what was already returned, so nothing is asked twice.
-- `out/claims.csv`: every Luma row that verified a wallet (duplicates included); `build-payout.mjs` uses it to match check-ins.
-
-All output files are deleted at the start of each run, so a failed run never leaves stale lists. On a real network (`mode` set in the config) the script refuses to run without `deployBlock` or `--scan-from-block`. It also stops, listing nothing, if `deposit` in the config is not the amount the contract was deployed with (`depositAmount()`): every check of a payment uses it. Deposits already returned (declined, or **Return a stray transfer**) are never listed for registration or refund again (`RETURNED_EARLIER`).
-- `out/safe-register.json`: for developers using a Safe (Transaction Builder), or `node scripts/owner.mjs register`.
-
-The contract only accepts ETH while deposits are open (before the attendance list is posted, and not after a cancellation). ETH sent later is refused by the contract and stays in the sender's wallet (they only pay the network fee).
-
-**After the event:**
-
-```bash
-node scripts/build-payout.mjs --checkins ~/Downloads/luma-guests-after.csv [--extra-checkins door-list.csv]
-```
-
-- `out/payout-summary.md`: the numbers to post publicly.
-- `out/payout-plan.json`: the attendee list and per-person share that **Post attendance list** sends; it refuses if the on-chain numbers changed.
-- `out/safe-post-attendance.json`: for developers using a Safe, or `node scripts/owner.mjs post-attendance`.
-- **Challenge window (1 day after posting):** watch the challenge list in the console. If a challenger really was there (you recognise them, a host saw them), click **Add to the list** before anyone matches: their ETH deposit goes back and no Kleros case is needed. Once a challenge is matched, the Kleros case runs and **Add to the list** is refused for that wallet. If you then realise they were there, say so in the case by sending evidence (the policy tells jurors to rule "Attended" when the organiser confirms it). If you are sure they were not there, **Dispute** sends the case to Kleros (the same ETH deposit as the challenger, about 0.0162 ETH today, from your wallet; one round takes about 3 weeks). Otherwise do nothing: an unmatched challenge counts as attended after 1 day. If the Kleros fee more than doubles within a challenge's 1-day match window, the match is refused and the challenge counts as attended.
-- **Case description (with each match):** each case's description already names the event and the wallet the jurors rule on (see "The juror policy and each case's description"). The console uploads it to IPFS right before **Dispute** and links it in the challenge list ("case description ↗"); if the upload fails it says so, and **Publish case description** retries. A "Challenge details" evidence (Kleros case number, Etherscan links) is optional.
-- **Kleros appeals:** after each jury vote the challenge list shows the vote, the appeal deadlines and how much ETH each answer has raised. Either side (or anyone) can fund an answer. The answer the jurors voted for needs the appeal fee + 100% and can be funded until the end of the appeal period (108 hours in the General Court); any other answer (both, after a tie or a refusal) needs the fee + 200% and only has the first half of the period. When both are fully funded, a larger jury votes again (about 3 more weeks). If the period ends without both answers fully funded, the case is over: the vote stands, unless exactly one answer was fully funded, which then wins. Then the final ruling is delivered to the contract (often done by Kleros's own bots; the console can do it too), and **Settle**. Appeal money goes straight from the funder's wallet to Kleros's Dispute Resolver (`fundAppeal`), never through the deposit contract, so Kleros records each funder and pays refunds and rewards to them directly; each funder collects them once the case is over (the console and the guest page offer this).
-- **Defend every appeal (important):** if the other side funds an appeal and yours is not fully funded when the period closes, the other side wins the case, whatever the jurors voted. After each vote, check the challenge list until the appeal period ends. If the other side starts funding, fund yours. For a first appeal at today's fees (7 jurors at about 0.0054 ETH each, so an appeal fee of about 0.0378 ETH) that is about 0.076 ETH when the vote went your way, or about 0.113 ETH within the first half of the period when it went against you or was tied; the console shows the exact amounts and deadlines. Money for a side that ends up fully funded and winning comes back with a reward; money for a side never fully funded comes back. **Fund appeals from a normal wallet (like Zerion), not a Safe or other smart-contract wallet:** the Dispute Resolver sends refunds, rewards and any overpayment with a basic transfer and does not retry if it fails, so a smart-contract wallet could lose them. "Refuse to arbitrate" (answer 0) can be funded too: if it is the only answer fully funded, it wins and counts as "did not attend" (the challenge money is split in half). Watch for it like any other answer.
-- **Evidence:** while a case is open, the console or the guest page uploads a short evidence file (title, description, optional file) to Kleros's IPFS service and sends its path to the Dispute Resolver (`submitEvidence`, filed under the case's Dispute Resolver number), from the sender's own wallet. It is public and permanent. Attach photos and documents as files (they are uploaded to IPFS): Kleros Court only opens attachments stored on IPFS and shows any other link as "flagged as unsafe", so a plain https link is put into the evidence text instead. Send it early: jurors start voting after the evidence period (78 hours in the General Court), and evidence is refused once the case is ruled.
-- **Release payouts:** once the window is over and no challenge is still waiting for a match, click **Release payouts** (anyone can, so guests are not stuck if the owner wallet is lost). A challenge opened at the last minute keeps its own 1-day match window, so payouts can start up to one day after the challenge window ends. A Kleros case does not hold the payout: share per person = pool ÷ (attendees + open Kleros cases). Everyone on the list is paid at once and one share per open case is set aside (shown in the console). When a case is settled, that share goes to the challenger if Kleros rules they attended; otherwise it is split equally among everyone on the list and the cases still open (their part is added to what is set aside for them), so everyone who ends up on the list gets the same total whatever order the cases finish in.
-- **Before paying out:** decline on Luma every payer who is still pending or waitlisted, and every late (`OUTSIDE_WINDOW`) payer you won't admit; re-run verify and click **Refund declined guests**. Then return everything in `out/returns.csv` (short payments, overpaid excess, strays) with **Return a stray transfer**, so nobody's money is left behind as "spare". (Declined payers can still be refunded after the list is posted, as long as they were never registered.)
-- When it's done, click **Collect leftovers** in the console (it refuses to quietly sweep anything that looks like a guest's deposit; the contract itself never lets it touch anything still owed).
-
-**If the event is cancelled:** click **Cancel event and refund registered stakers** in the console (it is refused once the list is posted). Every registered staker gets their deposit back. Payers who were not registered yet are not covered by Cancel: decline them all on Luma, re-run verify, click **Refund declined guests**, and return what `out/returns.csv` and `out/unmatched.csv` list with **Return a stray transfer**. After a cancellation the contract refuses new deposits.
-
-(`scripts/owner.mjs`, `scripts/deploy.mjs` and the `out/safe-*.json` files do the same from the command line or a Safe, for developers. The organiser never needs a private key.)
-
-### Issue codes
-
-| Code | Meaning | What to do |
-|---|---|---|
-| `NO_TX` / `BAD_TX_HASH` | No tx link, or the answer has no 0x… hash | Ask the guest for the link |
-| `WRONG_NETWORK` | The link is from another network (arbiscan.io, basescan.org, optimistic.etherscan.io and similar), not Ethereum mainnet | That ETH never reached the deposit contract, and the contract can't send it back (see "Wrong network"). Ask them to send a new deposit **on Ethereum mainnet** and paste its etherscan.io link. |
-| `TX_NOT_FOUND` | The tx isn't on Ethereum mainnet | Most likely sent on another network, or a typo in the link. Ask the guest for their **etherscan.io** link; if it was another network, they send a new deposit on Ethereum mainnet. |
-| `TX_PENDING` | Sent, but not confirmed yet | Nothing to do: re-run verify a bit later |
-| `NO_DEPOSIT_TRANSFER` | The tx doesn't send ETH to the deposit contract | Wrong address, or they sent a token instead of ETH. If a token (USDC, for example) reached the deposit contract, the note names the token contract: it is not a deposit; send it back with **Return tokens sent by mistake** in the console and ask for a deposit in ETH. |
-| `WRONG_SENDER` | The ETH came from a different wallet than the one they entered (often an exchange withdrawal) | If the sender is their own wallet, ask them to put that address as their ETH address on Luma; it then verifies. If it came from an exchange or someone else, it can't hold a spot (refunds and payouts would go to that sender): the money is listed in `out/unmatched.csv` to return to the sender once agreed, and they send a new deposit from their own wallet. |
-| `AMBIGUOUS_SENDER` | No wallet given, and the tx has several senders | Ask the guest which wallet is theirs and to add it on Luma. Until then the money is listed in `out/unmatched.csv`. |
-| `TX_FAILED` | The pasted tx failed, so no ETH arrived and the guest only paid the network fee (for example 0 ETH sent, sent after deposits closed, or a wallet that sent a plain transfer with a fixed 21,000 gas limit, which is too little for the contract's `Deposited` event: the note then says it ran out of gas) | Ask for a new deposit on Ethereum mainnet and its link (from the deposit page, or with the gas limit the wallet suggests) |
-| `RPC_ERROR` | The script could not read that tx (a network problem on our side) | Don't email the guest; re-run verify |
-| `AMOUNT_TOO_LOW` | They sent less than the deposit | Return it (listed in `out/returns.csv`) and ask for one new transfer of exactly the deposit amount in ETH (a wallet showing dollars may have rounded it). A top-up in a second transaction can't be verified. |
-| `OUTSIDE_WINDOW` | Sent before deposits opened or after the deadline | Decide case by case |
-| `DUPLICATE_TX` / `DUPLICATE_WALLET` | The tx or wallet is already used by another guest | Likely a copy-paste or someone gaming the system. The row whose wallet sent the deposit (or is already registered) keeps it; a declined copy never wins. No on-chain action for the copy. |
-| `MULTIPLE_TX` | The answer has several tx links and more than one is a deposit from this guest's wallet (a guest who paid twice). With several links of which only one verifies (a failed send, then a good one), the script uses the good one and says so in the note. | Ask the guest which one is their deposit and to keep only that link on Luma; the other is listed in `out/unmatched.csv` to give back |
-| `DUPLICATE_CLAIM` | Several rows that aren't declined claim the same deposit and the script can't tell which is real | Decide by hand: decline the copy on Luma and re-run verify |
-| `REFUNDED_EARLIER` / `RETURNED_EARLIER` | This deposit was already refunded (declined) or returned with **Return a stray transfer** | Never registered or refunded again. They need to send a new deposit. |
-| `UNUSUAL_SENDER` | No wallet given, and the ETH came from a contract (for example a smart wallet or an exchange's contract) | If it is their own smart wallet (e.g. a Safe), they put that address on Luma and it verifies. Otherwise it can't hold a spot: it is listed in `out/unmatched.csv` (find out with the guest where it should go), and they send a new deposit from their own wallet. |
-| `OVERPAID` | They sent more than the deposit | Registered normally; the excess is listed in `out/returns.csv` |
-| `REGISTERED_NOT_APPROVED` | Registered on-chain but no longer approved on Luma | Approve again, or decline to refund (only possible before the attendance list is posted) |
-| `DECLINED_AFTER_LIST` | Registered, no longer approved on Luma, and the attendance list is already posted | Nothing to do: the contract can't refund a staker any more, so they are not in `refunds.json`. Their deposit stays in the pool; they are paid only if they are on the list. |
-| `PAID_AGAIN_DECLINED` | Declined, refunded once already, then paid again and declined again | Not in the refund list (`rejectAndRefund` would refuse the whole batch). Return the new deposit with **Return a stray transfer** (`refund(wallet, deposit)`); the issue disappears once it has been returned. |
-
-A copied tx link does not knock out the real guest: the wallet that sent the deposit (or is already registered) keeps it, and the copy is flagged. `out/returns.csv` lists every amount still to give back with **Return a stray transfer** (net of anything already returned), and is rewritten on every run.
-
-**Wrong network (ETH sent on Arbitrum, Base, Optimism or another network to the contract address):** the deposit contract only exists on Ethereum mainnet. On another network the ETH lands at the same address, where our contract does not exist, so it never reaches the pool and we cannot refund it with the contract. Recovering it is only sometimes possible: the contract's address comes from the wallet that deployed it (the owner wallet, when deployed from the console) and that wallet's transaction count, so deploying a copy from the same wallet at the same transaction count on that network would land at the same address and could then `refund` it. This costs that network's fees and only works while the wallet's transaction count on that network has not yet passed the count it had on Ethereum when it deployed. The owner wallet was already used on Arbitrum One (rehearsals of the earlier version), so on Arbitrum One that address may already hold an old rehearsal contract or be out of reach: **treat ETH sent on Arbitrum One as lost**. **Don't use the owner wallet on any other network** (Base, Optimism, and so on) before settlement, to keep this option open there. Decide case by case, and say plainly on Luma that ETH sent on another network can be lost.
-
-## Guest deposit page
-
-`site/index.html` is a single static page for guests, with no dependencies and no build step beyond baking in the address:
-
-1. Connect wallet (any injected wallet; on phones, the wallet app's own browser).
-2. Switch to Ethereum mainnet (chain ID 1). Sending is blocked on any other network, and the network is checked again right before the wallet prompt.
-3. Check balance: at least the deposit plus some ETH for the network fee. It also refuses a second deposit from a wallet that already has one or is already registered.
-4. Send exactly the deposit to the contract, and wait for the receipt.
-5. Copy the Etherscan tx link and wallet address for Luma.
-
-Before enabling the send button, the page reads the contract over the public RPC and checks there is code at the address, that `depositAmount()` is the expected amount, and that `phase()` is Open with `eventStart` in the future. A "Check a deposit" view shows any wallet's status (received, confirmed, refunded, on the list, challenged, in a Kleros case, paid, no-show) and lets a guest `claim` a payment that could not be delivered (a payout, a refund or challenge money) to any address, or `emergencyWithdraw` after the deadline.
-
-After the list is posted, the same view is how challenges work: a staker left off the list can challenge (pays `challengeDeposit()` in ETH); anyone looking up a challenger can dispute the claim (matches the deposit, creating the Kleros case) and later settle it. A list of open challenges shows who challenged, with a link to each Kleros case (`https://court.kleros.io/cases/<case number>`). While a case is open, the page can send evidence; while it is in its appeal period, it shows the jury's vote, the deadlines and how much each answer has raised, and lets the guest fund an answer from their own wallet straight to Kleros's Dispute Resolver, and collect their appeal refunds and rewards once the case is over. When the appeal period is over it says which answer wins (an answer funded alone for an appeal wins over the jurors' vote) and offers to deliver the final ruling. Once the challenge window is over, anyone can release the payouts there too.
-
-The deposit address is compiled into the page (`npm run site` writes `site/dist/index.html` from `config.json`); it is never read from the URL, so a look-alike link can't redirect deposits. Re-run after deploying. `npm run site -- --preview` builds a page without an address.
-
-**Hosting:** the page is served by GitHub Pages from the `gh-pages` branch (root) at https://weiwei-ooi.github.io/devcon-side-event-kickback/. It shows "Deposits open soon" until the live contract exists. After the live deploy, set `contract`, `receiver`, `deployBlock` and `depositOpensAt` in `config.json`, run `node scripts/build-site.mjs --out <dir>`, replace `index.html` on `gh-pages` with the result and push, open the page to check it shows the contract, and only then put the address and the page link on Luma. Browser test: `npm run test:site` (needs Playwright: `npm i --no-save playwright && npx playwright install chromium`).
-
-## Public admin panel and deposit page for any event
-
-Any organiser can run a kickback with Kleros for their own event, with their own wallet, without installing anything:
-
-- **Admin panel** (`npm run admin -- --out <dir>`, `console/index.html` in hosted mode): connect a wallet, then either **open an event** (its contract address, from a link `?contract=0x…&from=<deploy block>`) or **create a new event** from a short form (title, short name, start and end time with the event's timezone, place, hosts, registration link, deposit, days to settle). The form shows the case description jurors would read (**Preview** needs no wallet: the case then names the owner as "[your wallet, once connected]"; **Create event** needs the connected wallet), pins the generic juror policy through Kleros's upload service if it isn't there yet (and refuses unless the path matches the file), deploys from the connected wallet (which becomes the owner) and gives two links to share: the admin link and the guest deposit page link.
-  - **Deposits** are listed from the contract's own `Deposited` events, with each wallet's status; tick and **Register selected** or **Refund selected**. Only wallets whose whole deposit the contract still holds can be ticked.
-  - **Check the Luma guest list**: the Luma CSV export is checked in the browser with the same rules as `verify-deposits.mjs` (nothing is uploaded anywhere); approved payers are ticked for Register, declined ones for Refund, and the rest is listed with the usual issue codes. The card lists the Luma setup it expects (approval required, a ticket whose name contains deposit/commit/stake, an ETH address question, a deposit tx link question, check-in at the door).
-  - **After the event**, the attendance list is built from the check-in export (plus an optional door list) like `build-payout.mjs`, then posted (locked until the event starts, POST typed). Challenges, disputes, evidence, appeals and payouts work as in the owner console.
-  - **Times on the event's own clock.** The contract keeps no timezone, but every case description names the event's date and time as the form wrote it ("Friday 12 March 2027, 19:00-23:00 CET"). `core.eventClock` reads it back: a date counts when its weekday is right and its distance from the contract's start is an offset timezones use (`core.TZ_OFFSETS`, the form's own list, so a doors time typed into the event's name, "+00:30" away, is skipped). Its timezone name is kept only when it is verifiably and unmistakably that offset: a "UTC+01:00" / "GMT+1" form, or an abbreviation whose first meaning it is ("IST" for India, "CST" for US Central; not "IST" for Irish time or "PST" for Philippine time, which readers would take for India or Pacific time). The first date whose name is kept gives the clock; if none is, the first date that counts, named by its offset ("UTC+01:00"). The start then reads "12 Mar 2027, 19:00 CET (13 Mar 2027, 01:00 your time)", the second part only when this computer's clock differs. Only the start carries the zone's name: a city can change to or from summer time after it (the list deadline of a Berlin event on 20 October is on CET, not CEST), so every later moment is named by the offset ("26 Mar 2027, 19:00 UTC+01:00 (27 Mar 2027, 01:00 your time)"). Inside brackets the second part reads "…, that is 01:00 your time", so brackets never nest. An event whose case names no such date shows this computer's clock, named, as before. The text is the organiser's, so the clock may not be the venue's, but the time shown is always right: the name shown always means exactly that offset. The form's own times are always this computer's.
-  - An event opens only if its contract has exactly the compiled kickback code (SHA-256 of its runtime code with the constructor values zeroed) and uses Kleros's own Dispute Resolver and court on mainnet; answers alone can be faked, the code can't. Owner buttons work only for the owner wallet; everyone else sees the status and the actions anyone may take.
-- **Deposit page for any event** (`node scripts/build-site.mjs --generic --out <dir>`): the same guest page, reading the event from the contract in its link (`?contract=0x…&from=<deploy block>`): name, deposit, times, organiser and juror policy, with the same code and Kleros checks. Times are shown on the event's own clock, from its case description, like the admin panel ("Wed 4 Nov, 18:00 IST (19:30 your time)"); the page has its own copy of `eventClock` (it can't import the core), with the core's offsets and timezone names baked in at build, and `npm run test:site` checks both give the same results. Until the case description has been read (it never holds up the page's checks; the times already shown, the open challenges and a wallet's status included, are then shown again on the event's clock, with no new read), or if it names no usable date, times are in the guest's own timezone, named. It shows "Only use a link the organiser gave you" with the event name, contract and organiser, and refuses names that imitate the live event.
-- **Hosting:** both are static files for GitHub Pages. They are published next to the live Truth Pays page, on the same `gh-pages` branch (her choice, 28 Oct 2026, to have them online right away): admin panel https://weiwei-ooi.github.io/devcon-side-event-kickback/admin/ (the live event: https://weiwei-ooi.github.io/devcon-side-event-kickback/admin/?contract=0xd5c6A73c05FA431c748781DaBAA99Fe2590d677D&from=26290226), deposit page for any event https://weiwei-ooi.github.io/devcon-side-event-kickback/event/?contract=0x…&from=…. The builds refuse an output folder inside a baked guest page's site, so they are built elsewhere and copied into `admin/` and `event/` on `gh-pages`; the generic page refuses event names that imitate Truth Pays, and a site of their own stays the cleaner option later. To build the panel with `--no-default-event` (it then opens only the event named in its link) next to the generic page: `node scripts/build-admin.mjs --out <site>/admin --no-default-event` and `node scripts/build-site.mjs --generic --out <site>/event`.
-- **Tests:** `npm run test:admin` (the panel end to end on a local chain) and `npm run test:site` (both guest pages).
-
-The owner console (`npm run console`) is the same page in local mode, unchanged for the live event. If it ever shows "the page's code did not load", stop it and start it again (a console started before an update serves old files).
-
-## How a Kleros case works (Kleros Court v1 on Ethereum mainnet)
-
-- **Who decides:** Kleros Court (KlerosLiquid, `0x988b3A538b618C7A603e1c11Ab82Cd16dbE28069`), General Court (court 0), 3 jurors in the first round. The contract opens the case through Kleros's general-purpose **Dispute Resolver** (`0x4b89e798b10478a839ea0abcf86c4b94a3c782a4`), which anyone can use and whose arbitrator is fixed to KlerosLiquid. (Kleros v2, used by the earlier Arbitrum version, only runs on Arbitrum.)
-- **Two numbers per case:** the Kleros case number (`challenges(staker).arbitratorDisputeID`, shown on `https://court.kleros.io/cases/<number>`) and the Dispute Resolver's own number for it (`challenges(staker).localDisputeID`), which evidence, appeals and appeal withdrawals use. `ChallengeMatched` logs both.
-- **Cost:** the case fee is about **0.0162 ETH** today for 3 jurors (`challengeDeposit()` reads the live value from Kleros). The challenger and the matcher each put in that amount; the fee comes out of the two deposits and the rest goes to the winner (split in half if the jurors refuse to arbitrate).
-- **Time:** one round in the General Court takes about **3 weeks**: evidence 78 h, commit 162 h, vote 162 h, appeal 108 h (votes are hidden, then revealed), sometimes a little longer while jurors are drawn. Each appeal adds another round with a larger jury (2n + 1 jurors).
-- **Case description:** each case gets its own, written by the contract from the template fixed at deploy (`caseMetaEvidence(staker)`): it names the event, the wallet, the deposit and the contract, and links to the juror policy (`policyURI`). Its IPFS path is computed on-chain; the console and the guest page upload the file to Kleros's IPFS service so it resolves.
-- **Evidence:** ERC-1497 JSON files (`{ "name", "description", "fileURI" }`) pinned through Kleros's IPFS upload service, sent with `submitEvidence(localDisputeID, "/ipfs/<cid>/<file>.json")` from the sender's own wallet.
-- **Appeals:** `fundAppeal(localDisputeID, answer)` on the Dispute Resolver from each funder's wallet (1 = attended, 2 = did not attend; 0 = refuse to arbitrate can be funded too, and counts as did not attend if it wins). Today's Dispute Resolver multipliers: the answer the jurors voted for pays the appeal fee + 100% until the end of the appeal period; any other answer pays the fee + 200% and only during the first half. If exactly one answer is fully funded when the period ends, the Dispute Resolver records that answer as the ruling. Funders collect with `withdrawFeesAndRewardsForAllRounds(localDisputeID, funder, [1, 2])` once the case is ruled (`getTotalWithdrawableAmount` shows what is due).
-- **Final ruling:** after the last appeal period, someone moves the case to its execution period (`KlerosLiquid.passPeriod(caseNumber)`) and delivers the ruling (`KlerosLiquid.executeRuling(caseNumber)`). Kleros's bots often do this; anyone can. Only then does the Dispute Resolver record the ruling, and `resolveChallenge` (**Settle**) can act on it.
+Safety nets: the organiser can cancel before closing the list (everyone takes their deposit back), and if the list is never closed by the deadline every guest takes their own deposit back. The organiser can never keep deposits: their only powers are giving deposits back, posting the list, matching challenges like anyone else, and returning money sent to the contract by mistake.
 
 ## Trust model
 
-This setup isn't trustless, but anyone can check it:
+- **No admin, no upgrades.** The factory has no owner. Each event is an [EIP-1167](https://eips.ethereum.org/EIPS/eip-1167) minimal clone of one implementation whose code is fixed. Nobody (including Kleros or the authors) can change the rules or move deposits.
+- **Kleros is always on.** The Dispute Resolver, court, number of jurors, the [juror policy](docs/attendance-policy.md) and the [case template](docs/metaevidence.template.json) are fixed in the implementation. An organiser cannot create an event without the challenge layer.
+- **Each case explains itself.** The contract writes every case's [ERC-1497](https://github.com/ethereum/EIPs/issues/1497) description from the template (event name and page, start and end in UTC, challenged wallet, organiser, deposit, contract) and computes its IPFS path on-chain, so neither side chooses the wording. The pages upload that exact text to Kleros's IPFS service before a case opens.
+- **Appeals and evidence** go straight from each person's wallet to Kleros's Dispute Resolver; no appeal money passes through the event contract.
+- **Deposits are per wallet.** Deposit = booked: there is no separate registration step that could mix up whose money is whose.
+- **Tokens:** the event's token must not take a fee on transfers (checked at every deposit). Challenge deposits are always ETH, because the Kleros fee is paid in ETH.
 
-- **Deposits:** Every deposit (`Deposited` events) and every registered staker (`StakerRegistered` events and `stakers()`) is public on-chain. The contract accepts ETH (a plain transfer or `deposit()`) only while it is Open, so late ETH stays in the sender's wallet.
-- **The pool:** pool ETH, challenge ETH and unclaimed payments share one balance. `reserved()` counts everything someone is owed (the staked pool until paid out, then the shares set aside for open cases; challenge money; unclaimed payments), and `refund`, `sweep` and the refund of an unregistered payer can only move ETH above it. Declined guests are refunded exactly their deposit, to their own wallet.
-- **Attendance:** The organiser publishes who attended (`postAttendance`), based on the Luma check-in, with the exact per-person share she confirmed. A staker left off the list has 1 day to challenge; anyone has 1 day to match, which creates a Kleros case decided by jurors under `docs/attendance-policy.md`. An unmatched challenge counts as attended. `releasePayouts` (callable by anyone) pays out after the window once no challenge waits for a match; a share per open Kleros case is set aside until its final ruling, so no one can freeze everyone's payout by disputing or appealing.
-- **Kleros integration:** permissionless, through Kleros Court v1's Dispute Resolver on Ethereum mainnet (see "How a Kleros case works"). The contract pays exactly the case fee (`createDispute{value: fee}(extraData, caseDescriptionPath, 2)`, extra data = court 0 and 3 jurors), stores both case numbers, and reads the final ruling back from the Dispute Resolver (`disputes(localDisputeID)`: `isRuled`, `ruling`). The Dispute Resolver records a ruling only when KlerosLiquid delivers it after the last appeal period, so `resolveChallenge` can never act on a vote that is later overturned.
-- **Appeals:** handled entirely by Kleros. No appeal money passes through this contract: funders pay the Dispute Resolver and are paid back by it. The console and guest page read the current vote, `appealPeriod`, the costs (`appealStatus` on our contract follows the Dispute Resolver's multipliers) and the Dispute Resolver's `Contribution` and `RulingFunded` events, and offer funding and withdrawal; the console also offers delivering the final ruling.
-- **Payments that fail:** batch payments (payouts, refunds of declined guests, cancellation refunds, challenge money) give each wallet up to 40,000 gas, enough for a Safe or a common smart-contract wallet (they need well under 20,000). If a wallet refuses ETH or needs more, the amount is kept in `owed` for that wallet to `claim` to any address it chooses (all gas forwarded); nobody else is blocked. 40,000 also keeps the worst batch inside one Ethereum transaction: since EIP-7825 (Fusaka) a transaction may use at most 16,777,216 gas, and a payout to 150 wallets that each burn their whole allowance needs about 12.6 million (tested, with the console's 30% margin). `releasePayouts` also accepts the unmatched challenges whose match window ended and pays their deposits back; with many of those from such wallets the batch could pass the cap, so `owner.mjs` settles them one by one first (about 200,000 gas each; tested), and the console does too whenever the payout's estimate fails or would pass the cap (it asks first). The console and the guest page never ask for a gas limit above that cap.
-- **Tokens:** deposits are ETH only. A token sent to the contract (USDC, for example) is not a deposit and is never counted; the owner can send it back with `returnToken(token, to, amount)` (console: **Return tokens sent by mistake**), which moves only that token and never ETH.
-- **Deadlines:** the list can be posted from `eventStart`. If no list is posted by `claimDeadline` (at least 7 days later), every staker can withdraw their own deposit, so a lost owner key cannot lock the pool. Once the list is posted, payouts no longer depend on the owner.
-- **Known limits:** balances are counted in total, not per wallet, so the organiser must only register wallets the verify script lists. Unregistered payers depend on the organiser to refund them. The owner is a single wallet (no multisig), by the organiser's choice. A matched challenge holds only that challenger's share until Kleros's final ruling (about 3 weeks per round; each appeal adds a round, up to several months). If Kleros never delivers a ruling on a case, that one set-aside share and that case's challenge money stay locked; everything else is paid. The Dispute Resolver's governor (Kleros) can change the appeal multipliers. `emergencyWithdraw` only applies when no list was posted.
+## Contracts
 
-## Rehearsal
+| Contract | What it does |
+| --- | --- |
+| [`PresenceFactory`](contracts/PresenceFactory.sol) | `createEvent(config)` makes a new event for the caller. Lists events (`events`, `eventsOf`, `isEvent`). |
+| [`PresenceEvent`](contracts/PresenceEvent.sol) | One event: deposits, curation, the attendance list, challenges, Kleros cases, payouts. |
+| [`PresenceCaseWriter`](contracts/PresenceCaseWriter.sol) | Holds the case template and writes each case's description and its IPFS path. |
 
-`npm run console:rehearsal` deploys a throwaway contract on Ethereum mainnet from `config.rehearsal.json` (never put on Luma, `poolCap` 0.25 ETH), with real ETH and real network fees. Everything can be rehearsed with small amounts: deploy, deposit, register, refund a declined guest, post the list, a challenge left unmatched (it counts as attended after 1 day and the ETH comes back), release payouts. **Matching a challenge in a rehearsal opens a real Kleros case** (about 0.0162 ETH, real jurors, about 3 weeks), so only do it on purpose, after the juror policy is pinned.
+Event settings (`PresenceEvent.Config`): `name` (1 to 200 bytes, no quotes, backslashes or line breaks), `url` (optional), `token` (`0x0` for ETH), `depositAmount` (smallest unit), `eventStart`, `eventEnd`, `claimDeadline` (at least 7 days after `eventEnd`), `capacity` (0 = no limit).
 
-## Guest instructions (for the Luma page)
+Code style: `require(condition, CustomError())`, Solidity 0.8.28, optimizer 200 runs, EVM paris.
 
-> **Committed Spot: 0.01 ETH refundable deposit. Stake and you're in.**
->
-> ⚠️ **Ethereum mainnet only, ETH only.**
->
-> 1. **Pay** 0.01 ETH on our [deposit page](https://weiwei-ooi.github.io/devcon-side-event-kickback/deposit/): connect your wallet and press Send.
-> 2. **Register** here with the *Committed Spot (0.01 ETH)* ticket and paste your transaction link. You're in, no approval needed.
-> 3. **Check in** at the event to get your 0.01 ETH back, plus a share of the no-shows' deposits. No-shows lose their deposit.
->
-> - **Deposits close** Wed 4 Nov at 18:00 IST.
-> - **Event cancelled, or no spot for you?** Your 0.01 ETH goes back to the wallet you sent it from.
-> - **Missed at check-in?** Challenge the attendance list on Kleros from the deposit page within 1 day.
->
-> Deposit contract: [0xd5c6A73c05FA431c748781DaBAA99Fe2590d677D](https://etherscan.io/address/0xd5c6A73c05FA431c748781DaBAA99Fe2590d677D#code) (verified on Etherscan).
+### Deployments
 
-This is the copy on Luma since 30 Oct (her rules that day: as short as possible, "if they stake they're in"). The Committed Spot ticket no longer needs approval (the free "Request to Join" ticket still does); its ticket description and the "Deposit tx link (Committed Spot only)…" question both link the deposit page, since Luma cannot redirect to another site when a ticket is picked. Luma approval never registers anyone on-chain: the organiser still registers each paid guest with **Register all paid guests** in the organiser panel. The deposit page explains the rest live: appeals (fund your side if the other side appeals), payouts for everyone else going ahead during a case, and `emergencyWithdraw` if no list is posted by `claimDeadline`.
+| Network | Factory | Status |
+| --- | --- | --- |
+| Ethereum mainnet | — | not deployed yet |
 
-(For another event: replace 0.01 ETH with its `deposit` amount, and the address and page link with its own deployed contract and guest page.) Most wallets estimate the gas for a transfer to a contract, so a plain send works; a wallet or exchange that uses a fixed 21,000 gas limit fails (`TX_FAILED`, only the network fee is lost). The guest deposit page avoids this by calling `deposit()`.
+Kleros on Ethereum mainnet: Dispute Resolver `0x4b89e798b10478a839ea0abcf86c4b94a3c782a4`, KlerosLiquid `0x988b3A538b618C7A603e1c11Ab82Cd16dbE28069`, General Court (0), 3 jurors.
+
+## Run it yourself
+
+```bash
+npm install
+npm test               # contract tests on a local chain (~1 min)
+npm run test:web       # browser tests of the pages (needs Playwright + Chromium)
+FORK_URL=https://ethereum-rpc.publicnode.com npm run test:fork   # against the real Kleros contracts on a mainnet fork
+npm run build          # compiles and builds the site into dist/
+npm run serve          # serves dist/ on http://localhost:8080
+```
+
+### Host the pages (Netlify)
+
+The repository is ready for Netlify: import it, and [`netlify.toml`](netlify.toml) runs `npm run build` and publishes `dist/`. The pages read the deployment from [`deployments/ethereum.json`](deployments/). Set the environment variable `POP_NETWORK` to build for another file in `deployments/`. Any static host works the same way (`npm run build`, then serve `dist/`).
+
+### Deploy the protocol (once per network)
+
+Most people never need to: use the existing mainnet deployment. To run your own (another chain with Kleros, another court, other windows):
+
+1. Upload [`docs/attendance-policy.md`](docs/attendance-policy.md) to IPFS (the deploy page has a button for Kleros's upload service).
+2. Open `deploy.html` on your copy of the site, connect a wallet, check the Kleros settings and deploy. It sends three transactions (about 8 million gas in total) and prints the JSON to save as `deployments/<network>.json`.
+3. Rebuild the site. Developers can also use `PRIVATE_KEY=… RPC_URL=… POLICY_URI=… npm run deploy` (see [`scripts/deploy.mjs`](scripts/deploy.mjs)).
+
+For a chain that is not in [`scripts/protocol.mjs`](scripts/protocol.mjs) `NETWORKS`, add it there (RPCs, explorer, Kleros addresses) in your fork.
+
+## Using it with Luma (or any registration page)
+
+1. Create the event in the organiser panel and copy the guest link.
+2. On Luma, add a paid-style ticket (for example "Committed Spot") whose description says: book at the guest link, then paste the transaction link in the registration question. Luma cannot redirect on a ticket pick, so put the link in the ticket description and in the question.
+3. Guests book on the deposit page; deposits stay open during the event for walk-ins.
+4. After the event, paste the Luma guest export (it contains the wallets) into "Select from a check-in list" in the panel, then close the list.
+
+## Repository layout
+
+| Path | What |
+| --- | --- |
+| `contracts/` | The three contracts |
+| `web/` | The pages (plain HTML + ES modules, no framework) |
+| `scripts/` | `protocol.mjs` (shared by pages, tests and scripts), compile, build, deploy, serve |
+| `docs/` | Juror policy and case template (fixed at deployment) |
+| `deployments/` | Deployed addresses per network |
+| `test/` | Contract, browser and mainnet-fork tests; Kleros stand-ins in `test/mocks/` |
+| `legacy/truth-pays/` | The first single-event version, used for Truth Pays (Devcon Mumbai, Nov 2026), kept for reference: its contract is verified on Etherscan at `0xd5c6A73c05FA431c748781DaBAA99Fe2590d677D` |

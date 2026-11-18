@@ -1,12 +1,11 @@
 node_modules/
-.env
-# Guest data (names, emails, wallets) never goes in the repo
-out/
-out-*/
-*.csv
-site/dist/
 build/
-# developer lists for owner.mjs (wallet addresses)
+dist/
+.env
+*.csv
+out/
 wallets*.json
-# mainnet-fork test (test/fork.e2e.mjs)
 config.fork-e2e.json
+out-*/
+dist-*/
+package-lock.json

@@ -1,0 +1,18 @@
+# Netlify: import this repository and it builds the static site with these settings.
+# Set POP_NETWORK (default "ethereum") to build for another network's deployments/<network>.json.
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    X-Frame-Options = "DENY"
+
+# No package-lock.json on purpose: ganache (test chain, a dev dependency) bundles a macOS-only package that makes
+# `npm ci` fail on Linux. Versions are pinned exactly in package.json instead.
