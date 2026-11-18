@@ -5,11 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Deploy the protocol · Proof of Presence</title>
 <link rel="stylesheet" href="style.css">
+<link rel="icon" href="img/kleros-symbol.svg" type="image/svg+xml">
 <script src="config.js"></script>
+<script src="chrome.js"></script>
 <script type="importmap">{ "imports": { "ethers": "./vendor/ethers.min.js" } }</script>
 </head>
 <body>
-<header class="top"><a class="brand" href="./">Proof of <span>Presence</span></a></header>
+<header class="top"></header>
 <main class="narrow">
   <h1>Deploy the protocol</h1>
   <p class="lead">Done once per network, by whoever runs a copy of this site. It deploys three contracts from your wallet: the case writer (the jurors' case template), the event implementation (Kleros settings) and the factory organisers use. None of them has an owner afterwards.</p>
@@ -32,6 +34,8 @@
     <textarea id="out" readonly></textarea>
   </div>
 </main>
+<footer class="site"></footer>
+<script>popChrome();</script>
 <script type="module">
 import { ethers, P, NET, connect, sendTx, artifact, uploadToKleros, say, action, $, esc, txUrl } from "./app.js";
 const k = NET.kleros ?? {};

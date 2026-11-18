@@ -42,7 +42,7 @@ fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(path.join(out, "abi"), { recursive: true });
 fs.mkdirSync(path.join(out, "vendor"), { recursive: true });
 fs.mkdirSync(path.join(out, "docs"), { recursive: true });
-for (const f of fs.readdirSync(path.join(root, "web"))) fs.copyFileSync(path.join(root, "web", f), path.join(out, f));
+fs.cpSync(path.join(root, "web"), out, { recursive: true });
 fs.copyFileSync(path.join(root, "scripts/protocol.mjs"), path.join(out, "protocol.mjs"));
 fs.copyFileSync(path.join(root, "node_modules/ethers/dist/ethers.min.js"), path.join(out, "vendor/ethers.min.js"));
 for (const n of ["PresenceEvent", "PresenceFactory", "PresenceCaseWriter"]) {

@@ -1,5 +1,7 @@
 # Proof of Presence
 
+*Kickback deposits for events · Powered by Kleros* · planned home: **kickback.kleros.io**
+
 **Refundable event deposits where showing up pays, with the attendance list open to challenge in Kleros Court.**
 
 Guests book a spot with a small deposit (ETH or any ERC-20 token). After the event, everyone who came shares the whole pool: their deposit back plus an equal share of the no-shows' deposits. If the organiser leaves someone off the attendance list, that guest can challenge it, and [Kleros](https://kleros.io) jurors decide.

@@ -227,7 +227,7 @@ export function action(btn, out, fn) {
       say(out, esc(plainError(e)), "err");
     } finally {
       btn.disabled = false;
-      btn.textContent = label;
+      if (btn.textContent === "Working…") btn.textContent = label; // keep a label the action set (e.g. the wallet address)
     }
   });
 }

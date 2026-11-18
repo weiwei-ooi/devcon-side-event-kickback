@@ -6,14 +6,13 @@
 <title>Book your spot · Proof of Presence</title>
 <meta name="description" content="Book your spot at an event with a refundable deposit.">
 <link rel="stylesheet" href="style.css">
+<link rel="icon" href="img/kleros-symbol.svg" type="image/svg+xml">
 <script src="config.js"></script>
+<script src="chrome.js"></script>
 <script type="importmap">{ "imports": { "ethers": "./vendor/ethers.min.js" } }</script>
 </head>
 <body>
-<header class="top">
-  <a class="brand" href="./">Proof of <span>Presence</span></a>
-  <nav><a id="orgLink" href="organiser.html">Organiser</a> <button id="connectTop" class="secondary">Connect wallet</button></nav>
-</header>
+<header class="top"><div class="slot"><a id="orgLink" class="nav hide-s" href="organiser.html">Organiser view</a><button id="connectTop" class="secondary">Connect wallet</button></div></header>
 <main class="narrow">
   <div id="loadNote" class="note">Loading the event…</div>
   <section id="ev" hidden>
@@ -70,7 +69,8 @@
     </div>
   </section>
 </main>
-<footer>Proof of Presence, built by <a href="https://kleros.io" rel="noopener">Kleros</a>. Read the <a href="docs/attendance-policy.md">attendance policy</a> jurors apply. <span id="netName"></span></footer>
+<footer class="site"></footer>
+<script>popChrome();</script>
 <script type="module">
 import { plainError as plain, ethers, P, NET, deployed, loadEvent, connect, sendTx, errorInterface, publishCase, uploadToKleros, amount, eth, txUrl, addrUrl, caseUrl, when, duration, nowS, esc, short, say, action, $, notDeployedNote } from "./app.js";
 
@@ -81,7 +81,7 @@ const RESOLVER_ABI = [
 const ERC20 = ["function allowance(address,address) view returns (uint256)", "function approve(address,uint256) returns (bool)", "function balanceOf(address) view returns (uint256)"];
 const addr = new URLSearchParams(location.search).get("e") ?? "";
 let E, me;
-$("#netName").textContent = NET.name ? `Network: ${NET.name}.` : "";
+$("#netName").textContent = NET.name ? `Network: ${NET.name}` : "";
 await errorInterface().catch(() => {});
 
 async function load() {

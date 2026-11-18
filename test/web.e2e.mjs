@@ -98,9 +98,9 @@ async function waitNote(page, sel, re, timeout = 20000) {
 
 test("organiser creates an event, guests book (also during the event), list, challenge, dispute, payout", async () => {
   const org = await pageFor(1);
-  await org.page.goto(`${BASE}/organiser.html`);
+  await org.page.goto(`${BASE}/create.html`);
   await org.page.click("#connect");
-  await org.page.waitForFunction(() => document.querySelector("#connect").textContent.includes("…"));
+  await org.page.waitForFunction(() => /^0x[0-9a-fA-F]{4}…/.test(document.querySelector("#connect").textContent));
   // the browser's clock and the chain's agree (ganache uses real time until we warp)
   const t = await chainNow();
   await org.page.fill("#fName", "Truth Pays: Test Dinner");

@@ -6,46 +6,24 @@
 <title>Organiser panel · Proof of Presence</title>
 <meta name="description" content="Create an event with refundable deposits, post who attended, handle challenges and pay out.">
 <link rel="stylesheet" href="style.css">
+<link rel="icon" href="img/kleros-symbol.svg" type="image/svg+xml">
 <script src="config.js"></script>
+<script src="chrome.js"></script>
 <script type="importmap">{ "imports": { "ethers": "./vendor/ethers.min.js" } }</script>
 </head>
 <body>
-<header class="top">
-  <a class="brand" href="./">Proof of <span>Presence</span></a>
-  <nav><a href="organiser.html">My events</a><button id="connect" class="secondary">Connect wallet</button></nav>
-</header>
+<header class="top"><div class="slot"><button id="connect" class="secondary">Connect wallet</button></div></header>
 <main>
   <div id="topNote" class="note" hidden></div>
 
   <!-- ===================== no event chosen: create one, or list mine ===================== -->
   <section id="home" hidden>
-    <h1>Organiser panel</h1>
-    <p class="lead">Create an event with refundable deposits, or open one of yours. Your wallet becomes the event's organiser: it signs every step, and nobody else can post the list or turn guests away.</p>
+    <span class="eyebrow">Organiser panel</span>
+    <h1>My <em>events</em></h1>
+    <p class="lead">Open one of your events to post who came, handle challenges and pay everyone out.</p>
     <div class="card" id="mineCard" hidden><h2>Your events</h2><div id="mineList" class="muted"></div></div>
-    <div class="card">
-      <h2>Create an event</h2>
-      <label for="fName">Event name <small>(shown to guests and to Kleros jurors; no quotes or backslashes)</small></label>
-      <input id="fName" maxlength="200" placeholder="Truth Pays: Dinner in Mumbai">
-      <label for="fUrl">Event page <small>(optional, e.g. your Luma link)</small></label>
-      <input id="fUrl" placeholder="https://luma.com/…">
-      <div class="two">
-        <div><label for="fStart">Starts <small>(your time)</small></label><input id="fStart" type="datetime-local"></div>
-        <div><label for="fEnd">Ends <small>(deposits stay open until then)</small></label><input id="fEnd" type="datetime-local"></div>
-      </div>
-      <div class="two">
-        <div><label for="fAsset">Deposit in</label>
-          <select id="fAsset"><option value="eth">ETH</option><option value="token">An ERC-20 token (e.g. USDC)</option></select></div>
-        <div><label for="fAmount">Deposit amount</label><input id="fAmount" inputmode="decimal" value="0.01"></div>
-      </div>
-      <div id="tokenRow" hidden><label for="fToken">Token address <small>(no fee-on-transfer tokens)</small></label><input id="fToken" placeholder="0x…"><div id="tokenInfo" class="small muted"></div></div>
-      <div class="two">
-        <div><label for="fCap">Capacity <small>(0 = no limit)</small></label><input id="fCap" inputmode="numeric" value="0"></div>
-        <div><label for="fDays">Days after the end to post the list <small>(at least 7)</small></label><input id="fDays" inputmode="numeric" value="14"></div>
-      </div>
-      <p class="small muted">Fixed for every event: after you close the attendance list, guests left off have <span class="pCh">1 day</span> to challenge it and anyone has <span class="pMa">1 day</span> to match a challenge, which opens a Kleros case. These settings cannot be changed after creation.</p>
-      <div class="row"><button id="create">Create event</button></div>
-      <div id="createNote" class="note" hidden></div>
-    </div>
+    <div class="card" id="signIn"><h2>Your events</h2><p class="muted">Connect the wallet you created your events with to see them here.</p><div class="row"><button id="connect2">Connect wallet</button></div></div>
+    <div class="row"><a class="button big" href="create.html">Create a kickback event</a></div>
   </section>
 
   <!-- ===================== one event ===================== -->
@@ -112,17 +90,19 @@
     </details>
   </section>
 </main>
-<footer>Proof of Presence, built by <a href="https://kleros.io" rel="noopener">Kleros</a>. <span id="netName"></span></footer>
+<footer class="site"></footer>
+<script>popChrome();</script>
 <script type="module">
 import { ethers, P, NET, CFG, deployed, factory, eventContract, loadEvent, loadStakers, connect, sendTx, errorInterface, publishCase, plainError, amount, eth, txUrl, addrUrl, caseUrl, pageUrl, when, duration, nowS, esc, short, say, action, $, $$, notDeployedNote } from "./app.js";
 
 const addr = new URLSearchParams(location.search).get("e") ?? "";
 let E, me, guests = [], selected = new Set();
-$("#netName").textContent = NET.name ? `Network: ${NET.name}.` : "";
+$("#netName").textContent = NET.name ? `Network: ${NET.name}` : "";
 await errorInterface().catch(() => {});
 const isOwner = () => me && E && me.address.toLowerCase() === E.owner.toLowerCase();
 const ok = (el, t) => say(el, t, "ok");
 
+$("#connect2").onclick = () => $("#connect").click();
 action($("#connect"), "#topNote", async () => {
   me = await connect();
   $("#connect").textContent = short(me.address);
@@ -130,55 +110,18 @@ action($("#connect"), "#topNote", async () => {
   else await showMine();
 });
 
-// ---------------------------------------------------------------- create
-$("#fAsset").onchange = () => {
-  $("#tokenRow").hidden = $("#fAsset").value !== "token";
-  if ($("#fAsset").value === "token" && $("#fAmount").value === "0.01") $("#fAmount").value = "25";
-};
-let tokenMeta;
-$("#fToken").onchange = async () => {
-  tokenMeta = null;
-  const t = $("#fToken").value.trim();
-  if (!ethers.isAddress(t)) return ($("#tokenInfo").textContent = "Not an address.");
-  try {
-    const c = new ethers.Contract(t, ["function symbol() view returns (string)", "function decimals() view returns (uint8)"], (await import("./app.js")).reader());
-    tokenMeta = { symbol: await c.symbol(), decimals: Number(await c.decimals()) };
-    $("#tokenInfo").textContent = `${tokenMeta.symbol}, ${tokenMeta.decimals} decimals.`;
-  } catch {
-    $("#tokenInfo").textContent = "This address does not answer like an ERC-20 token on " + (NET.name ?? "this network") + ".";
-  }
-};
-const tsOf = (v) => (v ? Math.floor(new Date(v).getTime() / 1000) : 0);
-action($("#create"), "#createNote", async () => {
-  if (!me) me = await connect();
-  const isToken = $("#fAsset").value === "token";
-  if (isToken && !tokenMeta) throw new Error("Enter a token address that answers like an ERC-20 token.");
-  const decimals = isToken ? tokenMeta.decimals : 18;
-  let units;
-  try { units = ethers.parseUnits($("#fAmount").value.trim(), decimals); } catch { throw new Error("The deposit amount is not a number."); }
-  const end = tsOf($("#fEnd").value);
-  const cfg = P.eventConfig({
-    name: $("#fName").value, url: $("#fUrl").value, token: isToken ? $("#fToken").value.trim() : ethers.ZeroAddress, depositAmount: units,
-    eventStart: tsOf($("#fStart").value), eventEnd: end, claimDeadline: end + Number($("#fDays").value || 0) * 86400, capacity: Number($("#fCap").value || 0),
-  });
-  const f = await factory(me.signer);
-  const tuple = [cfg.name, cfg.url, cfg.token, cfg.depositAmount, cfg.eventStart, cfg.eventEnd, cfg.claimDeadline, cfg.capacity];
-  await f.createEvent.staticCall(tuple).catch((e) => { throw new Error(plainError(e)); });
-  say("#createNote", "Confirm in your wallet…", "busy");
-  const r = await sendTx(f.createEvent(tuple), (h) => say("#createNote", `Creating… <a href="${txUrl(h)}" rel="noopener">view</a>`, "busy"));
-  const log = r.logs.map((l) => { try { return f.interface.parseLog(l); } catch { return null; } }).find((x) => x?.name === "EventCreated");
-  location.href = `organiser.html?e=${log.args.eventContract}`;
-});
 async function showMine() {
   if (!me || !deployed()) return;
   const list = [...(await (await factory()).eventsOf(me.address))].reverse();
-  $("#mineCard").hidden = list.length === 0;
+  $("#signIn").hidden = true;
+  $("#mineCard").hidden = false;
+  if (!list.length) return ($("#mineList").innerHTML = 'No events from this wallet yet. <a href="create.html">Create one</a>.');
   const rows = await Promise.all(list.map(async (a) => {
     const ev = await eventContract(a);
     const [name, start] = await Promise.all([ev.eventName(), ev.eventStart()]);
-    return `<li><a href="organiser.html?e=${a}">${esc(name)}</a> <span class="muted small">· ${esc(when(Number(start)))}</span></li>`;
+    return `<li><a href="organiser.html?e=${a}"><b>${esc(name)}</b><span>${esc(when(Number(start)))}</span></a></li>`;
   }));
-  $("#mineList").innerHTML = `<ul>${rows.join("")}</ul>`;
+  $("#mineList").innerHTML = `<ul class="event-list">${rows.join("")}</ul>`;
 }
 
 // ---------------------------------------------------------------- one event

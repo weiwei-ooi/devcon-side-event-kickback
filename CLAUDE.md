@@ -15,7 +15,7 @@ Refundable event deposits with a Kleros attendance-challenge layer, as a permiss
 - Deposit = booked (her rule "if they stake they're in"); the organiser curates by turning guests away (`reject`, full refund).
 - Default network Ethereum mainnet (Kleros Court v1 through the Dispute Resolver `0x4b89…82a4`, KlerosLiquid `0x988b…8069`, General Court, 3 jurors); other chains by fork + `NETWORKS` in scripts/protocol.mjs + `deployments/<network>.json`.
 - Not upgradeable, no admin (EIP-1167 clones of a fixed implementation). The other dev's version (github.com/markdavemanansala/proofofpresence, kickback.kleros.io) used UUPS proxies with an immediate-upgrade owner; we chose fixed code for trust.
-- Product name: "Proof of Presence" (her working name); domain still open (ideas: presence.kleros.io, pop.kleros.io, proofofpresence.kleros.io).
+- Product name: "Proof of Presence", "Powered by Kleros"; domain: **kickback.kleros.io** (her pick, 18 Nov 2026). Site look = Kleros Events (her kleros-events repo): tokens in web/style.css, light + dark, header/footer from web/chrome.js, create flow on web/create.html. `node tools/screenshots.mjs <dir>` takes page screenshots on a local chain.
 
 ## How to run things
 ```bash
