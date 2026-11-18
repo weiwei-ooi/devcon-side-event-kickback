@@ -45,11 +45,9 @@
       };
       paint();
     }
-    const main = document.querySelector("main:not(.home)");
-    if (main) main.insertAdjacentHTML("afterbegin", '<span class="symbol page-symbol" aria-hidden="true"></span>');
     const footer = document.querySelector("footer.site");
     if (footer) {
-      footer.innerHTML = `<span class="symbol bg-symbol" aria-hidden="true"></span><div class="cols">
+      footer.innerHTML = `<div class="cols">
         <div class="about"><a href="https://kleros.io" rel="noopener" aria-label="Kleros"><span class="logo"></span></a>
           <p>Proof of Presence is an open protocol for refundable event deposits, built and powered by Kleros, the on-chain dispute resolution protocol. Anyone can use it, fork it or plug it into their own site.</p></div>
         <div><p class="foot-h">Proof of Presence</p>
