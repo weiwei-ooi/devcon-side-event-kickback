@@ -31,6 +31,7 @@ const config = {
   rpcs: rpc ? rpc.split(",") : dep.rpcs ?? net.rpcs ?? [],
   factory: dep.factory ?? null,
   implementation: dep.implementation ?? null,
+  caseWriter: dep.caseWriter ?? null,
   fromBlock: dep.fromBlock ?? 0,
   policyURI: dep.policyURI ?? null,
   ...(dep.ipfsUpload ? { ipfsUpload: dep.ipfsUpload } : {}),

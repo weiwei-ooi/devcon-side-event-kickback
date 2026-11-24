@@ -24,6 +24,7 @@
     </div>
     <label for="policy">Juror policy on IPFS <small>(/ipfs/Qm…/attendance-policy.md)</small></label><input id="policy" class="mono">
     <div class="row"><button id="pin" class="secondary">Upload docs/attendance-policy.md to IPFS (Kleros)</button></div>
+    <label for="writer">Reuse the existing case writer <small>(leave empty to deploy a new one)</small></label><input id="writer" class="mono">
     <div class="two">
       <div><label for="chP">Challenge window (hours)</label><input id="chP" value="24"></div>
       <div><label for="maP">Match window (hours)</label><input id="maP" value="24"></div>
@@ -43,6 +44,7 @@ $("#resolver").value = k.disputeResolver ?? "";
 $("#court").value = k.subcourt ?? 0;
 $("#jurors").value = k.jurors ?? 3;
 $("#policy").value = NET.policyURI ?? "";
+$("#writer").value = NET.caseWriter ?? "";
 action($("#pin"), "#note", async () => {
   const text = await fetch("docs/attendance-policy.md").then((r) => r.text());
   const want = P.ipfsPathOf(text);
@@ -60,6 +62,7 @@ action($("#deploy"), "#note", async () => {
   const d = await P.deployProtocol(me.signer, art, {
     disputeResolver: $("#resolver").value.trim(), extraData: P.extraDataOf(Number($("#court").value), Number($("#jurors").value)), policyURI, templateText,
     network: NET.name, explorer: NET.explorer, challengePeriod: Math.round(Number($("#chP").value) * 3600), matchPeriod: Math.round(Number($("#maP").value) * 3600),
+    caseWriter: $("#writer").value.trim() || undefined,
   }, (name, tx) => say("#note", `${esc(name)}: <a href="${txUrl(tx.hash)}" rel="noopener">sent</a>, waiting…`, "busy"));
   const out = { chainId: Number(NET.chainId), factory: d.factory, implementation: d.implementation, caseWriter: d.caseWriter, fromBlock: block, policyURI,
     disputeResolver: $("#resolver").value.trim(), subcourt: Number($("#court").value), jurors: Number($("#jurors").value), deployedBy: me.address, deployedAt: new Date().toISOString() };

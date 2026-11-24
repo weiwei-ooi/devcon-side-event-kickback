@@ -50,9 +50,12 @@ const A = (s) => s.signer?.address ?? s.address;
 test("deploy the protocol against the real Kleros Dispute Resolver", async () => {
   const artifacts = Object.fromEntries(["PresenceCaseWriter", "PresenceEvent", "PresenceFactory"].map((n) => [n, load(n)]));
   const templateText = fs.readFileSync(path.join(root, "docs/metaevidence.template.json"), "utf8");
-  const policyURI = ipfsPathOf(fs.readFileSync(path.join(root, "docs/attendance-policy.md"), "utf8"));
+  // POP_CASE_WRITER reuses a live case writer (as a v2 deploy does), with the policy it was made with
+  const caseWriter = process.env.POP_CASE_WRITER || undefined;
+  const policyURI = process.env.POP_POLICY || ipfsPathOf(fs.readFileSync(path.join(root, "docs/attendance-policy.md"), "utf8"));
+  if (caseWriter) console.log(`# reusing case writer ${caseWriter}, policy ${policyURI}`);
   const gas = [];
-  P = await deployProtocol(w[0], artifacts, { disputeResolver: RESOLVER, extraData: extraDataOf(K.subcourt, K.jurors), policyURI, templateText, network: NETWORKS[1].name, explorer: NETWORKS[1].explorer }, (n, tx) => gas.push([n, tx.hash]));
+  P = await deployProtocol(w[0], artifacts, { disputeResolver: RESOLVER, extraData: extraDataOf(K.subcourt, K.jurors), policyURI, templateText, network: NETWORKS[1].name, explorer: NETWORKS[1].explorer, caseWriter }, (n, tx) => gas.push([n, tx.hash]));
   for (const [n, h] of gas) console.log(`# ${n}: ${(await prov.getTransactionReceipt(h)).gasUsed} gas`);
   P.factoryC = new ethers.Contract(P.factory, artifacts.PresenceFactory.abi, w[0]);
   const impl = new ethers.Contract(P.implementation, artifacts.PresenceEvent.abi, prov);

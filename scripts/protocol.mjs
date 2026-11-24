@@ -193,7 +193,7 @@ export function eventConfig({ name, url = "", token = ethers.ZeroAddress, deposi
  * then the factory. `artifacts` = { PresenceCaseWriter, PresenceEvent, PresenceFactory } each { abi, bytecode }.
  * `onStep(label, tx)` is called after each transaction is sent. Returns the three addresses.
  */
-export async function deployProtocol(signer, artifacts, { disputeResolver, extraData, policyURI, templateText, network, explorer, challengePeriod = DEFAULT_PERIODS.challenge, matchPeriod = DEFAULT_PERIODS.match, overrides = {} }, onStep = () => {}) {
+export async function deployProtocol(signer, artifacts, { disputeResolver, extraData, policyURI, templateText, network, explorer, challengePeriod = DEFAULT_PERIODS.challenge, matchPeriod = DEFAULT_PERIODS.match, caseWriter, overrides = {} }, onStep = () => {}) {
   const t = caseTemplate(templateText, { policyURI, network, explorer });
   const make = async (name, args) => {
     const f = new ethers.ContractFactory(artifacts[name].abi, artifacts[name].bytecode, signer);
@@ -202,7 +202,9 @@ export async function deployProtocol(signer, artifacts, { disputeResolver, extra
     await c.waitForDeployment();
     return c;
   };
-  const writer = await make("PresenceCaseWriter", [t.pieces, t.slots]);
+  // an existing case writer (same template) can be reused: it has no owner and no state
+  if (caseWriter && (await signer.provider.getCode(caseWriter)) === "0x") throw new Error("No case writer at " + caseWriter);
+  const writer = caseWriter ? { target: caseWriter } : await make("PresenceCaseWriter", [t.pieces, t.slots]);
   const impl = await make("PresenceEvent", [disputeResolver, extraData, policyURI, writer.target, challengePeriod, matchPeriod]);
   const factory = await make("PresenceFactory", [impl.target]);
   return { caseWriter: writer.target, implementation: impl.target, factory: factory.target, template: t };
