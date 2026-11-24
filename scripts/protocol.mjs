@@ -48,6 +48,8 @@ export const PHASES = ["Open", "Listed", "Finalized", "Cancelled"];
 export const STATUS = ["None", "Staker", "Rejected", "Refunded"];
 export const CHALLENGE_STATES = ["None", "Waiting", "Disputed", "Resolved"];
 export const MIN_SETTLEMENT_WINDOW = 7 * 86400; // must match PresenceEvent.MIN_SETTLEMENT_WINDOW
+export const MAX_SETTLEMENT_WINDOW = 90 * 86400; // must match PresenceEvent.MAX_SETTLEMENT_WINDOW
+export const MAX_LEAD_TIME = 2 * 365 * 86400; // must match PresenceEvent.MAX_LEAD_TIME
 export const MAX_NAME = 200;
 export const MAX_URL = 300;
 
@@ -179,6 +181,8 @@ export function eventConfig({ name, url = "", token = ethers.ZeroAddress, deposi
   if (!(s > 0) || !(e >= s)) throw new Error("The event must end after it starts.");
   if (!(e > now)) throw new Error("The event's end time is already past.");
   if (!(d >= e + MIN_SETTLEMENT_WINDOW)) throw new Error("The deadline to post the list must be at least 7 days after the event ends.");
+  if (!(d <= e + MAX_SETTLEMENT_WINDOW)) throw new Error("The deadline to post the list must be at most 90 days after the event ends.");
+  if (!(e <= now + MAX_LEAD_TIME)) throw new Error("The event must end within 2 years.");
   const cap = Number(capacity) || 0;
   if (cap < 0 || cap > 2 ** 32 - 1) throw new Error("Capacity must be 0 (no limit) or a positive number.");
   return { name: n, url: u, token: token || ethers.ZeroAddress, depositAmount: amount, eventStart: s, eventEnd: e, claimDeadline: d, capacity: cap };

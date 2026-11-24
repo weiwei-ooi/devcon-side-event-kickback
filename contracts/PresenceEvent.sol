@@ -184,6 +184,10 @@ contract PresenceEvent {
     uint256 public constant RULING_OPTIONS = 2;
     /// @notice Minimum time between the event's end and the deadline to close the list.
     uint256 public constant MIN_SETTLEMENT_WINDOW = 7 days;
+    /// @notice Maximum time between the event's end and the deadline to close the list.
+    uint256 public constant MAX_SETTLEMENT_WINDOW = 90 days;
+    /// @notice An event must end within this long of its creation.
+    uint256 public constant MAX_LEAD_TIME = 2 * 365 days;
     /// @notice Gas a pushed ETH payment may use in the recipient (enough for a Safe or a smart account).
     uint256 public constant PUSH_GAS_ETH = 40_000;
     /// @notice Gas a pushed token transfer may use.
@@ -290,7 +294,9 @@ contract PresenceEvent {
         require(c.depositAmount > 0, BadConfig("depositAmount"));
         require(c.eventEnd >= c.eventStart, BadConfig("eventEnd"));
         require(c.eventEnd > block.timestamp, BadConfig("eventEnd"));
+        require(uint256(c.eventEnd) <= block.timestamp + MAX_LEAD_TIME, BadConfig("eventEnd"));
         require(uint256(c.claimDeadline) >= uint256(c.eventEnd) + MIN_SETTLEMENT_WINDOW, BadConfig("claimDeadline"));
+        require(uint256(c.claimDeadline) <= uint256(c.eventEnd) + MAX_SETTLEMENT_WINDOW, BadConfig("claimDeadline"));
         require(bytes(c.name).length > 0 && bytes(c.name).length <= MAX_NAME && _jsonSafe(bytes(c.name)), BadConfig("name"));
         require(bytes(c.url).length <= MAX_URL && _jsonSafe(bytes(c.url)), BadConfig("url"));
         factory = msg.sender;
@@ -366,11 +372,13 @@ contract PresenceEvent {
 
     // ------------------------------------------------------------------ curation (organiser)
 
-    /// @notice Turn stakers away before the list is closed: each gets exactly their deposit back (pushed, or kept
-    /// claimable if their wallet refuses it) and cannot deposit again.
+    /// @notice Turn stakers away before the event starts: each gets exactly their deposit back (pushed, or kept
+    /// claimable if their wallet refuses it) and cannot deposit again. Once the event has started, nobody can be
+    /// turned away, so a guest who came cannot be removed from the pool (they can still be left off the list, and
+    /// then challenge).
     function reject(address[] calldata wallets) external nonReentrant onlyOwner {
         require(phase == Phase.Open, NotOpen());
-        require(block.timestamp <= claimDeadline, TooLate());
+        require(block.timestamp < eventStart, TooLate());
         for (uint256 i; i < wallets.length; ++i) {
             address w = wallets[i];
             require(status[w] == Status.Staker, NotAStaker(w));
@@ -622,8 +630,15 @@ contract PresenceEvent {
         uint256 s = spare(asset);
         require(amount <= s, SpareTooLow(s));
         emit SpareRecovered(asset, to, amount);
-        if (asset == address(0)) _sendEth(to, amount);
-        else _callToken(asset, abi.encodeCall(IERC20Min.transfer, (to, amount)), gasleft(), true);
+        if (asset == address(0)) {
+            _sendEth(to, amount);
+        } else {
+            // a token reachable at a second address must not take the event's own token with it
+            address t = token;
+            uint256 before = t == address(0) || t == asset ? 0 : IERC20Min(t).balanceOf(address(this));
+            _callToken(asset, abi.encodeCall(IERC20Min.transfer, (to, amount)), gasleft(), true);
+            if (t != address(0) && t != asset) require(IERC20Min(t).balanceOf(address(this)) >= before, SpareTooLow(0));
+        }
     }
 
     // ------------------------------------------------------------------ admin
