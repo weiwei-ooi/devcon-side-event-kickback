@@ -19,4 +19,6 @@ One JSON file per network, read by `scripts/build-web.mjs` (the file name is the
 Optional: `name`, `explorer`, `currency`, `rpcs` (for a chain not in `scripts/protocol.mjs`), `ipfsUpload`, `ipfsGateway`.
 The deploy page (`deploy.html`) and `npm run deploy` print or write this file.
 
-No mainnet deployment yet: the factory is deployed only once the code has been reviewed, with the organiser's explicit go.
+Ethereum mainnet: v2, deployed 24 Nov 2026 after the second security review (implementation and factory new; the
+case writer from v1 is reused, unchanged). `ethereum-standard-input.json` is the standard-JSON input it was compiled
+from, for explorer verification. v1 (18 Nov 2026, factory 0xEAC9…2F8B, no events) is kept in `archive/`.

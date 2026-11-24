@@ -1,13 +1,13 @@
 {
   "chainId": 1,
-  "factory": "0xEAC922d8AAC8f32cb9832f52Ac878B2a94772F8B",
-  "implementation": "0x3Cc970c38966a6b7D99f93bb6af441D0F600e477",
+  "factory": "0xdbf41b66714E6fE1402Dc43Afa602189877681ae",
+  "implementation": "0xAFDB72f1E78aDcE3ffEAfD66A9BA0E424E00f7A3",
   "caseWriter": "0xa7d18206aaaDE7c10F21dF7643d2AbBdDCd7A3E2",
-  "fromBlock": 26442808,
+  "fromBlock": 26483462,
   "policyURI": "/ipfs/QmSw4NLuZrEuTZtxtZEHKLs7NsKnAiAjwsp2hhWrBzU4oc",
   "disputeResolver": "0x4b89e798b10478a839ea0abcf86c4b94a3c782a4",
   "subcourt": 0,
   "jurors": 3,
   "deployedBy": "0x259a1084C2043a7B3b5b288596E05C41b8EFa5d6",
-  "deployedAt": "2026-11-18T15:22:37.600Z"
+  "deployedAt": "2026-11-24T07:17:27.165Z"
 }
